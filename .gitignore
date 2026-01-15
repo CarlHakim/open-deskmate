@@ -39,6 +39,9 @@ yarn-error.log*
 # Playwright
 playwright-report/
 test-results/
+apps/desktop/e2e/test-results/
+apps/desktop/e2e/html-report/
+apps/desktop/e2e/test-results.json
 
 # Test coverage
 coverage/

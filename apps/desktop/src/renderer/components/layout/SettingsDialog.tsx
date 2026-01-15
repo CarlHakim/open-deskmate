@@ -213,6 +213,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
                 <div className="h-10 animate-pulse rounded-md bg-muted" />
               ) : (
                 <select
+                  data-testid="settings-model-select"
                   value={selectedModel?.model || ''}
                   onChange={(e) => handleModelChange(e.target.value)}
                   className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
@@ -294,6 +295,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
                   {API_KEY_PROVIDERS.find((p) => p.id === provider)?.name} API Key
                 </label>
                 <input
+                  data-testid="settings-api-key-input"
                   type="password"
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
@@ -380,6 +382,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
                     <div className="h-6 w-11 animate-pulse rounded-full bg-muted" />
                   ) : (
                     <button
+                      data-testid="settings-debug-toggle"
                       onClick={handleDebugToggle}
                       className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200 ease-accomplish ${
                         debugMode ? 'bg-primary' : 'bg-muted'

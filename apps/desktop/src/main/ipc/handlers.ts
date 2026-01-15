@@ -61,6 +61,12 @@ import {
   taskConfigSchema,
   validate,
 } from './validation';
+import {
+  isMockTaskEventsEnabled,
+  createMockTask,
+  executeMockTaskFlow,
+  detectScenarioFromPrompt,
+} from '../test-utils/mock-task-flow';
 
 const MAX_TEXT_LENGTH = 8000;
 const ALLOWED_API_KEY_PROVIDERS = new Set(['anthropic', 'openai', 'google', 'groq', 'custom']);
@@ -274,6 +280,25 @@ export function registerIPCHandlers(): void {
     }
 
     const taskId = createTaskId();
+
+    // E2E Mock Mode: Return mock task and emit simulated events
+    if (isMockTaskEventsEnabled()) {
+      const mockTask = createMockTask(taskId, validatedConfig.prompt);
+      const scenario = detectScenarioFromPrompt(validatedConfig.prompt);
+
+      // Save task to history so Execution page can load it
+      saveTask(mockTask);
+
+      // Execute mock flow asynchronously (sends IPC events)
+      void executeMockTaskFlow(window, {
+        taskId,
+        prompt: validatedConfig.prompt,
+        scenario,
+        delayMs: 50,
+      });
+
+      return mockTask;
+    }
 
     // Setup event forwarding to renderer
     const forwardToRenderer = (channel: string, data: unknown) => {
@@ -879,6 +904,10 @@ export function registerIPCHandlers(): void {
 
   // API Keys: Check if any key exists
   handle('api-keys:has-any', async (_event: IpcMainInvokeEvent) => {
+    // In E2E mock mode, pretend we have API keys
+    if (isMockTaskEventsEnabled()) {
+      return true;
+    }
     return hasAnyApiKey();
   });
 

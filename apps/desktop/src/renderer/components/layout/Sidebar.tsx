@@ -52,6 +52,7 @@ export default function Sidebar() {
         {/* New Task Button - Full Width */}
         <div className="px-3 py-3 border-b border-border">
           <Button
+            data-testid="sidebar-new-task-button"
             onClick={handleNewConversation}
             variant="default"
             size="sm"
@@ -107,6 +108,7 @@ export default function Sidebar() {
 
           {/* Settings Button - Bottom Right */}
           <Button
+            data-testid="sidebar-settings-button"
             variant="ghost"
             size="icon"
             onClick={() => {

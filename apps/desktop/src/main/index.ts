@@ -15,6 +15,9 @@ import { checkAndCleanupFreshInstall } from './store/freshInstallCleanup';
 if (process.argv.includes('--e2e-skip-auth')) {
   (global as Record<string, unknown>).E2E_SKIP_AUTH = true;
 }
+if (process.argv.includes('--e2e-mock-tasks') || process.env.E2E_MOCK_TASK_EVENTS === '1') {
+  (global as Record<string, unknown>).E2E_MOCK_TASK_EVENTS = true;
+}
 
 // Clean mode - wipe all stored data for a fresh start
 // Use CLEAN_START env var since CLI args don't pass through vite to Electron
@@ -103,8 +106,9 @@ function createWindow() {
     return { action: 'deny' };
   });
 
-  // Open DevTools in dev mode (non-packaged)
-  if (!app.isPackaged) {
+  // Open DevTools in dev mode (non-packaged), but not during E2E tests
+  const isE2EMode = (global as Record<string, unknown>).E2E_SKIP_AUTH === true;
+  if (!app.isPackaged && !isE2EMode) {
     mainWindow.webContents.openDevTools({ mode: 'right' });
   }
 

@@ -155,6 +155,7 @@ export default function HomePage() {
       <div className="w-full max-w-2xl flex flex-col items-center gap-8">
         {/* Main Title */}
         <motion.h1
+          data-testid="home-title"
           initial={{ opacity: 0, y: -20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={springs.gentle}
@@ -222,6 +223,7 @@ export default function HomePage() {
                         {USE_CASE_EXAMPLES.map((example, index) => (
                           <motion.button
                             key={index}
+                            data-testid={`home-example-${index}`}
                             variants={staggerItem}
                             transition={springs.gentle}
                             whileHover={{ scale: 1.03, transition: { duration: 0.15 } }}
