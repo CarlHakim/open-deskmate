@@ -74,6 +74,9 @@ test.describe('Home Page', () => {
   test('should display example cards', async ({ window }) => {
     const homePage = new HomePage(window);
 
+    // Expand examples section (collapsed by default)
+    await homePage.expandExamples();
+
     // Capture example cards
     await captureForAI(
       window,
@@ -98,6 +101,9 @@ test.describe('Home Page', () => {
 
   test('should fill input when clicking an example card', async ({ window }) => {
     const homePage = new HomePage(window);
+
+    // Expand examples section (collapsed by default)
+    await homePage.expandExamples();
 
     // Click the first example card
     const exampleCard0 = homePage.getExampleCard(0);
