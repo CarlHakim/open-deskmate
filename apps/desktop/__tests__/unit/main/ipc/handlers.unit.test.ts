@@ -128,6 +128,7 @@ vi.mock('@main/store/taskHistory', () => ({
   }),
   updateTaskStatus: vi.fn(),
   updateTaskSessionId: vi.fn(),
+  updateTaskSummary: vi.fn(),
   addTaskMessage: vi.fn(),
   deleteTask: vi.fn((taskId: string) => {
     const idx = mockTasks.findIndex((t) => t.id === taskId);

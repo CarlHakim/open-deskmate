@@ -57,6 +57,7 @@ export default function TaskInputBar({
     <div className="relative flex items-end gap-2 rounded-xl border border-border bg-background px-3 py-2.5 shadow-sm transition-all duration-200 ease-accomplish focus-within:border-ring focus-within:ring-1 focus-within:ring-ring">
       {/* Text input */}
       <textarea
+        data-testid="task-input-textarea"
         ref={textareaRef}
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -69,6 +70,7 @@ export default function TaskInputBar({
 
       {/* Submit button */}
       <button
+        data-testid="task-input-submit"
         type="button"
         onClick={() => {
           analytics.trackSubmitTask();
