@@ -296,9 +296,7 @@ export default function ExecutionPage() {
               <h1 className="text-base font-medium text-foreground truncate min-w-0">
                 {currentTask.prompt}
               </h1>
-              <span data-testid="execution-status-badge">
-                {getStatusBadge()}
-              </span>
+              {getStatusBadge()}
             </div>
           </div>
           {(currentTask.status === 'running' || currentTask.status === 'queued') && (
@@ -307,7 +305,6 @@ export default function ExecutionPage() {
               size="sm"
               onClick={cancelTask}
               className="shrink-0"
-              data-testid="execution-cancel-button"
             >
               <XCircle className="h-4 w-4 mr-1.5" />
               Cancel
@@ -497,7 +494,6 @@ export default function ExecutionPage() {
                   exit={{ opacity: 0, y: -8 }}
                   transition={springs.gentle}
                   className="flex items-center gap-2 text-muted-foreground py-2"
-                  data-testid="execution-thinking-indicator"
                 >
                   <SpinningIcon className="h-4 w-4" />
                   <span className="text-sm">
@@ -527,7 +523,6 @@ export default function ExecutionPage() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
-            data-testid="execution-permission-modal"
           >
             <motion.div
               initial={{ opacity: 0, scale: 0.95, y: 10 }}
@@ -610,14 +605,12 @@ export default function ExecutionPage() {
                         variant="outline"
                         onClick={() => handlePermissionResponse(false)}
                         className="flex-1"
-                        data-testid="permission-deny-button"
                       >
                         Deny
                       </Button>
                       <Button
                         onClick={() => handlePermissionResponse(true)}
                         className="flex-1"
-                        data-testid="permission-allow-button"
                       >
                         Allow
                       </Button>
@@ -645,7 +638,6 @@ export default function ExecutionPage() {
               onClick={interruptTask}
               title="Stop agent (Ctrl+C)"
               className="shrink-0 hover:bg-destructive/10 hover:text-destructive hover:border-destructive"
-              data-testid="execution-stop-button"
             >
               <Square className="h-4 w-4 fill-current" />
             </Button>
@@ -678,7 +670,6 @@ export default function ExecutionPage() {
                 }
                 disabled={isLoading}
                 className="flex-1"
-                data-testid="execution-follow-up-input"
               />
               <Button
                 onClick={handleFollowUp}
