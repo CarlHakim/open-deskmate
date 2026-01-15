@@ -40,6 +40,11 @@ interface TaskState {
   setupProgressTaskId: string | null;
   setupDownloadStep: number; // 1=Chromium, 2=FFMPEG, 3=Headless Shell
 
+  // Task launcher
+  isLauncherOpen: boolean;
+  openLauncher: () => void;
+  closeLauncher: () => void;
+
   // Actions
   startTask: (config: TaskConfig) => Promise<Task | null>;
   setSetupProgress: (taskId: string | null, message: string | null) => void;
@@ -72,6 +77,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   setupProgress: null,
   setupProgressTaskId: null,
   setupDownloadStep: 1,
+  isLauncherOpen: false,
 
   setSetupProgress: (taskId: string | null, message: string | null) => {
     // Detect which package is being downloaded from the message
@@ -455,8 +461,12 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       setupProgress: null,
       setupProgressTaskId: null,
       setupDownloadStep: 1,
+      isLauncherOpen: false,
     });
   },
+
+  openLauncher: () => set({ isLauncherOpen: true }),
+  closeLauncher: () => set({ isLauncherOpen: false }),
 }));
 
 // Global subscription to setup progress events (browser download, etc.)
