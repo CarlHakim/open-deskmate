@@ -48,6 +48,14 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
   const [selectedModel, setSelectedModel] = useState<SelectedModel | null>(null);
   const [loadingModel, setLoadingModel] = useState(true);
   const [modelStatusMessage, setModelStatusMessage] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'cloud' | 'local'>('cloud');
+  const [ollamaUrl, setOllamaUrl] = useState('http://localhost:11434');
+  const [ollamaModels, setOllamaModels] = useState<Array<{ id: string; displayName: string; size: number }>>([]);
+  const [ollamaConnected, setOllamaConnected] = useState(false);
+  const [ollamaError, setOllamaError] = useState<string | null>(null);
+  const [testingOllama, setTestingOllama] = useState(false);
+  const [selectedOllamaModel, setSelectedOllamaModel] = useState<string>('');
+  const [savingOllama, setSavingOllama] = useState(false);
   const [keyToDelete, setKeyToDelete] = useState<string | null>(null);
 
   useEffect(() => {
@@ -97,10 +105,30 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
       }
     };
 
+    const fetchOllamaConfig = async () => {
+      try {
+        const config = await accomplish.getOllamaConfig();
+        if (config) {
+          setOllamaUrl(config.baseUrl);
+          // Auto-test connection if previously configured
+          if (config.enabled) {
+            const result = await accomplish.testOllamaConnection(config.baseUrl);
+            if (result.success && result.models) {
+              setOllamaConnected(true);
+              setOllamaModels(result.models);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch Ollama config:', err);
+      }
+    };
+
     fetchKeys();
     fetchDebugSetting();
     fetchVersion();
     fetchSelectedModel();
+    fetchOllamaConfig();
   }, [open]);
 
   const handleDebugToggle = async () => {
@@ -195,6 +223,70 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
     }
   };
 
+  const handleTestOllama = async () => {
+    const accomplish = getAccomplish();
+    setTestingOllama(true);
+    setOllamaError(null);
+    setOllamaConnected(false);
+    setOllamaModels([]);
+
+    try {
+      const result = await accomplish.testOllamaConnection(ollamaUrl);
+      if (result.success && result.models) {
+        setOllamaConnected(true);
+        setOllamaModels(result.models);
+        if (result.models.length > 0) {
+          setSelectedOllamaModel(result.models[0].id);
+        }
+      } else {
+        setOllamaError(result.error || 'Connection failed');
+      }
+    } catch (err) {
+      setOllamaError(err instanceof Error ? err.message : 'Connection failed');
+    } finally {
+      setTestingOllama(false);
+    }
+  };
+
+  const handleSaveOllama = async () => {
+    const accomplish = getAccomplish();
+    setSavingOllama(true);
+
+    try {
+      // Save the Ollama config
+      await accomplish.setOllamaConfig({
+        baseUrl: ollamaUrl,
+        enabled: true,
+        lastValidated: Date.now(),
+        models: ollamaModels,  // Include discovered models
+      });
+
+      // Set as selected model
+      await accomplish.setSelectedModel({
+        provider: 'ollama',
+        model: `ollama/${selectedOllamaModel}`,
+        baseUrl: ollamaUrl,
+      });
+
+      setSelectedModel({
+        provider: 'ollama',
+        model: `ollama/${selectedOllamaModel}`,
+        baseUrl: ollamaUrl,
+      });
+
+      setModelStatusMessage(`Model updated to ${selectedOllamaModel}`);
+    } catch (err) {
+      setOllamaError(err instanceof Error ? err.message : 'Failed to save');
+    } finally {
+      setSavingOllama(false);
+    }
+  };
+
+  const formatBytes = (bytes: number): string => {
+    const gb = bytes / (1024 * 1024 * 1024);
+    return `${gb.toFixed(1)} GB`;
+  };
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
@@ -207,50 +299,189 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
           <section>
             <h2 className="mb-4 text-base font-medium text-foreground">Model</h2>
             <div className="rounded-lg border border-border bg-card p-5">
-              <p className="mb-4 text-sm text-muted-foreground leading-relaxed">
-                Select the AI model to use for task execution.
-              </p>
-              {loadingModel ? (
-                <div className="h-10 animate-pulse rounded-md bg-muted" />
-              ) : (
-                <select
-                  data-testid="settings-model-select"
-                  value={selectedModel?.model || ''}
-                  onChange={(e) => handleModelChange(e.target.value)}
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              {/* Tabs */}
+              <div className="flex gap-2 mb-5">
+                <button
+                  onClick={() => setActiveTab('cloud')}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    activeTab === 'cloud'
+                      ? 'bg-primary text-primary-foreground'
+                      : 'bg-muted text-muted-foreground hover:text-foreground'
+                  }`}
                 >
-                  {DEFAULT_PROVIDERS.filter((p) => p.requiresApiKey).map((provider) => {
-                    const hasApiKey = savedKeys.some((k) => k.provider === provider.id);
-                    return (
-                      <optgroup key={provider.id} label={provider.name}>
-                        {provider.models.map((model) => (
-                          <option
-                            key={model.fullId}
-                            value={model.fullId}
-                            disabled={!hasApiKey}
-                          >
-                            {model.displayName}{!hasApiKey ? ' (No API key)' : ''}
+                  Cloud Providers
+                </button>
+                <button
+                  onClick={() => setActiveTab('local')}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    activeTab === 'local'
+                      ? 'bg-primary text-primary-foreground'
+                      : 'bg-muted text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  Local Models
+                </button>
+              </div>
+
+              {activeTab === 'cloud' ? (
+                <>
+                  <p className="mb-4 text-sm text-muted-foreground leading-relaxed">
+                    Select a cloud AI model. Requires an API key for the provider.
+                  </p>
+                  {loadingModel ? (
+                    <div className="h-10 animate-pulse rounded-md bg-muted" />
+                  ) : (
+                    <select
+                      data-testid="settings-model-select"
+                      value={selectedModel?.provider !== 'ollama' ? selectedModel?.model || '' : ''}
+                      onChange={(e) => handleModelChange(e.target.value)}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    >
+                      <option value="" disabled>Select a model...</option>
+                      {DEFAULT_PROVIDERS.filter((p) => p.requiresApiKey).map((provider) => {
+                        const hasApiKey = savedKeys.some((k) => k.provider === provider.id);
+                        return (
+                          <optgroup key={provider.id} label={provider.name}>
+                            {provider.models.map((model) => (
+                              <option
+                                key={model.fullId}
+                                value={model.fullId}
+                                disabled={!hasApiKey}
+                              >
+                                {model.displayName}{!hasApiKey ? ' (No API key)' : ''}
+                              </option>
+                            ))}
+                          </optgroup>
+                        );
+                      })}
+                    </select>
+                  )}
+                  {modelStatusMessage && (
+                    <p className="mt-3 text-sm text-success">{modelStatusMessage}</p>
+                  )}
+                  {selectedModel && selectedModel.provider !== 'ollama' && !savedKeys.some((k) => k.provider === selectedModel.provider) && (
+                    <p className="mt-3 text-sm text-warning">
+                      No API key configured for {DEFAULT_PROVIDERS.find((p) => p.id === selectedModel.provider)?.name}. Add one below.
+                    </p>
+                  )}
+                </>
+              ) : (
+                <>
+                  <p className="mb-4 text-sm text-muted-foreground leading-relaxed">
+                    Connect to a local Ollama server to use models running on your machine.
+                  </p>
+
+                  {/* Ollama URL Input */}
+                  <div className="mb-4">
+                    <label className="mb-2 block text-sm font-medium text-foreground">
+                      Ollama Server URL
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={ollamaUrl}
+                        onChange={(e) => {
+                          setOllamaUrl(e.target.value);
+                          setOllamaConnected(false);
+                          setOllamaModels([]);
+                        }}
+                        placeholder="http://localhost:11434"
+                        className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      />
+                      <button
+                        onClick={handleTestOllama}
+                        disabled={testingOllama}
+                        className="rounded-md bg-muted px-4 py-2 text-sm font-medium hover:bg-muted/80 disabled:opacity-50"
+                      >
+                        {testingOllama ? 'Testing...' : 'Test'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Connection Status */}
+                  {ollamaConnected && (
+                    <div className="mb-4 flex items-center gap-2 text-sm text-success">
+                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                      </svg>
+                      Connected - {ollamaModels.length} model{ollamaModels.length !== 1 ? 's' : ''} available
+                    </div>
+                  )}
+
+                  {ollamaError && (
+                    <div className="mb-4 flex items-center gap-2 text-sm text-destructive">
+                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                      {ollamaError}
+                    </div>
+                  )}
+
+                  {/* Model Selection (only show when connected) */}
+                  {ollamaConnected && ollamaModels.length > 0 && (
+                    <div className="mb-4">
+                      <label className="mb-2 block text-sm font-medium text-foreground">
+                        Select Model
+                      </label>
+                      <select
+                        value={selectedOllamaModel}
+                        onChange={(e) => setSelectedOllamaModel(e.target.value)}
+                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      >
+                        {ollamaModels.map((model) => (
+                          <option key={model.id} value={model.id}>
+                            {model.displayName} ({formatBytes(model.size)})
                           </option>
                         ))}
-                      </optgroup>
-                    );
-                  })}
-                </select>
-              )}
-              {modelStatusMessage && (
-                <p className="mt-3 text-sm text-success">{modelStatusMessage}</p>
-              )}
-              {selectedModel && !savedKeys.some((k) => k.provider === selectedModel.provider) && (
-                <p className="mt-3 text-sm text-warning">
-                  No API key configured for {DEFAULT_PROVIDERS.find((p) => p.id === selectedModel.provider)?.name}. Add one below to use this model.
-                </p>
+                      </select>
+                    </div>
+                  )}
+
+                  {/* Save Button */}
+                  {ollamaConnected && selectedOllamaModel && (
+                    <button
+                      onClick={handleSaveOllama}
+                      disabled={savingOllama}
+                      className="w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                    >
+                      {savingOllama ? 'Saving...' : 'Use This Model'}
+                    </button>
+                  )}
+
+                  {/* Help text when not connected */}
+                  {!ollamaConnected && !ollamaError && (
+                    <p className="text-sm text-muted-foreground">
+                      Make sure{' '}
+                      <a
+                        href="https://ollama.ai"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary hover:underline"
+                      >
+                        Ollama
+                      </a>{' '}
+                      is installed and running, then click Test to connect.
+                    </p>
+                  )}
+
+                  {/* Current Ollama selection indicator */}
+                  {selectedModel?.provider === 'ollama' && (
+                    <div className="mt-4 rounded-lg bg-muted p-3">
+                      <p className="text-sm text-foreground">
+                        <span className="font-medium">Currently using:</span>{' '}
+                        {selectedModel.model.replace('ollama/', '')}
+                      </p>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </section>
 
-          {/* API Key Section */}
-          <section>
-            <h2 className="mb-4 text-base font-medium text-foreground">Bring Your Own Model/API Key</h2>
+          {/* API Key Section - Only show for cloud providers */}
+          {activeTab === 'cloud' && (
+            <section>
+              <h2 className="mb-4 text-base font-medium text-foreground">Bring Your Own Model/API Key</h2>
             <div className="rounded-lg border border-border bg-card p-5">
               <p className="mb-5 text-sm text-muted-foreground leading-relaxed">
                 Setup the API key and model for your own AI coworker.
@@ -385,7 +616,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
                 </div>
               )}
             </div>
-          </section>
+            </section>
+          )}
 
           {/* Developer Section */}
           <section>

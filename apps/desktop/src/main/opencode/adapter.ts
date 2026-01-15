@@ -378,6 +378,13 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
       console.log('[OpenCode CLI] Using Groq API key from settings');
     }
 
+    // Set Ollama host if configured
+    const selectedModel = getSelectedModel();
+    if (selectedModel?.provider === 'ollama' && selectedModel.baseUrl) {
+      env.OLLAMA_HOST = selectedModel.baseUrl;
+      console.log('[OpenCode CLI] Using Ollama host:', selectedModel.baseUrl);
+    }
+
     // Log config environment variable
     console.log('[OpenCode CLI] OPENCODE_CONFIG in env:', process.env.OPENCODE_CONFIG);
     if (process.env.OPENCODE_CONFIG) {

@@ -70,8 +70,17 @@ interface AccomplishAPI {
   getClaudeVersion(): Promise<string | null>;
 
   // Model selection
-  getSelectedModel(): Promise<{ provider: string; model: string } | null>;
-  setSelectedModel(model: { provider: string; model: string }): Promise<void>;
+  getSelectedModel(): Promise<{ provider: string; model: string; baseUrl?: string } | null>;
+  setSelectedModel(model: { provider: string; model: string; baseUrl?: string }): Promise<void>;
+
+  // Ollama configuration
+  testOllamaConnection(url: string): Promise<{
+    success: boolean;
+    models?: Array<{ id: string; displayName: string; size: number }>;
+    error?: string;
+  }>;
+  getOllamaConfig(): Promise<{ baseUrl: string; enabled: boolean; lastValidated?: number; models?: Array<{ id: string; displayName: string; size: number }> } | null>;
+  setOllamaConfig(config: { baseUrl: string; enabled: boolean; lastValidated?: number; models?: Array<{ id: string; displayName: string; size: number }> } | null): Promise<void>;
 
   // Event subscriptions
   onTaskUpdate(callback: (event: TaskUpdateEvent) => void): () => void;

@@ -2,7 +2,7 @@
  * Provider and model configuration types for multi-provider support
  */
 
-export type ProviderType = 'anthropic' | 'openai' | 'google' | 'local' | 'custom';
+export type ProviderType = 'anthropic' | 'openai' | 'google' | 'ollama' | 'custom';
 
 export interface ProviderConfig {
   id: ProviderType;
@@ -26,6 +26,26 @@ export interface ModelConfig {
 export interface SelectedModel {
   provider: ProviderType;
   model: string; // Full ID: "anthropic/claude-sonnet-4-5"
+  baseUrl?: string;  // For Ollama: the server URL
+}
+
+/**
+ * Ollama model info from API
+ */
+export interface OllamaModelInfo {
+  id: string;        // e.g., "qwen3:latest"
+  displayName: string;
+  size: number;
+}
+
+/**
+ * Ollama server configuration
+ */
+export interface OllamaConfig {
+  baseUrl: string;
+  enabled: boolean;
+  lastValidated?: number;
+  models?: OllamaModelInfo[];  // Discovered models from Ollama API
 }
 
 /**
@@ -101,20 +121,6 @@ export const DEFAULT_PROVIDERS: ProviderConfig[] = [
         fullId: 'google/gemini-3-flash-preview',
         contextWindow: 1000000,
         supportsVision: true,
-      },
-    ],
-  },
-  {
-    id: 'local',
-    name: 'Local Models',
-    requiresApiKey: false,
-    models: [
-      {
-        id: 'ollama',
-        displayName: 'Ollama (Local)',
-        provider: 'local',
-        fullId: 'ollama/llama3',
-        supportsVision: false,
       },
     ],
   },

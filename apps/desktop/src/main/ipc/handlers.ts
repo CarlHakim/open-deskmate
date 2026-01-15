@@ -38,6 +38,8 @@ import {
   setOnboardingComplete,
   getSelectedModel,
   setSelectedModel,
+  getOllamaConfig,
+  setOllamaConfig,
 } from '../store/appSettings';
 import { getDesktopConfig } from '../config';
 import {
@@ -54,6 +56,7 @@ import type {
   TaskResult,
   TaskStatus,
   SelectedModel,
+  OllamaConfig,
 } from '@accomplish/shared';
 import { DEFAULT_PROVIDERS } from '@accomplish/shared';
 import {
@@ -73,6 +76,12 @@ import {
 const MAX_TEXT_LENGTH = 8000;
 const ALLOWED_API_KEY_PROVIDERS = new Set(['anthropic', 'openai', 'google', 'groq', 'custom']);
 const API_KEY_VALIDATION_TIMEOUT_MS = 15000;
+
+interface OllamaModel {
+  id: string;
+  displayName: string;
+  size: number;
+}
 
 /**
  * Fetch with timeout using AbortController
@@ -898,6 +907,94 @@ export function registerIPCHandlers(): void {
       throw new Error('Invalid model configuration');
     }
     setSelectedModel(model);
+  });
+
+  // Ollama: Test connection and get models
+  handle('ollama:test-connection', async (_event: IpcMainInvokeEvent, url: string) => {
+    const sanitizedUrl = sanitizeString(url, 'ollamaUrl', 256);
+
+    // Validate URL format and protocol
+    try {
+      const parsed = new URL(sanitizedUrl);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return { success: false, error: 'Only http and https URLs are allowed' };
+      }
+    } catch {
+      return { success: false, error: 'Invalid URL format' };
+    }
+
+    try {
+      const response = await fetchWithTimeout(
+        `${sanitizedUrl}/api/tags`,
+        { method: 'GET' },
+        API_KEY_VALIDATION_TIMEOUT_MS
+      );
+
+      if (!response.ok) {
+        throw new Error(`Ollama returned status ${response.status}`);
+      }
+
+      const data = await response.json() as { models?: Array<{ name: string; size: number }> };
+      const models: OllamaModel[] = (data.models || []).map((m) => ({
+        id: m.name,
+        displayName: m.name,
+        size: m.size,
+      }));
+
+      console.log(`[Ollama] Connection successful, found ${models.length} models`);
+      return { success: true, models };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Connection failed';
+      console.warn('[Ollama] Connection failed:', message);
+
+      if (error instanceof Error && error.name === 'AbortError') {
+        return { success: false, error: 'Connection timed out. Make sure Ollama is running.' };
+      }
+      return { success: false, error: `Cannot connect to Ollama: ${message}` };
+    }
+  });
+
+  // Ollama: Get stored config
+  handle('ollama:get-config', async (_event: IpcMainInvokeEvent) => {
+    return getOllamaConfig();
+  });
+
+  // Ollama: Set config
+  handle('ollama:set-config', async (_event: IpcMainInvokeEvent, config: OllamaConfig | null) => {
+    if (config !== null) {
+      if (typeof config.baseUrl !== 'string' || typeof config.enabled !== 'boolean') {
+        throw new Error('Invalid Ollama configuration');
+      }
+      // Validate URL format and protocol
+      try {
+        const parsed = new URL(config.baseUrl);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+          throw new Error('Only http and https URLs are allowed');
+        }
+      } catch (e) {
+        if (e instanceof Error && e.message.includes('http')) {
+          throw e; // Re-throw our protocol error
+        }
+        throw new Error('Invalid base URL format');
+      }
+      // Validate optional lastValidated if present
+      if (config.lastValidated !== undefined && typeof config.lastValidated !== 'number') {
+        throw new Error('Invalid Ollama configuration');
+      }
+      // Validate optional models array if present
+      if (config.models !== undefined) {
+        if (!Array.isArray(config.models)) {
+          throw new Error('Invalid Ollama configuration: models must be an array');
+        }
+        for (const model of config.models) {
+          if (typeof model.id !== 'string' || typeof model.displayName !== 'string' || typeof model.size !== 'number') {
+            throw new Error('Invalid Ollama configuration: invalid model format');
+          }
+        }
+      }
+    }
+    setOllamaConfig(config);
+    console.log('[Ollama] Config saved:', config);
   });
 
   // API Keys: Get all API keys (with masked values)

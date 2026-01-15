@@ -2,6 +2,7 @@ import { app } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import { PERMISSION_API_PORT } from '../permission-api';
+import { getOllamaConfig } from '../store/appSettings';
 
 /**
  * Agent name used by Accomplish
@@ -330,6 +331,20 @@ interface McpServerConfig {
   timeout?: number;
 }
 
+interface OllamaProviderModelConfig {
+  name: string;
+  tools?: boolean;
+}
+
+interface OllamaProviderConfig {
+  npm: string;
+  name: string;
+  options: {
+    baseURL: string;
+  };
+  models: Record<string, OllamaProviderModelConfig>;
+}
+
 interface OpenCodeConfig {
   $schema?: string;
   model?: string;
@@ -338,6 +353,7 @@ interface OpenCodeConfig {
   permission?: string | Record<string, string | Record<string, string>>;
   agent?: Record<string, AgentConfig>;
   mcp?: Record<string, McpServerConfig>;
+  provider?: Record<string, OllamaProviderConfig>;
 }
 
 /**
@@ -363,15 +379,48 @@ export async function generateOpenCodeConfig(): Promise<string> {
   // Build file-permission MCP server command
   const filePermissionServerPath = path.join(skillsPath, 'file-permission', 'src', 'index.ts');
 
+  // Enable providers - add ollama if configured
+  const ollamaConfig = getOllamaConfig();
+  const baseProviders = ['anthropic', 'openai', 'google', 'groq'];
+  const enabledProviders = ollamaConfig?.enabled
+    ? [...baseProviders, 'ollama']
+    : baseProviders;
+
+  // Build Ollama provider configuration if enabled
+  let providerConfig: Record<string, OllamaProviderConfig> | undefined;
+  if (ollamaConfig?.enabled && ollamaConfig.models && ollamaConfig.models.length > 0) {
+    const ollamaModels: Record<string, OllamaProviderModelConfig> = {};
+    for (const model of ollamaConfig.models) {
+      ollamaModels[model.id] = {
+        name: model.displayName,
+        tools: true,  // Enable tool calling for all models
+      };
+    }
+
+    providerConfig = {
+      ollama: {
+        npm: '@ai-sdk/openai-compatible',
+        name: 'Ollama (local)',
+        options: {
+          baseURL: `${ollamaConfig.baseUrl}/v1`,  // OpenAI-compatible endpoint
+        },
+        models: ollamaModels,
+      },
+    };
+
+    console.log('[OpenCode Config] Ollama provider configured with models:', Object.keys(ollamaModels));
+  }
+
   const config: OpenCodeConfig = {
     $schema: 'https://opencode.ai/config.json',
     default_agent: ACCOMPLISH_AGENT_NAME,
     // Enable all supported providers - providers auto-configure when API keys are set via env vars
-    enabled_providers: ['anthropic', 'openai', 'google', 'groq'],
+    enabled_providers: enabledProviders,
     // Auto-allow all tool permissions - the system prompt instructs the agent to use
     // AskUserQuestion for user confirmations, which shows in the UI as an interactive modal.
     // CLI-level permission prompts don't show in the UI and would block task execution.
     permission: 'allow',
+    provider: providerConfig,
     agent: {
       [ACCOMPLISH_AGENT_NAME]: {
         description: 'Browser automation assistant using dev-browser',
