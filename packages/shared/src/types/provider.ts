@@ -2,7 +2,7 @@
  * Provider and model configuration types for multi-provider support
  */
 
-export type ProviderType = 'anthropic' | 'openai' | 'google' | 'ollama' | 'custom';
+export type ProviderType = 'anthropic' | 'openai' | 'google' | 'xai' | 'ollama' | 'custom';
 
 export interface ProviderConfig {
   id: ProviderType;
@@ -121,6 +121,31 @@ export const DEFAULT_PROVIDERS: ProviderConfig[] = [
         fullId: 'google/gemini-3-flash-preview',
         contextWindow: 1000000,
         supportsVision: true,
+      },
+    ],
+  },
+  {
+    id: 'xai',
+    name: 'xAI',
+    requiresApiKey: true,
+    apiKeyEnvVar: 'XAI_API_KEY',
+    baseUrl: 'https://api.x.ai',
+    models: [
+      {
+        id: 'grok-4',
+        displayName: 'Grok 4',
+        provider: 'xai',
+        fullId: 'xai/grok-4',
+        contextWindow: 256000,
+        supportsVision: true,
+      },
+      {
+        id: 'grok-3',
+        displayName: 'Grok 3',
+        provider: 'xai',
+        fullId: 'xai/grok-3',
+        contextWindow: 131000,
+        supportsVision: false,
       },
     ],
   },

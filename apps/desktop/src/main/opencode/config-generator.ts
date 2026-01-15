@@ -381,7 +381,7 @@ export async function generateOpenCodeConfig(): Promise<string> {
 
   // Enable providers - add ollama if configured
   const ollamaConfig = getOllamaConfig();
-  const baseProviders = ['anthropic', 'openai', 'google', 'groq'];
+  const baseProviders = ['anthropic', 'openai', 'google', 'xai'];
   const enabledProviders = ollamaConfig?.enabled
     ? [...baseProviders, 'ollama']
     : baseProviders;
