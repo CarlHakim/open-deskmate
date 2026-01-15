@@ -57,6 +57,8 @@ export default defineConfig({
         // Infrastructure code - HTTP server and file system cleanup utilities
         'src/main/permission-api.ts', // MCP permission HTTP server - infrastructure
         'src/main/store/freshInstallCleanup.ts', // One-time cleanup utility
+        // E2E test utilities - not production code
+        'src/main/test-utils/**',
       ],
       thresholds: {
         statements: 80,
