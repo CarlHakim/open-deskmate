@@ -388,7 +388,7 @@ export async function generateOpenCodeConfig(): Promise<string> {
 
   // Enable providers - add ollama if configured
   const ollamaConfig = getOllamaConfig();
-  const baseProviders = ['anthropic', 'openai', 'google', 'xai'];
+  const baseProviders = ['anthropic', 'openai', 'google', 'xai', 'deepseek', 'zai-coding-plan'];
   const enabledProviders = ollamaConfig?.enabled
     ? [...baseProviders, 'ollama']
     : baseProviders;
@@ -468,4 +468,70 @@ export async function generateOpenCodeConfig(): Promise<string> {
  */
 export function getOpenCodeConfigPath(): string {
   return path.join(app.getPath('userData'), 'opencode', 'opencode.json');
+}
+
+/**
+ * Get the path to OpenCode CLI's auth.json
+ * OpenCode stores credentials in ~/.local/share/opencode/auth.json
+ */
+export function getOpenCodeAuthPath(): string {
+  const homeDir = app.getPath('home');
+  if (process.platform === 'win32') {
+    return path.join(homeDir, 'AppData', 'Local', 'opencode', 'auth.json');
+  }
+  return path.join(homeDir, '.local', 'share', 'opencode', 'auth.json');
+}
+
+/**
+ * Sync API keys from Openwork's secure storage to OpenCode CLI's auth.json
+ * This allows OpenCode CLI to recognize DeepSeek and Z.AI providers
+ */
+export async function syncApiKeysToOpenCodeAuth(): Promise<void> {
+  const { getAllApiKeys } = await import('../store/secureStorage');
+  const apiKeys = await getAllApiKeys();
+
+  const authPath = getOpenCodeAuthPath();
+  const authDir = path.dirname(authPath);
+
+  // Ensure directory exists
+  if (!fs.existsSync(authDir)) {
+    fs.mkdirSync(authDir, { recursive: true });
+  }
+
+  // Read existing auth.json or create empty object
+  let auth: Record<string, { type: string; key: string }> = {};
+  if (fs.existsSync(authPath)) {
+    try {
+      auth = JSON.parse(fs.readFileSync(authPath, 'utf-8'));
+    } catch (e) {
+      console.warn('[OpenCode Auth] Failed to parse existing auth.json, creating new one');
+      auth = {};
+    }
+  }
+
+  let updated = false;
+
+  // Sync DeepSeek API key
+  if (apiKeys.deepseek) {
+    if (!auth['deepseek'] || auth['deepseek'].key !== apiKeys.deepseek) {
+      auth['deepseek'] = { type: 'api', key: apiKeys.deepseek };
+      updated = true;
+      console.log('[OpenCode Auth] Synced DeepSeek API key');
+    }
+  }
+
+  // Sync Z.AI Coding Plan API key (maps to 'zai-coding-plan' provider in OpenCode CLI)
+  if (apiKeys.zai) {
+    if (!auth['zai-coding-plan'] || auth['zai-coding-plan'].key !== apiKeys.zai) {
+      auth['zai-coding-plan'] = { type: 'api', key: apiKeys.zai };
+      updated = true;
+      console.log('[OpenCode Auth] Synced Z.AI Coding Plan API key');
+    }
+  }
+
+  // Write updated auth.json
+  if (updated) {
+    fs.writeFileSync(authPath, JSON.stringify(auth, null, 2));
+    console.log('[OpenCode Auth] Updated auth.json at:', authPath);
+  }
 }

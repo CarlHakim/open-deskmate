@@ -42,7 +42,7 @@ const accomplishAPI = {
   // Settings
   getApiKeys: (): Promise<unknown[]> => ipcRenderer.invoke('settings:api-keys'),
   addApiKey: (
-    provider: 'anthropic' | 'openai' | 'google' | 'xai' | 'custom',
+    provider: 'anthropic' | 'openai' | 'google' | 'xai' | 'deepseek' | 'zai' | 'custom',
     key: string,
     label?: string
   ): Promise<unknown> =>

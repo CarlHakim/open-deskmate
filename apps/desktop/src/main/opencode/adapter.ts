@@ -10,7 +10,7 @@ import {
 } from './cli-path';
 import { getAllApiKeys } from '../store/secureStorage';
 import { getSelectedModel } from '../store/appSettings';
-import { generateOpenCodeConfig, ACCOMPLISH_AGENT_NAME } from './config-generator';
+import { generateOpenCodeConfig, ACCOMPLISH_AGENT_NAME, syncApiKeysToOpenCodeAuth } from './config-generator';
 import { getExtendedNodePath } from '../utils/system-path';
 import { getBundledNodePaths, logBundledNodeInfo } from '../utils/bundled-node';
 import path from 'path';
@@ -103,6 +103,9 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
     this.streamParser.reset();
     this.hasCompleted = false;
     this.wasInterrupted = false;
+
+    // Sync API keys to OpenCode CLI's auth.json (for DeepSeek, Z.AI support)
+    await syncApiKeysToOpenCodeAuth();
 
     // Generate OpenCode config file with MCP settings and agent
     console.log('[OpenCode CLI] Generating OpenCode config with MCP settings and agent...');
@@ -416,7 +419,17 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
 
     // Add model selection if specified
     if (selectedModel?.model) {
-      args.push('--model', selectedModel.model);
+      if (selectedModel.provider === 'zai') {
+        // Z.AI Coding Plan uses 'zai-coding-plan' provider in OpenCode CLI
+        const modelId = selectedModel.model.split('/').pop();
+        args.push('--model', `zai-coding-plan/${modelId}`);
+      } else if (selectedModel.provider === 'deepseek') {
+        // DeepSeek uses 'deepseek' provider in OpenCode CLI
+        const modelId = selectedModel.model.split('/').pop();
+        args.push('--model', `deepseek/${modelId}`);
+      } else {
+        args.push('--model', selectedModel.model);
+      }
     }
 
     // Resume session if specified
