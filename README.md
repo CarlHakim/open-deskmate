@@ -5,11 +5,11 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-22c55e?style=flat-square" alt="MIT License" /></a>
   <a href="https://github.com/accomplish-ai/openwork/stargazers"><img src="https://img.shields.io/github/stars/accomplish-ai/openwork?style=flat-square&color=22c55e" alt="GitHub Stars" /></a>
-  <a href="https://downloads.accomplish.ai/downloads/0.1.0/macos/Openwork-0.1.0-mac-arm64.dmg"><img src="https://img.shields.io/badge/Download-macOS-0ea5e9?style=flat-square" alt="Download" /></a>
+  <a href="https://downloads.accomplish.ai/downloads/0.2.1/macos/Openwork-0.2.1-mac-arm64.dmg"><img src="https://img.shields.io/badge/Download-macOS-0ea5e9?style=flat-square" alt="Download" /></a>
 </p>
 
 <p align="center">
-  <a href="https://downloads.accomplish.ai/downloads/0.1.0/macos/Openwork-0.1.0-mac-arm64.dmg"><strong>Download for Mac (Apple Silicon)</strong></a>
+  <a href="https://downloads.accomplish.ai/downloads/0.2.1/macos/Openwork-0.2.1-mac-arm64.dmg"><strong>Download for Mac (Apple Silicon)</strong></a>
 </p>
 
 <br />
@@ -118,7 +118,7 @@
 
 <div align="center">
 
-[**Download for Mac (Apple Silicon)**](https://downloads.accomplish.ai/downloads/0.1.0/macos/Openwork-0.1.0-mac-arm64.dmg)
+[**Download for Mac (Apple Silicon)**](https://downloads.accomplish.ai/downloads/0.2.1/macos/Openwork-0.2.1-mac-arm64.dmg)
 
 </div>
 
