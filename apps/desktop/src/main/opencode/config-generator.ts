@@ -3,6 +3,8 @@ import path from 'path';
 import fs from 'fs';
 import { PERMISSION_API_PORT } from '../permission-api';
 import { getOllamaConfig } from '../store/appSettings';
+import { getApiKey } from '../store/secureStorage';
+import type { BedrockCredentials } from '@accomplish/shared';
 
 /**
  * Agent name used by Accomplish
@@ -352,6 +354,15 @@ interface OllamaProviderConfig {
   models: Record<string, OllamaProviderModelConfig>;
 }
 
+interface BedrockProviderConfig {
+  options: {
+    region: string;
+    profile?: string;
+  };
+}
+
+type ProviderConfig = OllamaProviderConfig | BedrockProviderConfig;
+
 interface OpenCodeConfig {
   $schema?: string;
   model?: string;
@@ -360,7 +371,7 @@ interface OpenCodeConfig {
   permission?: string | Record<string, string | Record<string, string>>;
   agent?: Record<string, AgentConfig>;
   mcp?: Record<string, McpServerConfig>;
-  provider?: Record<string, OllamaProviderConfig>;
+  provider?: Record<string, ProviderConfig>;
 }
 
 /**
@@ -388,13 +399,15 @@ export async function generateOpenCodeConfig(): Promise<string> {
 
   // Enable providers - add ollama if configured
   const ollamaConfig = getOllamaConfig();
-  const baseProviders = ['anthropic', 'openai', 'google', 'xai'];
+  const baseProviders = ['anthropic', 'openai', 'google', 'xai', 'deepseek', 'zai-coding-plan', 'amazon-bedrock'];
   const enabledProviders = ollamaConfig?.enabled
     ? [...baseProviders, 'ollama']
     : baseProviders;
 
-  // Build Ollama provider configuration if enabled
-  let providerConfig: Record<string, OllamaProviderConfig> | undefined;
+  // Build provider configurations
+  const providerConfig: Record<string, ProviderConfig> = {};
+
+  // Add Ollama provider configuration if enabled
   if (ollamaConfig?.enabled && ollamaConfig.models && ollamaConfig.models.length > 0) {
     const ollamaModels: Record<string, OllamaProviderModelConfig> = {};
     for (const model of ollamaConfig.models) {
@@ -404,18 +417,41 @@ export async function generateOpenCodeConfig(): Promise<string> {
       };
     }
 
-    providerConfig = {
-      ollama: {
-        npm: '@ai-sdk/openai-compatible',
-        name: 'Ollama (local)',
-        options: {
-          baseURL: `${ollamaConfig.baseUrl}/v1`,  // OpenAI-compatible endpoint
-        },
-        models: ollamaModels,
+    providerConfig.ollama = {
+      npm: '@ai-sdk/openai-compatible',
+      name: 'Ollama (local)',
+      options: {
+        baseURL: `${ollamaConfig.baseUrl}/v1`,  // OpenAI-compatible endpoint
       },
+      models: ollamaModels,
     };
 
     console.log('[OpenCode Config] Ollama provider configured with models:', Object.keys(ollamaModels));
+  }
+
+  // Add Bedrock provider configuration if credentials are stored
+  const bedrockCredsJson = getApiKey('bedrock');
+  if (bedrockCredsJson) {
+    try {
+      const creds = JSON.parse(bedrockCredsJson) as BedrockCredentials;
+
+      const bedrockOptions: BedrockProviderConfig['options'] = {
+        region: creds.region || 'us-east-1',
+      };
+
+      // Only add profile if using profile mode
+      if (creds.authType === 'profile' && creds.profileName) {
+        bedrockOptions.profile = creds.profileName;
+      }
+
+      providerConfig['amazon-bedrock'] = {
+        options: bedrockOptions,
+      };
+
+      console.log('[OpenCode Config] Bedrock provider configured:', bedrockOptions);
+    } catch (e) {
+      console.warn('[OpenCode Config] Failed to parse Bedrock credentials:', e);
+    }
   }
 
   const config: OpenCodeConfig = {
@@ -427,7 +463,7 @@ export async function generateOpenCodeConfig(): Promise<string> {
     // AskUserQuestion for user confirmations, which shows in the UI as an interactive modal.
     // CLI-level permission prompts don't show in the UI and would block task execution.
     permission: 'allow',
-    provider: providerConfig,
+    provider: Object.keys(providerConfig).length > 0 ? providerConfig : undefined,
     agent: {
       [ACCOMPLISH_AGENT_NAME]: {
         description: 'Browser automation assistant using dev-browser',
@@ -468,4 +504,70 @@ export async function generateOpenCodeConfig(): Promise<string> {
  */
 export function getOpenCodeConfigPath(): string {
   return path.join(app.getPath('userData'), 'opencode', 'opencode.json');
+}
+
+/**
+ * Get the path to OpenCode CLI's auth.json
+ * OpenCode stores credentials in ~/.local/share/opencode/auth.json
+ */
+export function getOpenCodeAuthPath(): string {
+  const homeDir = app.getPath('home');
+  if (process.platform === 'win32') {
+    return path.join(homeDir, 'AppData', 'Local', 'opencode', 'auth.json');
+  }
+  return path.join(homeDir, '.local', 'share', 'opencode', 'auth.json');
+}
+
+/**
+ * Sync API keys from Openwork's secure storage to OpenCode CLI's auth.json
+ * This allows OpenCode CLI to recognize DeepSeek and Z.AI providers
+ */
+export async function syncApiKeysToOpenCodeAuth(): Promise<void> {
+  const { getAllApiKeys } = await import('../store/secureStorage');
+  const apiKeys = await getAllApiKeys();
+
+  const authPath = getOpenCodeAuthPath();
+  const authDir = path.dirname(authPath);
+
+  // Ensure directory exists
+  if (!fs.existsSync(authDir)) {
+    fs.mkdirSync(authDir, { recursive: true });
+  }
+
+  // Read existing auth.json or create empty object
+  let auth: Record<string, { type: string; key: string }> = {};
+  if (fs.existsSync(authPath)) {
+    try {
+      auth = JSON.parse(fs.readFileSync(authPath, 'utf-8'));
+    } catch (e) {
+      console.warn('[OpenCode Auth] Failed to parse existing auth.json, creating new one');
+      auth = {};
+    }
+  }
+
+  let updated = false;
+
+  // Sync DeepSeek API key
+  if (apiKeys.deepseek) {
+    if (!auth['deepseek'] || auth['deepseek'].key !== apiKeys.deepseek) {
+      auth['deepseek'] = { type: 'api', key: apiKeys.deepseek };
+      updated = true;
+      console.log('[OpenCode Auth] Synced DeepSeek API key');
+    }
+  }
+
+  // Sync Z.AI Coding Plan API key (maps to 'zai-coding-plan' provider in OpenCode CLI)
+  if (apiKeys.zai) {
+    if (!auth['zai-coding-plan'] || auth['zai-coding-plan'].key !== apiKeys.zai) {
+      auth['zai-coding-plan'] = { type: 'api', key: apiKeys.zai };
+      updated = true;
+      console.log('[OpenCode Auth] Synced Z.AI Coding Plan API key');
+    }
+  }
+
+  // Write updated auth.json
+  if (updated) {
+    fs.writeFileSync(authPath, JSON.stringify(auth, null, 2));
+    console.log('[OpenCode Auth] Updated auth.json at:', authPath);
+  }
 }

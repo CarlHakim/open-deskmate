@@ -42,7 +42,7 @@ const accomplishAPI = {
   // Settings
   getApiKeys: (): Promise<unknown[]> => ipcRenderer.invoke('settings:api-keys'),
   addApiKey: (
-    provider: 'anthropic' | 'openai' | 'google' | 'xai' | 'custom',
+    provider: 'anthropic' | 'openai' | 'google' | 'xai' | 'deepseek' | 'zai' | 'custom' | 'bedrock',
     key: string,
     label?: string
   ): Promise<unknown> =>
@@ -110,6 +110,14 @@ const accomplishAPI = {
   setOllamaConfig: (config: { baseUrl: string; enabled: boolean; lastValidated?: number; models?: Array<{ id: string; displayName: string; size: number }> } | null): Promise<void> =>
     ipcRenderer.invoke('ollama:set-config', config),
 
+  // Bedrock
+  validateBedrockCredentials: (credentials: string) =>
+    ipcRenderer.invoke('bedrock:validate', credentials),
+  saveBedrockCredentials: (credentials: string) =>
+    ipcRenderer.invoke('bedrock:save', credentials),
+  getBedrockCredentials: () =>
+    ipcRenderer.invoke('bedrock:get-credentials'),
+
   // Event subscriptions
   onTaskUpdate: (callback: (event: unknown) => void) => {
     const listener = (_: unknown, event: unknown) => callback(event);
@@ -136,6 +144,12 @@ const accomplishAPI = {
     const listener = (_: unknown, log: unknown) => callback(log);
     ipcRenderer.on('debug:log', listener);
     return () => ipcRenderer.removeListener('debug:log', listener);
+  },
+  // Debug mode setting changes
+  onDebugModeChange: (callback: (data: { enabled: boolean }) => void) => {
+    const listener = (_: unknown, data: { enabled: boolean }) => callback(data);
+    ipcRenderer.on('settings:debug-mode-changed', listener);
+    return () => ipcRenderer.removeListener('settings:debug-mode-changed', listener);
   },
   // Task status changes (e.g., queued -> running)
   onTaskStatusChange: (callback: (data: { taskId: string; status: string }) => void) => {
