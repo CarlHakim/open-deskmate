@@ -111,6 +111,7 @@ vi.mock('@main/store/secureStorage', () => ({
     anthropic: 'test-anthropic-key',
     openai: 'test-openai-key',
   })),
+  getBedrockCredentials: vi.fn(() => null),
 }));
 
 // Mock app settings

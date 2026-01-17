@@ -159,6 +159,9 @@ export function storeApiKey(provider: string, apiKey: string): void {
 export function getApiKey(provider: string): string | null {
   const store = getSecureStore();
   const values = store.get('values');
+  if (!values) {
+    return null;
+  }
   const encrypted = values[`apiKey:${provider}`];
   if (!encrypted) {
     return null;
@@ -184,13 +187,13 @@ export function deleteApiKey(provider: string): boolean {
 /**
  * Supported API key providers
  */
-export type ApiKeyProvider = 'anthropic' | 'openai' | 'google' | 'xai' | 'deepseek' | 'zai' | 'custom';
+export type ApiKeyProvider = 'anthropic' | 'openai' | 'google' | 'xai' | 'deepseek' | 'zai' | 'custom' | 'bedrock';
 
 /**
  * Get all API keys for all providers
  */
 export async function getAllApiKeys(): Promise<Record<ApiKeyProvider, string | null>> {
-  const [anthropic, openai, google, xai, deepseek, zai, custom] = await Promise.all([
+  const [anthropic, openai, google, xai, deepseek, zai, custom, bedrock] = await Promise.all([
     getApiKey('anthropic'),
     getApiKey('openai'),
     getApiKey('google'),
@@ -198,9 +201,30 @@ export async function getAllApiKeys(): Promise<Record<ApiKeyProvider, string | n
     getApiKey('deepseek'),
     getApiKey('zai'),
     getApiKey('custom'),
+    getApiKey('bedrock'),
   ]);
 
-  return { anthropic, openai, google, xai, deepseek, zai, custom };
+  return { anthropic, openai, google, xai, deepseek, zai, custom, bedrock };
+}
+
+/**
+ * Store Bedrock credentials (JSON stringified)
+ */
+export function storeBedrockCredentials(credentials: string): void {
+  storeApiKey('bedrock', credentials);
+}
+
+/**
+ * Get Bedrock credentials (returns parsed object or null)
+ */
+export function getBedrockCredentials(): Record<string, string> | null {
+  const stored = getApiKey('bedrock');
+  if (!stored) return null;
+  try {
+    return JSON.parse(stored);
+  } catch {
+    return null;
+  }
 }
 
 /**
