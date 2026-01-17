@@ -5,11 +5,11 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-22c55e?style=flat-square" alt="MIT License" /></a>
   <a href="https://github.com/accomplish-ai/openwork/stargazers"><img src="https://img.shields.io/github/stars/accomplish-ai/openwork?style=flat-square&color=22c55e" alt="GitHub Stars" /></a>
-  <a href="https://downloads.accomplish.ai/downloads/0.1.0/macos/Openwork-0.1.0-mac-arm64.dmg"><img src="https://img.shields.io/badge/Download-macOS-0ea5e9?style=flat-square" alt="Download" /></a>
+  <a href="https://downloads.accomplish.ai/downloads/0.2.1/macos/Openwork-0.2.1-mac-arm64.dmg"><img src="https://img.shields.io/badge/Download-macOS-0ea5e9?style=flat-square" alt="Download" /></a>
 </p>
 
 <p align="center">
-  <a href="https://downloads.accomplish.ai/downloads/0.1.0/macos/Openwork-0.1.0-mac-arm64.dmg"><strong>Download for Mac (Apple Silicon)</strong></a>
+  <a href="https://downloads.accomplish.ai/downloads/0.2.1/macos/Openwork-0.2.1-mac-arm64.dmg"><strong>Download for Mac (Apple Silicon)</strong></a>
 </p>
 
 <br />
@@ -42,6 +42,7 @@
 <div align="left">
 
 - Use your own API key (OpenAI, Anthropic, etc.)
+- Or run with [Ollama](https://ollama.com) (no API key needed)
 - No subscription, no upsell
 - It's a tool—not a service
 
@@ -109,7 +110,7 @@
 | Step | Action | Details |
 |:----:|--------|---------|
 | **1** | **Install the App** |  the DMG and drag it into Applications |
-| **2** | **Connect Your AI** | Use your own OpenAI or Anthropic API key. No subscriptions. |
+| **2** | **Connect Your AI** | Use your own OpenAI or Anthropic API key, or Ollama. No subscriptions. |
 | **3** | **Give It Access** | Choose which folders it can see. You stay in control. |
 | **4** | **Start Working** | Ask it to summarize a doc, clean a folder, or create a report. You approve everything. |
 
@@ -117,7 +118,7 @@
 
 <div align="center">
 
-[**Download for Mac (Apple Silicon)**](https://downloads.accomplish.ai/downloads/0.1.0/macos/Openwork-0.1.0-mac-arm64.dmg)
+[**Download for Mac (Apple Silicon)**](https://downloads.accomplish.ai/downloads/0.2.1/macos/Openwork-0.2.1-mac-arm64.dmg)
 
 </div>
 
