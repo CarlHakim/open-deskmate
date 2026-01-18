@@ -65,7 +65,7 @@ export class ExecutionPage {
         const text = badge.textContent?.toLowerCase() || '';
         return text.includes('completed') || text.includes('failed') || text.includes('stopped') || text.includes('cancelled');
       },
-      { timeout: TEST_TIMEOUTS.PERMISSION_MODAL }
+      { timeout: TEST_TIMEOUTS.TASK_COMPLETE_WAIT }
     );
   }
 }
