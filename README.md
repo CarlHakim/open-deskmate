@@ -21,9 +21,9 @@ Openwork is an open source AI desktop agent that automates file management, docu
 <p align="center">
   <a href="https://downloads.accomplish.ai/downloads/0.2.1/macos/Openwork-0.2.1-mac-arm64.dmg"><strong>Download Openwork for Mac (Apple Silicon)</strong></a>
   ·
-  <a href="https://openwork.me/">Openwork website</a>
+  <a href="https://www.accomplish.ai/openwork/">Openwork website</a>
   ·
-  <a href="https://openwork.me/blog/">Openwork blog</a>
+  <a href="https://www.accomplish.ai/openwork/blog/">Openwork blog</a>
   ·
   <a href="https://github.com/accomplish-ai/openwork/releases">Openwork releases</a>
 </p>
@@ -296,7 +296,7 @@ git push origin feature/amazing-feature
 
 <div align="center">
 
-**[Openwork website](https://openwork.me/)** · **[Openwork blog](https://openwork.me/blog/)** · **[Openwork releases](https://github.com/accomplish-ai/openwork/releases)** · **[Issues](https://github.com/accomplish-ai/openwork/issues)** · **[Twitter](https://x.com/openwork_ai)**
+**[Openwork website](https://www.accomplish.ai/openwork/)** · **[Openwork blog](https://www.accomplish.ai/openwork/blog/)** · **[Openwork releases](https://github.com/accomplish-ai/openwork/releases)** · **[Issues](https://github.com/accomplish-ai/openwork/issues)** · **[Twitter](https://x.com/openwork_ai)**
 
 <br />
 
