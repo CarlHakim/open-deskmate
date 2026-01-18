@@ -44,9 +44,12 @@ import {
 import { getDesktopConfig } from '../config';
 import {
   startPermissionApiServer,
+  startQuestionApiServer,
   initPermissionApi,
   resolvePermission,
+  resolveQuestion,
   isFilePermissionRequest,
+  isQuestionRequest,
 } from '../permission-api';
 import type {
   TaskConfig,
@@ -76,7 +79,7 @@ import {
 } from '../test-utils/mock-task-flow';
 
 const MAX_TEXT_LENGTH = 8000;
-const ALLOWED_API_KEY_PROVIDERS = new Set(['anthropic', 'openai', 'google', 'xai', 'deepseek', 'zai', 'custom', 'bedrock']);
+const ALLOWED_API_KEY_PROVIDERS = new Set(['anthropic', 'openai', 'openrouter', 'google', 'xai', 'deepseek', 'zai', 'custom', 'bedrock']);
 const API_KEY_VALIDATION_TIMEOUT_MS = 15000;
 
 interface OllamaModel {
@@ -289,6 +292,7 @@ export function registerIPCHandlers(): void {
     if (!permissionApiInitialized) {
       initPermissionApi(window, () => taskManager.getActiveTaskId());
       startPermissionApiServer();
+      startQuestionApiServer();
       permissionApiInitialized = true;
     }
 
@@ -500,6 +504,22 @@ export function registerIPCHandlers(): void {
       }
       // If not found in pending, fall through to standard handling
       console.warn(`[IPC] File permission request ${requestId} not found in pending requests`);
+    }
+
+    // Check if this is a question request from the MCP server
+    if (requestId && isQuestionRequest(requestId)) {
+      const denied = decision === 'deny';
+      const resolved = resolveQuestion(requestId, {
+        selectedOptions: parsedResponse.selectedOptions,
+        customText: parsedResponse.customText,
+        denied,
+      });
+      if (resolved) {
+        console.log(`[IPC] Question request ${requestId} resolved: ${denied ? 'denied' : 'answered'}`);
+        return;
+      }
+      // If not found in pending, fall through to standard handling
+      console.warn(`[IPC] Question request ${requestId} not found in pending requests`);
     }
 
     // Check if the task is still active
@@ -835,6 +855,19 @@ export function registerIPCHandlers(): void {
           );
           break;
 
+        case 'openrouter':
+          response = await fetchWithTimeout(
+            'https://openrouter.ai/api/v1/models',
+            {
+              method: 'GET',
+              headers: {
+                'Authorization': `Bearer ${sanitizedKey}`,
+              },
+            },
+            API_KEY_VALIDATION_TIMEOUT_MS
+          );
+          break;
+
         case 'google':
           response = await fetchWithTimeout(
             `https://generativelanguage.googleapis.com/v1beta/models?key=${sanitizedKey}`,
@@ -1137,6 +1170,56 @@ export function registerIPCHandlers(): void {
     }
     setOllamaConfig(config);
     console.log('[Ollama] Config saved:', config);
+  });
+
+  // OpenRouter: Fetch available models
+  handle('openrouter:fetch-models', async (_event: IpcMainInvokeEvent) => {
+    const apiKey = getApiKey('openrouter');
+    if (!apiKey) {
+      return { success: false, error: 'No OpenRouter API key configured' };
+    }
+
+    try {
+      const response = await fetchWithTimeout(
+        'https://openrouter.ai/api/v1/models',
+        {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+          },
+        },
+        API_KEY_VALIDATION_TIMEOUT_MS
+      );
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        const errorMessage = (errorData as { error?: { message?: string } })?.error?.message || `API returned status ${response.status}`;
+        return { success: false, error: errorMessage };
+      }
+
+      const data = await response.json() as { data?: Array<{ id: string; name: string; context_length?: number }> };
+      const models = (data.data || []).map((m) => {
+        // Extract provider from model ID (e.g., "anthropic/claude-3.5-sonnet" -> "anthropic")
+        const provider = m.id.split('/')[0] || 'unknown';
+        return {
+          id: m.id,
+          name: m.name || m.id,
+          provider,
+          contextLength: m.context_length || 0,
+        };
+      });
+
+      console.log(`[OpenRouter] Fetched ${models.length} models`);
+      return { success: true, models };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to fetch models';
+      console.warn('[OpenRouter] Fetch failed:', message);
+
+      if (error instanceof Error && error.name === 'AbortError') {
+        return { success: false, error: 'Request timed out. Check your internet connection.' };
+      }
+      return { success: false, error: `Failed to fetch models: ${message}` };
+    }
   });
 
   // API Keys: Get all API keys (with masked values)

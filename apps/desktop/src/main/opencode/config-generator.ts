@@ -1,7 +1,7 @@
 import { app } from 'electron';
 import path from 'path';
 import fs from 'fs';
-import { PERMISSION_API_PORT } from '../permission-api';
+import { PERMISSION_API_PORT, QUESTION_API_PORT } from '../permission-api';
 import { getOllamaConfig } from '../store/appSettings';
 import { getApiKey } from '../store/secureStorage';
 import type { BedrockCredentials } from '@accomplish/shared';
@@ -19,7 +19,7 @@ export const ACCOMPLISH_AGENT_NAME = 'accomplish';
  * @see https://github.com/SawyerHood/dev-browser
  */
 /**
- * Get the skills directory path
+ * Get the skills directory path (contains MCP servers and SKILL.md files)
  * In dev: apps/desktop/skills
  * In packaged: resources/skills (unpacked from asar)
  */
@@ -31,6 +31,18 @@ export function getSkillsPath(): string {
     // In development, use app.getAppPath() which returns the desktop app directory
     // app.getAppPath() returns apps/desktop in dev mode
     return path.join(app.getAppPath(), 'skills');
+  }
+}
+
+/**
+ * Get the OpenCode config directory path (parent of skills/ for OPENCODE_CONFIG_DIR)
+ * OpenCode looks for skills at $OPENCODE_CONFIG_DIR/skills/<name>/SKILL.md
+ */
+export function getOpenCodeConfigDir(): string {
+  if (app.isPackaged) {
+    return process.resourcesPath;
+  } else {
+    return app.getAppPath();
   }
 }
 
@@ -283,37 +295,15 @@ For saving/downloading content:
 </filesystem>
 </skill>
 
-<important name="user-confirmations">
-CRITICAL: Always use AskUserQuestion to get explicit approval before sensitive actions.
-Users cannot see CLI/terminal prompts - you MUST ask through the chat interface.
-
-<rules>
-ALWAYS ask before these actions (no exceptions):
-- Financial: Clicking "Buy", "Purchase", "Pay", "Subscribe", "Donate", or any payment button
-- Messaging: Sending emails, messages, comments, reviews, or any communication
-- Forms: Submitting forms that create accounts, place orders, or share personal data
-- Deletion: Clicking "Delete", "Remove", "Cancel subscription", or any destructive action
-- Posting: Publishing content, tweets, posts, or updates to any platform
-- Settings: Changing account settings, passwords, or privacy options
-- Sharing: Sharing content, granting permissions, or connecting accounts
-</rules>
-
-<instructions>
-How to ask:
-- Use AskUserQuestion tool with clear options
-- Describe WHAT will happen: "This will send an email to john@example.com"
-- Show the CONTENT when relevant: "Message: 'Hello, I wanted to follow up...'"
-- Offer options: "Send" / "Edit first" / "Cancel"
-
-NEVER assume intent for irreversible actions. Even if the user said "send the email",
-confirm the final content before clicking send.
-
-When in doubt, ask. A brief confirmation is better than an irreversible mistake.
-</instructions>
+<important name="user-communication">
+CRITICAL: The user CANNOT see your text output or CLI prompts!
+To ask ANY question or get user input, you MUST use the AskUserQuestion MCP tool.
+See the ask-user-question skill for full documentation and examples.
 </important>
 
+
 <behavior>
-- Ask clarifying questions before starting ambiguous tasks
+- Use AskUserQuestion tool for clarifying questions before starting ambiguous tasks
 - Write small, focused scripts - each does ONE thing
 - After each script, evaluate the output before deciding next steps
 - Be concise - don't narrate every internal action
@@ -361,7 +351,21 @@ interface BedrockProviderConfig {
   };
 }
 
-type ProviderConfig = OllamaProviderConfig | BedrockProviderConfig;
+interface OpenRouterProviderModelConfig {
+  name: string;
+  tools?: boolean;
+}
+
+interface OpenRouterProviderConfig {
+  npm: string;
+  name: string;
+  options: {
+    baseURL: string;
+  };
+  models: Record<string, OpenRouterProviderModelConfig>;
+}
+
+type ProviderConfig = OllamaProviderConfig | BedrockProviderConfig | OpenRouterProviderConfig;
 
 interface OpenCodeConfig {
   $schema?: string;
@@ -392,14 +396,18 @@ export async function generateOpenCodeConfig(): Promise<string> {
   const skillsPath = getSkillsPath();
   const systemPrompt = ACCOMPLISH_SYSTEM_PROMPT_TEMPLATE.replace(/\{\{SKILLS_PATH\}\}/g, skillsPath);
 
+  // Get OpenCode config directory (parent of skills/) for OPENCODE_CONFIG_DIR
+  const openCodeConfigDir = getOpenCodeConfigDir();
+
   console.log('[OpenCode Config] Skills path:', skillsPath);
+  console.log('[OpenCode Config] OpenCode config dir:', openCodeConfigDir);
 
   // Build file-permission MCP server command
   const filePermissionServerPath = path.join(skillsPath, 'file-permission', 'src', 'index.ts');
 
   // Enable providers - add ollama if configured
   const ollamaConfig = getOllamaConfig();
-  const baseProviders = ['anthropic', 'openai', 'google', 'xai', 'deepseek', 'zai-coding-plan', 'amazon-bedrock'];
+  const baseProviders = ['anthropic', 'openai', 'openrouter', 'google', 'xai', 'deepseek', 'zai-coding-plan', 'amazon-bedrock'];
   const enabledProviders = ollamaConfig?.enabled
     ? [...baseProviders, 'ollama']
     : baseProviders;
@@ -427,6 +435,39 @@ export async function generateOpenCodeConfig(): Promise<string> {
     };
 
     console.log('[OpenCode Config] Ollama provider configured with models:', Object.keys(ollamaModels));
+  }
+
+  // Add OpenRouter provider configuration if API key is set
+  const openrouterKey = getApiKey('openrouter');
+  if (openrouterKey) {
+    // Get the selected model to configure OpenRouter
+    const { getSelectedModel } = await import('../store/appSettings');
+    const selectedModel = getSelectedModel();
+
+    const openrouterModels: Record<string, OpenRouterProviderModelConfig> = {};
+
+    // If a model is selected via OpenRouter, add it to the config
+    if (selectedModel?.provider === 'openrouter' && selectedModel.model) {
+      // Extract model ID from full ID (e.g., "openrouter/anthropic/claude-3.5-sonnet" -> "anthropic/claude-3.5-sonnet")
+      const modelId = selectedModel.model.replace('openrouter/', '');
+      openrouterModels[modelId] = {
+        name: modelId,
+        tools: true,
+      };
+    }
+
+    // Only configure OpenRouter if we have at least one model
+    if (Object.keys(openrouterModels).length > 0) {
+      providerConfig.openrouter = {
+        npm: '@ai-sdk/openai-compatible',
+        name: 'OpenRouter',
+        options: {
+          baseURL: 'https://openrouter.ai/api/v1',
+        },
+        models: openrouterModels,
+      };
+      console.log('[OpenCode Config] OpenRouter provider configured with model:', Object.keys(openrouterModels));
+    }
   }
 
   // Add Bedrock provider configuration if credentials are stored
@@ -482,6 +523,15 @@ export async function generateOpenCodeConfig(): Promise<string> {
         },
         timeout: 10000,
       },
+      'ask-user-question': {
+        type: 'local',
+        command: ['npx', 'tsx', path.join(skillsPath, 'ask-user-question', 'src', 'index.ts')],
+        enabled: true,
+        environment: {
+          QUESTION_API_PORT: String(QUESTION_API_PORT),
+        },
+        timeout: 10000,
+      },
     },
   };
 
@@ -489,12 +539,14 @@ export async function generateOpenCodeConfig(): Promise<string> {
   const configJson = JSON.stringify(config, null, 2);
   fs.writeFileSync(configPath, configJson);
 
-  // Set environment variable for OpenCode to find the config
+  // Set environment variables for OpenCode to find the config and skills
   process.env.OPENCODE_CONFIG = configPath;
+  process.env.OPENCODE_CONFIG_DIR = openCodeConfigDir;
 
   console.log('[OpenCode Config] Generated config at:', configPath);
   console.log('[OpenCode Config] Full config:', configJson);
   console.log('[OpenCode Config] OPENCODE_CONFIG env set to:', process.env.OPENCODE_CONFIG);
+  console.log('[OpenCode Config] OPENCODE_CONFIG_DIR env set to:', process.env.OPENCODE_CONFIG_DIR);
 
   return configPath;
 }
