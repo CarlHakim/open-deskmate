@@ -2,7 +2,7 @@
  * Provider and model configuration types for multi-provider support
  */
 
-export type ProviderType = 'anthropic' | 'openai' | 'google' | 'xai' | 'ollama' | 'deepseek' | 'zai' | 'custom';
+export type ProviderType = 'anthropic' | 'openai' | 'google' | 'xai' | 'ollama' | 'deepseek' | 'zai' | 'custom' | 'bedrock';
 
 export interface ProviderConfig {
   id: ProviderType;
@@ -204,6 +204,37 @@ export const DEFAULT_PROVIDERS: ProviderConfig[] = [
         fullId: 'zai/glm-4.5-flash',
         contextWindow: 128000,
         supportsVision: false,
+      },
+    ],
+  },
+  {
+    id: 'bedrock',
+    name: 'Amazon Bedrock',
+    requiresApiKey: false, // Uses AWS credentials
+    models: [
+      {
+        id: 'anthropic.claude-opus-4-5-20251101-v1:0',
+        displayName: 'Claude Opus 4.5',
+        provider: 'bedrock',
+        fullId: 'amazon-bedrock/anthropic.claude-opus-4-5-20251101-v1:0',
+        contextWindow: 200000,
+        supportsVision: true,
+      },
+      {
+        id: 'anthropic.claude-sonnet-4-5-20250929-v1:0',
+        displayName: 'Claude Sonnet 4.5',
+        provider: 'bedrock',
+        fullId: 'amazon-bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0',
+        contextWindow: 200000,
+        supportsVision: true,
+      },
+      {
+        id: 'anthropic.claude-haiku-4-5-20251001-v1:0',
+        displayName: 'Claude Haiku 4.5',
+        provider: 'bedrock',
+        fullId: 'amazon-bedrock/anthropic.claude-haiku-4-5-20251001-v1:0',
+        contextWindow: 200000,
+        supportsVision: true,
       },
     ],
   },
