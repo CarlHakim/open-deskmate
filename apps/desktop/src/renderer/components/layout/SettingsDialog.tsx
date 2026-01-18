@@ -24,6 +24,7 @@ interface SettingsDialogProps {
 const API_KEY_PROVIDERS = [
   { id: 'anthropic', name: 'Anthropic', prefix: 'sk-ant-', placeholder: 'sk-ant-...' },
   { id: 'openai', name: 'OpenAI', prefix: 'sk-', placeholder: 'sk-...' },
+  { id: 'openrouter', name: 'OpenRouter', prefix: 'sk-or-', placeholder: 'sk-or-...' },
   { id: 'google', name: 'Google AI', prefix: 'AIza', placeholder: 'AIza...' },
   { id: 'xai', name: 'xAI (Grok)', prefix: 'xai-', placeholder: 'xai-...' },
   { id: 'deepseek', name: 'DeepSeek', prefix: 'sk-', placeholder: 'sk-...' },
@@ -32,6 +33,20 @@ const API_KEY_PROVIDERS = [
 ] as const;
 
 type ProviderId = typeof API_KEY_PROVIDERS[number]['id'];
+
+// Priority order for OpenRouter providers (lower index = higher priority)
+const OPENROUTER_PROVIDER_PRIORITY = [
+  'anthropic',
+  'openai',
+  'google',
+  'meta-llama',
+  'mistralai',
+  'x-ai',
+  'deepseek',
+  'cohere',
+  'perplexity',
+  'amazon',
+];
 
 export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: SettingsDialogProps) {
   const [apiKey, setApiKey] = useState('');
@@ -47,7 +62,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
   const [selectedModel, setSelectedModel] = useState<SelectedModel | null>(null);
   const [loadingModel, setLoadingModel] = useState(true);
   const [modelStatusMessage, setModelStatusMessage] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'cloud' | 'local'>('cloud');
+  const [activeTab, setActiveTab] = useState<'cloud' | 'local' | 'proxy'>('cloud');
   const [ollamaUrl, setOllamaUrl] = useState('http://localhost:11434');
   const [ollamaModels, setOllamaModels] = useState<Array<{ id: string; displayName: string; size: number }>>([]);
   const [ollamaConnected, setOllamaConnected] = useState(false);
@@ -65,6 +80,19 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
   const [savingBedrock, setSavingBedrock] = useState(false);
   const [bedrockError, setBedrockError] = useState<string | null>(null);
   const [bedrockStatus, setBedrockStatus] = useState<string | null>(null);
+
+  // OpenRouter state
+  const [selectedProxyPlatform, setSelectedProxyPlatform] = useState<'openrouter' | 'litellm'>('openrouter');
+  const [openrouterModels, setOpenrouterModels] = useState<Array<{ id: string; name: string; provider: string; contextLength: number }>>([]);
+  const [openrouterLoading, setOpenrouterLoading] = useState(false);
+  const [openrouterError, setOpenrouterError] = useState<string | null>(null);
+  const [openrouterSearch, setOpenrouterSearch] = useState('');
+  const [selectedOpenrouterModel, setSelectedOpenrouterModel] = useState<string>('');
+  const [savingOpenrouter, setSavingOpenrouter] = useState(false);
+  // OpenRouter inline API key entry (for Proxy Platforms tab)
+  const [openrouterApiKey, setOpenrouterApiKey] = useState('');
+  const [openrouterApiKeyError, setOpenrouterApiKeyError] = useState<string | null>(null);
+  const [savingOpenrouterApiKey, setSavingOpenrouterApiKey] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -359,6 +387,119 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
     }
   };
 
+  const handleFetchOpenRouterModels = async () => {
+    const accomplish = getAccomplish();
+    setOpenrouterLoading(true);
+    setOpenrouterError(null);
+    setOpenrouterModels([]);
+
+    try {
+      const result = await accomplish.fetchOpenRouterModels();
+      if (result.success && result.models) {
+        setOpenrouterModels(result.models);
+        if (result.models.length > 0) {
+          setSelectedOpenrouterModel(result.models[0].id);
+        }
+      } else {
+        setOpenrouterError(result.error || 'Failed to fetch models');
+      }
+    } catch (err) {
+      setOpenrouterError(err instanceof Error ? err.message : 'Failed to fetch models');
+    } finally {
+      setOpenrouterLoading(false);
+    }
+  };
+
+  const handleSaveOpenRouter = async () => {
+    const accomplish = getAccomplish();
+    setSavingOpenrouter(true);
+
+    try {
+      await accomplish.setSelectedModel({
+        provider: 'openrouter',
+        model: `openrouter/${selectedOpenrouterModel}`,
+      });
+
+      setSelectedModel({
+        provider: 'openrouter',
+        model: `openrouter/${selectedOpenrouterModel}`,
+      });
+
+      const modelName = openrouterModels.find(m => m.id === selectedOpenrouterModel)?.name || selectedOpenrouterModel;
+      setModelStatusMessage(`Model updated to ${modelName}`);
+
+      // Now that model is selected, trigger the callback to close dialog and execute task
+      onApiKeySaved?.();
+    } catch (err) {
+      setOpenrouterError(err instanceof Error ? err.message : 'Failed to save');
+    } finally {
+      setSavingOpenrouter(false);
+    }
+  };
+
+  const handleSaveOpenRouterApiKey = async () => {
+    const accomplish = getAccomplish();
+    const trimmedKey = openrouterApiKey.trim();
+
+    if (!trimmedKey) {
+      setOpenrouterApiKeyError('Please enter an API key.');
+      return;
+    }
+
+    if (!trimmedKey.startsWith('sk-or-')) {
+      setOpenrouterApiKeyError('Invalid API key format. Key should start with sk-or-');
+      return;
+    }
+
+    setSavingOpenrouterApiKey(true);
+    setOpenrouterApiKeyError(null);
+
+    try {
+      // Validate the API key
+      const validation = await accomplish.validateApiKeyForProvider('openrouter', trimmedKey);
+      if (!validation.valid) {
+        setOpenrouterApiKeyError(validation.error || 'Invalid API key.');
+        setSavingOpenrouterApiKey(false);
+        return;
+      }
+
+      // Save the API key
+      const savedKey = await accomplish.addApiKey('openrouter', trimmedKey);
+      setSavedKeys((prev) => {
+        const filtered = prev.filter((k) => k.provider !== 'openrouter');
+        return [...filtered, savedKey];
+      });
+
+      // Clear input and auto-fetch models
+      setOpenrouterApiKey('');
+
+      // Auto-fetch models after saving key (user still needs to select a model)
+      await handleFetchOpenRouterModels();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to save API key.';
+      setOpenrouterApiKeyError(message);
+    } finally {
+      setSavingOpenrouterApiKey(false);
+    }
+  };
+
+  // Group OpenRouter models by provider
+  const groupedOpenrouterModels = openrouterModels
+    .filter(m =>
+      openrouterSearch === '' ||
+      m.name.toLowerCase().includes(openrouterSearch.toLowerCase()) ||
+      m.id.toLowerCase().includes(openrouterSearch.toLowerCase())
+    )
+    .reduce((acc, model) => {
+      if (!acc[model.provider]) {
+        acc[model.provider] = [];
+      }
+      acc[model.provider].push(model);
+      return acc;
+    }, {} as Record<string, typeof openrouterModels>);
+
+  const hasOpenRouterKey = savedKeys.some(k => k.provider === 'openrouter');
+
   const formatBytes = (bytes: number): string => {
     const gb = bytes / (1024 * 1024 * 1024);
     return `${gb.toFixed(1)} GB`;
@@ -396,9 +537,18 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
                 >
                   Local Models
                 </button>
+                <button
+                  onClick={() => setActiveTab('proxy')}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'proxy'
+                      ? 'bg-primary text-primary-foreground'
+                      : 'bg-muted text-muted-foreground hover:text-foreground'
+                    }`}
+                >
+                  Proxy Platforms
+                </button>
               </div>
 
-              {activeTab === 'cloud' ? (
+              {activeTab === 'cloud' && (
                 <>
                   <p className="mb-4 text-sm text-muted-foreground leading-relaxed">
                     Select a cloud AI model. Requires an API key for the provider.
@@ -442,7 +592,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
                     </p>
                   )}
                 </>
-              ) : (
+              )}
+
+              {activeTab === 'local' && (
                 <>
                   <p className="mb-4 text-sm text-muted-foreground leading-relaxed">
                     Connect to a local Ollama server to use models running on your machine.
@@ -549,6 +701,194 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
                         {selectedModel.model.replace('ollama/', '')}
                       </p>
                     </div>
+                  )}
+                </>
+              )}
+
+              {activeTab === 'proxy' && (
+                <>
+                  <p className="mb-4 text-sm text-muted-foreground leading-relaxed">
+                    Connect through proxy platforms to access multiple AI providers with a single API key.
+                  </p>
+
+                  {/* Platform Selector */}
+                  <div className="flex gap-2 mb-5">
+                    <button
+                      onClick={() => setSelectedProxyPlatform('openrouter')}
+                      className={`flex-1 rounded-xl border p-4 text-center transition-all duration-200 ${
+                        selectedProxyPlatform === 'openrouter'
+                          ? 'border-primary bg-muted'
+                          : 'border-border hover:border-ring'
+                      }`}
+                    >
+                      <div className="font-medium text-foreground">OpenRouter</div>
+                      <div className="text-xs text-muted-foreground mt-1">200+ models</div>
+                    </button>
+                    <button
+                      disabled
+                      className="flex-1 rounded-xl border p-4 text-center border-border opacity-50 cursor-not-allowed"
+                    >
+                      <div className="font-medium text-muted-foreground">LiteLLM</div>
+                      <div className="text-xs text-muted-foreground mt-1">Coming soon</div>
+                    </button>
+                  </div>
+
+                  {selectedProxyPlatform === 'openrouter' && (
+                    <>
+                      {!hasOpenRouterKey ? (
+                        <div className="space-y-4">
+                          <p className="text-sm text-muted-foreground">
+                            Enter your OpenRouter API key to access 200+ models from multiple providers.
+                          </p>
+                          <div>
+                            <label className="mb-2 block text-sm font-medium text-foreground">
+                              OpenRouter API Key
+                            </label>
+                            <input
+                              type="password"
+                              value={openrouterApiKey}
+                              onChange={(e) => {
+                                setOpenrouterApiKey(e.target.value);
+                                setOpenrouterApiKeyError(null);
+                              }}
+                              placeholder="sk-or-..."
+                              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                            />
+                          </div>
+                          {openrouterApiKeyError && (
+                            <p className="text-sm text-destructive">{openrouterApiKeyError}</p>
+                          )}
+                          <button
+                            onClick={handleSaveOpenRouterApiKey}
+                            disabled={savingOpenrouterApiKey || !openrouterApiKey.trim()}
+                            className="w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                          >
+                            {savingOpenrouterApiKey ? 'Validating...' : 'Save API Key & Fetch Models'}
+                          </button>
+                          <p className="text-xs text-muted-foreground">
+                            Get your API key at{' '}
+                            <a
+                              href="https://openrouter.ai/keys"
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-primary hover:underline"
+                            >
+                              openrouter.ai/keys
+                            </a>
+                          </p>
+                        </div>
+                      ) : (
+                        <>
+                          {/* Connected Status */}
+                          <div className="mb-4 flex items-center justify-between">
+                            <div className="flex items-center gap-2 text-sm text-success">
+                              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                              </svg>
+                              API key configured
+                            </div>
+                            <button
+                              onClick={handleFetchOpenRouterModels}
+                              disabled={openrouterLoading}
+                              className="rounded-md bg-muted px-4 py-2 text-sm font-medium hover:bg-muted/80 disabled:opacity-50"
+                            >
+                              {openrouterLoading ? 'Fetching...' : openrouterModels.length > 0 ? 'Refresh' : 'Fetch Models'}
+                            </button>
+                          </div>
+
+                          {openrouterError && (
+                            <div className="mb-4 flex items-center gap-2 text-sm text-destructive">
+                              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                              </svg>
+                              {openrouterError}
+                            </div>
+                          )}
+
+                          {openrouterModels.length > 0 && (
+                            <>
+                              {/* Search */}
+                              <div className="mb-4">
+                                <input
+                                  type="text"
+                                  value={openrouterSearch}
+                                  onChange={(e) => setOpenrouterSearch(e.target.value)}
+                                  placeholder="Search models..."
+                                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                                />
+                              </div>
+
+                              {/* Grouped Model List */}
+                              <div className="mb-4 max-h-64 overflow-y-auto rounded-md border border-input">
+                                {Object.entries(groupedOpenrouterModels)
+                                  .sort(([a], [b]) => {
+                                    const priorityA = OPENROUTER_PROVIDER_PRIORITY.indexOf(a);
+                                    const priorityB = OPENROUTER_PROVIDER_PRIORITY.indexOf(b);
+                                    // If both have priority, sort by priority
+                                    if (priorityA !== -1 && priorityB !== -1) return priorityA - priorityB;
+                                    // Priority providers come first
+                                    if (priorityA !== -1) return -1;
+                                    if (priorityB !== -1) return 1;
+                                    // Otherwise alphabetical
+                                    return a.localeCompare(b);
+                                  })
+                                  .map(([provider, models]) => (
+                                    <div key={provider}>
+                                      <div className="sticky top-0 bg-muted px-3 py-2 text-xs font-semibold text-muted-foreground uppercase">
+                                        {provider}
+                                      </div>
+                                      {models.map((model) => (
+                                        <label
+                                          key={model.id}
+                                          className={`flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-muted/50 ${
+                                            selectedOpenrouterModel === model.id ? 'bg-muted' : ''
+                                          }`}
+                                        >
+                                          <input
+                                            type="radio"
+                                            name="openrouter-model"
+                                            value={model.id}
+                                            checked={selectedOpenrouterModel === model.id}
+                                            onChange={(e) => setSelectedOpenrouterModel(e.target.value)}
+                                            className="h-4 w-4"
+                                          />
+                                          <div className="flex-1 min-w-0">
+                                            <div className="text-sm font-medium text-foreground truncate">
+                                              {model.name}
+                                            </div>
+                                            <div className="text-xs text-muted-foreground truncate">
+                                              {model.id}
+                                            </div>
+                                          </div>
+                                        </label>
+                                      ))}
+                                    </div>
+                                  ))}
+                              </div>
+
+                              {/* Save Button */}
+                              <button
+                                onClick={handleSaveOpenRouter}
+                                disabled={savingOpenrouter || !selectedOpenrouterModel}
+                                className="w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                              >
+                                {savingOpenrouter ? 'Saving...' : 'Use This Model'}
+                              </button>
+                            </>
+                          )}
+
+                          {/* Current OpenRouter selection indicator */}
+                          {selectedModel?.provider === 'openrouter' && (
+                            <div className="mt-4 rounded-lg bg-muted p-3">
+                              <p className="text-sm text-foreground">
+                                <span className="font-medium">Currently using:</span>{' '}
+                                {selectedModel.model.replace('openrouter/', '')}
+                              </p>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </>
                   )}
                 </>
               )}

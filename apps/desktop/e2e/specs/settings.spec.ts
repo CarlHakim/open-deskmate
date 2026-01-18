@@ -319,7 +319,7 @@ test.describe('Settings Dialog', () => {
     );
   });
 
-  test('should display all six cloud providers', async ({ window }) => {
+  test('should display all seven cloud providers', async ({ window }) => {
     const settingsPage = new SettingsPage(window);
 
     // Navigate to settings
@@ -327,7 +327,7 @@ test.describe('Settings Dialog', () => {
     await settingsPage.navigateToSettings();
 
     // Verify all providers are visible
-    const providers = ['Anthropic', 'OpenAI', 'Google AI', 'xAI (Grok)', 'DeepSeek', 'Z.AI Coding Plan'];
+    const providers = ['Anthropic', 'OpenAI', 'OpenRouter', 'Google AI', 'xAI (Grok)', 'DeepSeek', 'Z.AI Coding Plan'];
 
     for (const provider of providers) {
       const button = settingsPage.getProviderButton(provider);
@@ -340,9 +340,171 @@ test.describe('Settings Dialog', () => {
       'settings-dialog',
       'all-providers-visible',
       [
-        'All six cloud providers are visible',
-        'Anthropic, OpenAI, Google AI, xAI, DeepSeek, Z.AI all present',
+        'All seven cloud providers are visible',
+        'Anthropic, OpenAI, OpenRouter, Google AI, xAI, DeepSeek, Z.AI all present',
         'User can select any provider'
+      ]
+    );
+  });
+
+  test('should display OpenRouter as a provider option', async ({ window }) => {
+    const settingsPage = new SettingsPage(window);
+
+    // Navigate to settings
+    await window.waitForLoadState('domcontentloaded');
+    await settingsPage.navigateToSettings();
+
+    // Verify OpenRouter provider button is visible
+    const openrouterButton = settingsPage.getProviderButton('OpenRouter');
+    await expect(openrouterButton).toBeVisible({ timeout: TEST_TIMEOUTS.NAVIGATION });
+
+    // Capture provider selection area
+    await captureForAI(
+      window,
+      'settings-dialog',
+      'openrouter-provider-visible',
+      [
+        'OpenRouter provider is visible in settings',
+        'Provider button can be clicked',
+        'User can select OpenRouter as their provider'
+      ]
+    );
+  });
+
+  test('should allow selecting OpenRouter provider and entering API key', async ({ window }) => {
+    const settingsPage = new SettingsPage(window);
+
+    // Navigate to settings
+    await window.waitForLoadState('domcontentloaded');
+    await settingsPage.navigateToSettings();
+
+    // Click OpenRouter provider
+    await settingsPage.selectProvider('OpenRouter');
+
+    // Enter API key
+    const testKey = 'sk-or-v1-test-key-12345';
+    await settingsPage.apiKeyInput.fill(testKey);
+
+    // Verify value was entered
+    await expect(settingsPage.apiKeyInput).toHaveValue(testKey);
+
+    // Capture filled state
+    await captureForAI(
+      window,
+      'settings-dialog',
+      'openrouter-api-key-filled',
+      [
+        'OpenRouter provider is selected',
+        'API key input accepts OpenRouter key format',
+        'Value is correctly displayed'
+      ]
+    );
+  });
+
+  test('should display Proxy Platforms tab', async ({ window }) => {
+    const settingsPage = new SettingsPage(window);
+
+    // Navigate to settings
+    await window.waitForLoadState('domcontentloaded');
+    await settingsPage.navigateToSettings();
+
+    // Verify Proxy Platforms tab is visible
+    await expect(settingsPage.proxyPlatformsTab).toBeVisible({ timeout: TEST_TIMEOUTS.NAVIGATION });
+
+    // Capture tabs
+    await captureForAI(
+      window,
+      'settings-dialog',
+      'proxy-platforms-tab-visible',
+      [
+        'Proxy Platforms tab is visible',
+        'Tab can be clicked',
+        'User can navigate to proxy platforms settings'
+      ]
+    );
+  });
+
+  test('should show OpenRouter and LiteLLM options when Proxy Platforms tab is clicked', async ({ window }) => {
+    const settingsPage = new SettingsPage(window);
+
+    // Navigate to settings
+    await window.waitForLoadState('domcontentloaded');
+    await settingsPage.navigateToSettings();
+
+    // Click Proxy Platforms tab
+    await settingsPage.selectProxyPlatformsTab();
+
+    // Verify OpenRouter platform option is visible
+    await expect(settingsPage.openrouterPlatformButton).toBeVisible({ timeout: TEST_TIMEOUTS.NAVIGATION });
+
+    // Verify LiteLLM platform option is visible (but disabled)
+    await expect(settingsPage.litellmPlatformButton).toBeVisible({ timeout: TEST_TIMEOUTS.NAVIGATION });
+
+    // Verify API key input is visible when no key is configured
+    // (This may or may not be visible depending on test state)
+    const apiKeyInput = settingsPage.openrouterApiKeyInput;
+    const keyConfigured = await window.locator('text=API key configured').isVisible();
+    if (!keyConfigured) {
+      await expect(apiKeyInput).toBeVisible({ timeout: TEST_TIMEOUTS.NAVIGATION });
+    }
+
+    // Capture proxy platforms content
+    await captureForAI(
+      window,
+      'settings-dialog',
+      'proxy-platforms-content',
+      [
+        'OpenRouter platform option is visible',
+        'LiteLLM platform option is visible (coming soon)',
+        'User can select a proxy platform'
+      ]
+    );
+  });
+
+  test('should keep dialog open when saving OpenRouter API key (regression: dialog closing before model selection)', async ({ window }) => {
+    const settingsPage = new SettingsPage(window);
+
+    // Navigate to settings
+    await window.waitForLoadState('domcontentloaded');
+    await settingsPage.navigateToSettings();
+
+    // Click Proxy Platforms tab
+    await settingsPage.selectProxyPlatformsTab();
+
+    // Check if API key input is visible (no key configured yet)
+    const apiKeyInput = settingsPage.openrouterApiKeyInput;
+    const keyConfigured = await window.locator('text=API key configured').isVisible();
+
+    if (!keyConfigured) {
+      // Enter an invalid format API key (doesn't start with sk-or-)
+      await apiKeyInput.fill('invalid-key-format');
+      await settingsPage.saveOpenrouterApiKeyButton.click();
+
+      // Verify error message appears
+      await expect(window.locator('text=Invalid API key format')).toBeVisible({ timeout: TEST_TIMEOUTS.NAVIGATION });
+
+      // Verify dialog is still open (this is the key assertion - dialog should NOT close)
+      await expect(settingsPage.openrouterPlatformButton).toBeVisible({ timeout: TEST_TIMEOUTS.NAVIGATION });
+
+      // Clear and try with valid format but invalid key (will fail validation but dialog should stay open)
+      await apiKeyInput.fill('sk-or-v1-invalid-test-key');
+      await settingsPage.saveOpenrouterApiKeyButton.click();
+
+      // Should show "Validating..." then error, but dialog stays open
+      // We just verify the dialog is still visible after a brief wait
+      await window.waitForTimeout(1000);
+      await expect(settingsPage.openrouterPlatformButton).toBeVisible({ timeout: TEST_TIMEOUTS.NAVIGATION });
+    }
+
+    // Capture the state for AI verification
+    await captureForAI(
+      window,
+      'settings-dialog',
+      'proxy-platforms-api-key-flow',
+      [
+        'Dialog stays open after API key validation',
+        'Error messages are displayed for invalid keys',
+        'User can retry entering API key'
       ]
     );
   });

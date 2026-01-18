@@ -351,7 +351,21 @@ interface BedrockProviderConfig {
   };
 }
 
-type ProviderConfig = OllamaProviderConfig | BedrockProviderConfig;
+interface OpenRouterProviderModelConfig {
+  name: string;
+  tools?: boolean;
+}
+
+interface OpenRouterProviderConfig {
+  npm: string;
+  name: string;
+  options: {
+    baseURL: string;
+  };
+  models: Record<string, OpenRouterProviderModelConfig>;
+}
+
+type ProviderConfig = OllamaProviderConfig | BedrockProviderConfig | OpenRouterProviderConfig;
 
 interface OpenCodeConfig {
   $schema?: string;
@@ -393,7 +407,7 @@ export async function generateOpenCodeConfig(): Promise<string> {
 
   // Enable providers - add ollama if configured
   const ollamaConfig = getOllamaConfig();
-  const baseProviders = ['anthropic', 'openai', 'google', 'xai', 'deepseek', 'zai-coding-plan', 'amazon-bedrock'];
+  const baseProviders = ['anthropic', 'openai', 'openrouter', 'google', 'xai', 'deepseek', 'zai-coding-plan', 'amazon-bedrock'];
   const enabledProviders = ollamaConfig?.enabled
     ? [...baseProviders, 'ollama']
     : baseProviders;
@@ -421,6 +435,39 @@ export async function generateOpenCodeConfig(): Promise<string> {
     };
 
     console.log('[OpenCode Config] Ollama provider configured with models:', Object.keys(ollamaModels));
+  }
+
+  // Add OpenRouter provider configuration if API key is set
+  const openrouterKey = getApiKey('openrouter');
+  if (openrouterKey) {
+    // Get the selected model to configure OpenRouter
+    const { getSelectedModel } = await import('../store/appSettings');
+    const selectedModel = getSelectedModel();
+
+    const openrouterModels: Record<string, OpenRouterProviderModelConfig> = {};
+
+    // If a model is selected via OpenRouter, add it to the config
+    if (selectedModel?.provider === 'openrouter' && selectedModel.model) {
+      // Extract model ID from full ID (e.g., "openrouter/anthropic/claude-3.5-sonnet" -> "anthropic/claude-3.5-sonnet")
+      const modelId = selectedModel.model.replace('openrouter/', '');
+      openrouterModels[modelId] = {
+        name: modelId,
+        tools: true,
+      };
+    }
+
+    // Only configure OpenRouter if we have at least one model
+    if (Object.keys(openrouterModels).length > 0) {
+      providerConfig.openrouter = {
+        npm: '@ai-sdk/openai-compatible',
+        name: 'OpenRouter',
+        options: {
+          baseURL: 'https://openrouter.ai/api/v1',
+        },
+        models: openrouterModels,
+      };
+      console.log('[OpenCode Config] OpenRouter provider configured with model:', Object.keys(openrouterModels));
+    }
   }
 
   // Add Bedrock provider configuration if credentials are stored
