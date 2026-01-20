@@ -10,7 +10,7 @@ import type { TaskMessage } from '@accomplish/shared';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
-import { XCircle, CornerDownLeft, ArrowLeft, CheckCircle2, AlertCircle, AlertTriangle, Terminal, Wrench, FileText, Search, Code, Brain, Clock, Square, Play, Download, File, Bug, ChevronUp, ChevronDown, Trash2, Check } from 'lucide-react';
+import { XCircle, CornerDownLeft, ArrowLeft, CheckCircle2, AlertCircle, Terminal, Wrench, FileText, Search, Code, Brain, Clock, Square, Play, Download, File, Bug, ChevronUp, ChevronDown, Trash2, Check } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ReactMarkdown from 'react-markdown';
 import { StreamingText } from '../components/ui/streaming-text';
@@ -73,22 +73,6 @@ function getOperationBadgeClasses(operation?: string): string {
   }
 }
 
-// Helper to check if this is a delete operation
-function isDeleteOperation(request: { type: string; fileOperation?: string }): boolean {
-  return request.type === 'file' && request.fileOperation === 'delete';
-}
-
-// Get file paths to display (handles both single and multiple)
-function getDisplayFilePaths(request: { filePath?: string; filePaths?: string[] }): string[] {
-  if (request.filePaths && request.filePaths.length > 0) {
-    return request.filePaths;
-  }
-  if (request.filePath) {
-    return [request.filePath];
-  }
-  return [];
-}
-
 export default function ExecutionPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -104,9 +88,6 @@ export default function ExecutionPage() {
   const [debugModeEnabled, setDebugModeEnabled] = useState(false);
   const [debugExported, setDebugExported] = useState(false);
   const debugPanelRef = useRef<HTMLDivElement>(null);
-  const [selectedOptions, setSelectedOptions] = useState<string[]>([]);
-  const [customResponse, setCustomResponse] = useState('');
-  const [showCustomInput, setShowCustomInput] = useState(false);
 
   const {
     currentTask,
@@ -147,8 +128,7 @@ export default function ExecutionPage() {
     return () => {
       unsubscribeDebugMode?.();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Empty deps - accomplish is a stable singleton wrapper
+  }, [accomplish]);
 
   // Load task and subscribe to events
   useEffect(() => {
@@ -218,8 +198,7 @@ export default function ExecutionPage() {
       unsubscribeStatusChange?.();
       unsubscribeDebugLog();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, loadTaskById, addTaskUpdate, addTaskUpdateBatch, updateTaskStatus, setPermissionRequest]); // accomplish is stable singleton
+  }, [id, loadTaskById, addTaskUpdate, addTaskUpdateBatch, updateTaskStatus, setPermissionRequest, accomplish]);
 
   // Increment counter when task starts/resumes
   useEffect(() => {
@@ -288,28 +267,11 @@ export default function ExecutionPage() {
 
   const handlePermissionResponse = async (allowed: boolean) => {
     if (!permissionRequest || !currentTask) return;
-
-    // For questions, handle custom text response
-    const isQuestion = permissionRequest.type === 'question';
-    const hasCustomText = isQuestion && showCustomInput && customResponse.trim();
-
     await respondToPermission({
       requestId: permissionRequest.id,
       taskId: permissionRequest.taskId,
       decision: allowed ? 'allow' : 'deny',
-      selectedOptions: isQuestion ? (hasCustomText ? [] : selectedOptions) : undefined,
-      customText: hasCustomText ? customResponse.trim() : undefined,
     });
-
-    // Reset state for next question
-    setSelectedOptions([]);
-    setCustomResponse('');
-    setShowCustomInput(false);
-
-    // If denied on a question, also interrupt the task
-    if (!allowed && isQuestion) {
-      interruptTask();
-    }
   };
 
   if (error) {
@@ -551,8 +513,28 @@ export default function ExecutionPage() {
       {currentTask.status !== 'queued' && (
         <div className="flex-1 overflow-y-auto px-6 py-6">
           <div className="max-w-4xl mx-auto space-y-4">
-            {currentTask.messages
-              .filter((m) => !(m.type === 'tool' && m.toolName?.toLowerCase() === 'bash'))
+            {(() => {
+              // Filter out Bash tool messages EXCEPT keep the last one if it's the final message
+              // This ensures we show the answer when Gemini doesn't emit a final text message
+              const messages = currentTask.messages;
+              const lastMessage = messages[messages.length - 1];
+              const isLastMessageBashTool = lastMessage?.type === 'tool' && lastMessage?.toolName?.toLowerCase() === 'bash';
+              const taskIsComplete = ['completed', 'failed', 'cancelled', 'interrupted'].includes(currentTask.status);
+
+              const filtered = messages.filter((m, index) => {
+                // Always show non-bash-tool messages
+                if (!(m.type === 'tool' && m.toolName?.toLowerCase() === 'bash')) {
+                  return true;
+                }
+                // Show the last bash tool message if task is complete and it's the final message
+                // This ensures the answer is visible when Gemini doesn't emit a final text
+                if (taskIsComplete && isLastMessageBashTool && index === messages.length - 1) {
+                  return true;
+                }
+                return false;
+              });
+              return filtered;
+            })()
               .map((message, index, filteredMessages) => {
               const isLastMessage = index === filteredMessages.length - 1;
               const isLastAssistantMessage =
@@ -637,108 +619,41 @@ export default function ExecutionPage() {
                 <div className="flex items-start gap-4">
                   <div className={cn(
                     "flex h-10 w-10 items-center justify-center rounded-full shrink-0",
-                    isDeleteOperation(permissionRequest) ? "bg-red-500/10" :
-                    permissionRequest.type === 'file' ? "bg-amber-500/10" :
-                    permissionRequest.type === 'question' ? "bg-primary/10" : "bg-warning/10"
+                    permissionRequest.type === 'file' ? "bg-amber-500/10" : "bg-warning/10"
                   )}>
-                    {isDeleteOperation(permissionRequest) ? (
-                      <AlertTriangle className="h-5 w-5 text-red-600" />
-                    ) : permissionRequest.type === 'file' ? (
+                    {permissionRequest.type === 'file' ? (
                       <File className="h-5 w-5 text-amber-600" />
-                    ) : permissionRequest.type === 'question' ? (
-                      <Brain className="h-5 w-5 text-primary" />
                     ) : (
                       <AlertCircle className="h-5 w-5 text-warning" />
                     )}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <h3 className={cn(
-                      "text-lg font-semibold mb-2",
-                      isDeleteOperation(permissionRequest) ? "text-red-600" : "text-foreground"
-                    )}>
-                      {isDeleteOperation(permissionRequest)
-                        ? 'File Deletion Warning'
-                        : permissionRequest.type === 'file'
-                          ? 'File Permission Required'
-                          : permissionRequest.type === 'question'
-                            ? (permissionRequest.header || 'Question')
-                            : 'Permission Required'}
+                    <h3 className="text-lg font-semibold text-foreground mb-2">
+                      {permissionRequest.type === 'file' ? 'File Permission Required' : 'Permission Required'}
                     </h3>
 
                     {/* File permission specific UI */}
                     {permissionRequest.type === 'file' && (
                       <>
-                        {/* Delete operation warning banner */}
-                        {isDeleteOperation(permissionRequest) && (
-                          <div className="mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/20">
-                            <p className="text-sm text-red-600">
-                              {(() => {
-                                const paths = getDisplayFilePaths(permissionRequest);
-                                return paths.length > 1
-                                  ? `${paths.length} files will be permanently deleted:`
-                                  : 'This file will be permanently deleted:';
-                              })()}
-                            </p>
-                          </div>
-                        )}
+                        <div className="mb-3">
+                          <span className={cn(
+                            "inline-flex items-center px-2 py-0.5 rounded text-xs font-medium",
+                            getOperationBadgeClasses(permissionRequest.fileOperation)
+                          )}>
+                            {permissionRequest.fileOperation?.toUpperCase()}
+                          </span>
+                        </div>
 
-                        {/* Non-delete operation badge */}
-                        {!isDeleteOperation(permissionRequest) && (
-                          <div className="mb-3">
-                            <span className={cn(
-                              "inline-flex items-center px-2 py-0.5 rounded text-xs font-medium",
-                              getOperationBadgeClasses(permissionRequest.fileOperation)
-                            )}>
-                              {permissionRequest.fileOperation?.toUpperCase()}
-                            </span>
-                          </div>
-                        )}
-
-                        {/* File path(s) display */}
-                        <div className={cn(
-                          "mb-4 p-3 rounded-lg",
-                          isDeleteOperation(permissionRequest)
-                            ? "bg-red-500/5 border border-red-500/20"
-                            : "bg-muted"
-                        )}>
-                          {(() => {
-                            const paths = getDisplayFilePaths(permissionRequest);
-                            if (paths.length > 1) {
-                              return (
-                                <ul className="space-y-1">
-                                  {paths.map((path, idx) => (
-                                    <li key={idx} className={cn(
-                                      "text-sm font-mono break-all",
-                                      isDeleteOperation(permissionRequest) ? "text-red-600" : "text-foreground"
-                                    )}>
-                                      • {path}
-                                    </li>
-                                  ))}
-                                </ul>
-                              );
-                            }
-                            return (
-                              <p className={cn(
-                                "text-sm font-mono break-all",
-                                isDeleteOperation(permissionRequest) ? "text-red-600" : "text-foreground"
-                              )}>
-                                {paths[0]}
-                              </p>
-                            );
-                          })()}
+                        <div className="mb-4 p-3 rounded-lg bg-muted">
+                          <p className="text-sm font-mono text-foreground break-all">
+                            {permissionRequest.filePath}
+                          </p>
                           {permissionRequest.targetPath && (
                             <p className="text-sm font-mono text-muted-foreground mt-1">
                               → {permissionRequest.targetPath}
                             </p>
                           )}
                         </div>
-
-                        {/* Delete warning text */}
-                        {isDeleteOperation(permissionRequest) && (
-                          <p className="text-sm text-red-600/80 mb-4">
-                            This action cannot be undone.
-                          </p>
-                        )}
 
                         {permissionRequest.contentPreview && (
                           <details className="mb-4">
@@ -753,87 +668,11 @@ export default function ExecutionPage() {
                       </>
                     )}
 
-                    {/* Question type UI with options */}
-                    {permissionRequest.type === 'question' && (
-                      <>
-                        <p className="text-sm text-foreground mb-4">
-                          {permissionRequest.question}
-                        </p>
-
-                        {/* Options list */}
-                        {!showCustomInput && permissionRequest.options && permissionRequest.options.length > 0 && (
-                          <div className="mb-4 space-y-2">
-                            {permissionRequest.options.map((option, idx) => (
-                              <button
-                                key={idx}
-                                onClick={() => {
-                                  // If "Other" is selected, show custom input
-                                  if (option.label.toLowerCase() === 'other') {
-                                    setShowCustomInput(true);
-                                    setSelectedOptions([]);
-                                    return;
-                                  }
-                                  if (permissionRequest.multiSelect) {
-                                    setSelectedOptions((prev) =>
-                                      prev.includes(option.label)
-                                        ? prev.filter((o) => o !== option.label)
-                                        : [...prev, option.label]
-                                    );
-                                  } else {
-                                    setSelectedOptions([option.label]);
-                                  }
-                                }}
-                                className={cn(
-                                  "w-full text-left p-3 rounded-lg border transition-colors",
-                                  selectedOptions.includes(option.label)
-                                    ? "border-primary bg-primary/10"
-                                    : "border-border hover:border-primary/50"
-                                )}
-                              >
-                                <div className="font-medium text-sm">{option.label}</div>
-                                {option.description && (
-                                  <div className="text-xs text-muted-foreground mt-1">
-                                    {option.description}
-                                  </div>
-                                )}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-
-                        {/* Custom text input */}
-                        {showCustomInput && (
-                          <div className="mb-4 space-y-2">
-                            <Input
-                              autoFocus
-                              value={customResponse}
-                              onChange={(e) => setCustomResponse(e.target.value)}
-                              placeholder="Type your response..."
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter' && customResponse.trim()) {
-                                  handlePermissionResponse(true);
-                                }
-                              }}
-                            />
-                            <button
-                              onClick={() => {
-                                setShowCustomInput(false);
-                                setCustomResponse('');
-                              }}
-                              className="text-xs text-muted-foreground hover:text-foreground"
-                            >
-                              ← Back to options
-                            </button>
-                          </div>
-                        )}
-                      </>
-                    )}
-
-                    {/* Standard tool UI (non-file, non-question) */}
-                    {permissionRequest.type === 'tool' && (
+                    {/* Standard question/tool UI */}
+                    {permissionRequest.type !== 'file' && (
                       <>
                         <p className="text-sm text-muted-foreground mb-4">
-                          Allow {permissionRequest.toolName}?
+                          {permissionRequest.question || `Allow ${permissionRequest.toolName}?`}
                         </p>
                         {permissionRequest.toolName && (
                           <div className="mb-4 p-3 rounded-lg bg-muted text-xs font-mono overflow-x-auto">
@@ -853,29 +692,14 @@ export default function ExecutionPage() {
                         className="flex-1"
                         data-testid="permission-deny-button"
                       >
-                        {permissionRequest.type === 'question' ? 'Cancel' : 'Deny'}
+                        Deny
                       </Button>
                       <Button
                         onClick={() => handlePermissionResponse(true)}
-                        className={cn(
-                          "flex-1",
-                          isDeleteOperation(permissionRequest) && "bg-red-600 hover:bg-red-700 text-white"
-                        )}
+                        className="flex-1"
                         data-testid="permission-allow-button"
-                        disabled={
-                          permissionRequest.type === 'question' &&
-                          !showCustomInput &&
-                          permissionRequest.options &&
-                          selectedOptions.length === 0
-                        }
                       >
-                        {isDeleteOperation(permissionRequest)
-                          ? getDisplayFilePaths(permissionRequest).length > 1
-                            ? 'Delete All'
-                            : 'Delete'
-                          : permissionRequest.type === 'question'
-                            ? 'Submit'
-                            : 'Allow'}
+                        Allow
                       </Button>
                     </div>
                   </div>
@@ -965,8 +789,16 @@ export default function ExecutionPage() {
       {debugModeEnabled && (
         <div className="flex-shrink-0 border-t border-border">
           {/* Toggle header */}
-          <button
+          <div
+            role="button"
+            tabIndex={0}
             onClick={() => setDebugPanelOpen(!debugPanelOpen)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                setDebugPanelOpen(!debugPanelOpen);
+              }
+            }}
             className="w-full flex items-center justify-between px-6 py-2.5 bg-zinc-900 hover:bg-zinc-800 transition-colors"
           >
             <div className="flex items-center gap-2 text-sm text-zinc-400">
@@ -1017,7 +849,7 @@ export default function ExecutionPage() {
                 <ChevronUp className="h-4 w-4 text-zinc-500" />
               )}
             </div>
-          </button>
+          </div>
 
           {/* Collapsible panel content */}
           <AnimatePresence>
@@ -1093,6 +925,11 @@ const MessageBubble = memo(function MessageBubble({ message, shouldStream = fals
   const isTool = message.type === 'tool';
   const isSystem = message.type === 'system';
   const isAssistant = message.type === 'assistant';
+  const toolContent = message.content?.trim() ?? '';
+  const showToolOutput = isTool
+    && toolContent.length > 0
+    && !/^using tool:/i.test(toolContent)
+    && !/^tool\s+.+\s+(completed|error)$/i.test(toolContent);
 
   // Get tool icon from mapping
   const toolName = message.toolName || message.content?.match(/Using tool: (\w+)/)?.[1];
@@ -1149,6 +986,11 @@ const MessageBubble = memo(function MessageBubble({ message, shouldStream = fals
                 <SpinningIcon className="h-3.5 w-3.5 ml-1" />
               )}
             </div>
+            {showToolOutput && (
+              <pre className="mt-2 max-h-48 overflow-auto text-xs text-foreground/90 whitespace-pre-wrap break-words">
+                {toolContent}
+              </pre>
+            )}
           </>
         ) : (
           <>

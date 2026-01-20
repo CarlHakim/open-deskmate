@@ -1,10 +1,10 @@
-import { serve } from "@/index.js";
-import { execSync } from "child_process";
+import { execSync, spawnSync } from "child_process";
 import { mkdirSync, existsSync, unlinkSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const isWindows = process.platform === "win32";
 
 // Use a user-writable location for tmp and profiles (app bundle is read-only when installed)
 // On macOS: ~/Library/Application Support/Accomplish/dev-browser/
@@ -24,11 +24,17 @@ function getDataDir(): string {
 const dataDir = getDataDir();
 const tmpDir = join(dataDir, "tmp");
 const profileDir = join(dataDir, "profiles");
+const playwrightBrowsersDir = join(dataDir, "playwright-browsers");
+
+// Rebrowser runtime patches are unstable on Windows; disable to avoid context crashes.
+process.env.REBROWSER_PATCHES_RUNTIME_FIX_MODE = "0";
 
 // Create data directories if they don't exist
 console.log(`Creating data directory: ${dataDir}`);
 mkdirSync(tmpDir, { recursive: true });
 mkdirSync(profileDir, { recursive: true });
+mkdirSync(playwrightBrowsersDir, { recursive: true });
+process.env.PLAYWRIGHT_BROWSERS_PATH = playwrightBrowsersDir;
 
 // Accomplish uses ports 9224/9225 to avoid conflicts with Claude Code's dev-browser (9222/9223)
 const ACCOMPLISH_HTTP_PORT = 9224;
@@ -51,10 +57,12 @@ try {
 // Clean up stale CDP port if HTTP server isn't running (crash recovery)
 // This handles the case where Node crashed but Chrome is still running
 try {
-  const pid = execSync(`lsof -ti:${ACCOMPLISH_CDP_PORT}`, { encoding: "utf-8" }).trim();
-  if (pid) {
-    console.log(`Cleaning up stale Chrome process on CDP port ${ACCOMPLISH_CDP_PORT} (PID: ${pid})`);
-    execSync(`kill -9 ${pid}`);
+  if (!isWindows) {
+    const pid = execSync(`lsof -ti:${ACCOMPLISH_CDP_PORT}`, { encoding: "utf-8" }).trim();
+    if (pid) {
+      console.log(`Cleaning up stale Chrome process on CDP port ${ACCOMPLISH_CDP_PORT} (PID: ${pid})`);
+      execSync(`kill -9 ${pid}`);
+    }
   }
 } catch {
   // No process on CDP port, which is expected
@@ -83,6 +91,45 @@ for (const dir of profileDirs) {
   }
 }
 
+function resolveCommand(command: string): string | null {
+  const pathEntries = (process.env.PATH || "").split(isWindows ? ";" : ":").filter(Boolean);
+  const extraEntries = process.env.NODE_BIN_PATH ? [process.env.NODE_BIN_PATH] : [];
+  const extensions = isWindows ? [".cmd", ".exe", ""] : [""];
+
+  for (const dir of [...extraEntries, ...pathEntries]) {
+    for (const ext of extensions) {
+      const candidate = join(dir, `${command}${ext}`);
+      if (existsSync(candidate)) {
+        return candidate;
+      }
+    }
+  }
+
+  return null;
+}
+
+function resolveNodePath(): string | null {
+  if (process.env.NODE_BIN_PATH) {
+    const candidate = join(process.env.NODE_BIN_PATH, isWindows ? "node.exe" : "node");
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return resolveCommand("node");
+}
+
+function resolveNpxCli(): string | null {
+  if (process.env.NODE_BIN_PATH) {
+    const candidate = join(process.env.NODE_BIN_PATH, "node_modules", "npm", "bin", "npx-cli.js");
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
 // Helper to install Playwright Chromium
 function installPlaywrightChromium(): void {
   console.log("\n========================================");
@@ -90,35 +137,46 @@ function installPlaywrightChromium(): void {
   console.log("This may take 1-2 minutes.");
   console.log("========================================\n");
 
-  const managers = [
-    { name: "bun", command: "bunx playwright install chromium" },
-    { name: "pnpm", command: "pnpm exec playwright install chromium" },
-    { name: "npm", command: "npx playwright install chromium" },
-  ];
+  const nodePath = resolveNodePath();
+  const npxCli = resolveNpxCli();
+  if (!nodePath || !npxCli) {
+    throw new Error("Bundled Node.js/npm not found. Ensure NODE_BIN_PATH is set.");
+  }
 
-  let pm: { name: string; command: string } | null = null;
-  for (const manager of managers) {
-    try {
-      execSync(`which ${manager.name}`, { stdio: "ignore" });
-      pm = manager;
-      break;
-    } catch {
-      // Package manager not found, try next
+  console.log(`Using node from: ${nodePath}`);
+  const pathParts = (process.env.PATH || "").split(isWindows ? ";" : ":").filter(Boolean);
+  const pathPrefix = process.env.NODE_BIN_PATH ? [process.env.NODE_BIN_PATH] : [];
+  const env = {
+    ...process.env,
+    PLAYWRIGHT_BROWSERS_PATH: playwrightBrowsersDir,
+    PATH: [...pathPrefix, ...pathParts].join(isWindows ? ";" : ":"),
+  };
+  const result = spawnSync(nodePath, [npxCli, "playwright", "install", "chromium"], {
+    stdio: "inherit",
+    env,
+    shell: false,
+  });
+  if (result.status !== 0) {
+    if (result.error) {
+      console.error("Playwright install error:", result.error);
     }
+    console.error("Playwright install exit:", {
+      status: result.status,
+      signal: result.signal,
+    });
+    throw new Error(`Playwright install failed with code ${result.status ?? "unknown"}`);
   }
-
-  if (!pm) {
-    throw new Error("No package manager found (tried bun, pnpm, npm)");
-  }
-
-  console.log(`Using ${pm.name} to install Playwright Chromium...`);
-  execSync(pm.command, { stdio: "inherit" }); // inherit shows download progress
   console.log("\nBrowser installed successfully!\n");
 }
 
 // Start the server - tries system Chrome first, falls back to Playwright Chromium
 console.log("Starting dev browser server...");
 const headless = process.env.HEADLESS === "true";
+const useSystemChromeEnv = process.env.DEV_BROWSER_USE_SYSTEM_CHROME;
+const useSystemChrome =
+  !isWindows && (useSystemChromeEnv === undefined || useSystemChromeEnv === "true");
+
+const { serve } = await import("@/index.js");
 
 async function startServer(retry = false): Promise<void> {
   try {
@@ -127,7 +185,7 @@ async function startServer(retry = false): Promise<void> {
       cdpPort: ACCOMPLISH_CDP_PORT,
       headless,
       profileDir,
-      useSystemChrome: true, // Try system Chrome first for faster startup
+      useSystemChrome,
     });
 
     console.log(`Dev browser server started`);
@@ -150,7 +208,7 @@ async function startServer(retry = false): Promise<void> {
       errorMessage.includes("run the install command");
 
     if (isBrowserMissing && !retry) {
-      console.log("\nSystem Chrome not available, downloading Playwright Chromium...");
+      console.log("\nPlaywright Chromium not installed, downloading...");
       try {
         installPlaywrightChromium();
         // Retry with Playwright Chromium (useSystemChrome will fail again, but fallback will work)

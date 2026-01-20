@@ -4,6 +4,7 @@
  * Downloads Node.js v20.18.1 for:
  * - macOS x64
  * - macOS arm64
+ * - Windows x64
  *
  * Usage: node scripts/download-nodejs.cjs
  */
@@ -29,6 +30,12 @@ const PLATFORMS = [
     file: `node-v${NODE_VERSION}-darwin-arm64.tar.gz`,
     extract: 'tar',
     sha256: '9e92ce1032455a9cc419fe71e908b27ae477799371b45a0844eedb02279922a4',
+  },
+  {
+    name: 'win32-x64',
+    file: `node-v${NODE_VERSION}-win-x64.zip`,
+    extract: 'zip',
+    sha256: null,
   },
 ];
 
@@ -90,6 +97,10 @@ function downloadFile(url, destPath) {
  * Verify SHA256 checksum of a file
  */
 function verifyChecksum(filePath, expectedHash) {
+  if (!expectedHash) {
+    console.log('  Skipping checksum (no hash provided)');
+    return;
+  }
   console.log('  Verifying checksum...');
   const fileBuffer = fs.readFileSync(filePath);
   const hashSum = crypto.createHash('sha256');
@@ -100,6 +111,33 @@ function verifyChecksum(filePath, expectedHash) {
     throw new Error(`Checksum mismatch!\n  Expected: ${expectedHash}\n  Got: ${actualHash}`);
   }
   console.log('  Checksum verified');
+}
+
+async function fetchShasums() {
+  return new Promise((resolve, reject) => {
+    const url = `${BASE_URL}/SHASUMS256.txt`;
+    let data = '';
+    https.get(url, (response) => {
+      if (response.statusCode !== 200) {
+        reject(new Error(`Failed to download SHASUMS256.txt: HTTP ${response.statusCode}`));
+        return;
+      }
+      response.on('data', (chunk) => {
+        data += chunk.toString('utf8');
+      });
+      response.on('end', () => resolve(data));
+    }).on('error', reject);
+  });
+}
+
+function resolveSha256(fileName, shasumsText) {
+  const line = shasumsText
+    .split('\n')
+    .find((l) => l.trim().endsWith(`  ${fileName}`));
+  if (!line) {
+    return null;
+  }
+  return line.split(' ')[0];
 }
 
 /**
@@ -152,7 +190,22 @@ async function main() {
     fs.mkdirSync(tempDir, { recursive: true });
   }
 
-  for (const platform of PLATFORMS) {
+  const isWin = process.platform === 'win32';
+  const isMac = process.platform === 'darwin';
+  const isLinux = process.platform === 'linux';
+
+  const platforms =
+    process.env.ALL_PLATFORMS === '1'
+      ? PLATFORMS
+      : PLATFORMS.filter((platform) => {
+          if (isWin) return platform.name === 'win32-x64';
+          if (isMac) return platform.name.startsWith('darwin-');
+          if (isLinux) return platform.name.startsWith('linux-');
+          return false;
+        });
+
+  let shasumsText = '';
+  for (const platform of platforms) {
     console.log(`\nProcessing ${platform.name}...`);
 
     const archivePath = path.join(tempDir, platform.file);
@@ -173,6 +226,17 @@ async function main() {
       console.log(`  Using cached: ${archivePath}`);
     }
 
+    if (!platform.sha256) {
+      if (!shasumsText) {
+        shasumsText = await fetchShasums();
+      }
+      const resolved = resolveSha256(platform.file, shasumsText);
+      if (!resolved) {
+        throw new Error(`Checksum not found for ${platform.file}`);
+      }
+      platform.sha256 = resolved;
+    }
+
     // Verify checksum
     verifyChecksum(archivePath, platform.sha256);
 
@@ -189,7 +253,7 @@ async function main() {
 
   // List what was downloaded
   console.log('\nDirectory structure:');
-  for (const platform of PLATFORMS) {
+  for (const platform of platforms) {
     const destDir = path.join(RESOURCES_DIR, platform.name);
     if (fs.existsSync(destDir)) {
       const contents = fs.readdirSync(destDir);

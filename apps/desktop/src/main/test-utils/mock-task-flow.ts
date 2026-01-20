@@ -14,7 +14,6 @@ export type MockScenario =
   | 'success'
   | 'with-tool'
   | 'permission-required'
-  | 'question'
   | 'error'
   | 'interrupted';
 
@@ -53,7 +52,6 @@ const SCENARIO_KEYWORDS: Record<MockScenario, string[]> = {
   success: ['__e2e_success__', 'test success'],
   'with-tool': ['__e2e_tool__', 'use tool', 'search files'],
   'permission-required': ['__e2e_permission__', 'write file', 'create file'],
-  question: ['__e2e_question__'],
   error: ['__e2e_error__', 'cause error', 'trigger failure'],
   interrupted: ['__e2e_interrupt__', 'stop task', 'cancel task'],
 };
@@ -69,7 +67,6 @@ export function detectScenarioFromPrompt(prompt: string): MockScenario {
   const priorityOrder: MockScenario[] = [
     'error',
     'interrupted',
-    'question',
     'permission-required',
     'with-tool',
     'success',
@@ -165,10 +162,6 @@ async function executeScenario(
 
     case 'permission-required':
       executePermissionScenario(sendEvent, taskId);
-      break;
-
-    case 'question':
-      executeQuestionScenario(sendEvent, taskId);
       break;
 
     case 'error':
@@ -271,27 +264,6 @@ function executePermissionScenario(
     toolName: 'Write',
     fileOperation: 'create',
     filePath: '/test/output.txt',
-    timestamp: new Date().toISOString(),
-  });
-}
-
-function executeQuestionScenario(
-  sendEvent: (channel: string, data: unknown) => void,
-  taskId: string
-): void {
-  // Send question permission request - task waits for user to select an option
-  sendEvent('permission:request', {
-    id: `perm_${Date.now()}`,
-    taskId,
-    type: 'question',
-    header: 'Test Question',
-    question: 'Which option do you prefer?',
-    options: [
-      { label: 'Option A', description: 'First option for testing' },
-      { label: 'Option B', description: 'Second option for testing' },
-      { label: 'Other', description: 'Enter a custom response' },
-    ],
-    multiSelect: false,
     timestamp: new Date().toISOString(),
   });
 }

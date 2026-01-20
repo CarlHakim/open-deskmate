@@ -918,7 +918,7 @@ describe('Execution Page Integration', () => {
       expect(screen.getByText('Preview content')).toBeInTheDocument();
     });
 
-    it('should show delete operation warning UI', () => {
+    it('should show delete operation badge', () => {
       // Arrange
       mockStoreState.currentTask = createMockTask('task-123', 'Task', 'running');
       mockStoreState.permissionRequest = {
@@ -933,9 +933,8 @@ describe('Execution Page Integration', () => {
       // Act
       renderWithRouter('task-123');
 
-      // Assert - delete operations show warning UI with title and button, not a badge
-      expect(screen.getByText('File Deletion Warning')).toBeInTheDocument();
-      expect(screen.getByText('Delete')).toBeInTheDocument();
+      // Assert
+      expect(screen.getByText('DELETE')).toBeInTheDocument();
     });
 
     it('should show overwrite operation badge', () => {
@@ -996,7 +995,7 @@ describe('Execution Page Integration', () => {
       expect(screen.getByText('MOVE')).toBeInTheDocument();
     });
 
-    it('should show tool name in tool permission dialog', () => {
+    it('should show question in tool permission dialog when provided', () => {
       // Arrange
       mockStoreState.currentTask = createMockTask('task-123', 'Task', 'running');
       mockStoreState.permissionRequest = {
@@ -1004,14 +1003,15 @@ describe('Execution Page Integration', () => {
         taskId: 'task-123',
         type: 'tool',
         toolName: 'Bash',
+        question: 'Allow execution of rm command?',
         createdAt: new Date().toISOString(),
       };
 
       // Act
       renderWithRouter('task-123');
 
-      // Assert - Tool permission UI shows "Allow {toolName}?"
-      expect(screen.getByText('Allow Bash?')).toBeInTheDocument();
+      // Assert
+      expect(screen.getByText('Allow execution of rm command?')).toBeInTheDocument();
     });
   });
 

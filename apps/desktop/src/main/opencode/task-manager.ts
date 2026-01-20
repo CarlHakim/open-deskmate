@@ -6,10 +6,11 @@
  * isolated PTY process, state, and event handling.
  */
 
+import { app } from 'electron';
 import { OpenCodeAdapter, isOpenCodeCliInstalled, OpenCodeCliNotFoundError } from './adapter';
 import { getSkillsPath } from './config-generator';
-import { getNpxPath, getBundledNodePaths } from '../utils/bundled-node';
-import { spawn } from 'child_process';
+import { getNpxPath, getBundledNodePaths, getNpmPath, getNodePath } from '../utils/bundled-node';
+import { spawn, spawnSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
@@ -41,18 +42,51 @@ function isSystemChromeInstalled(): boolean {
   return fs.existsSync('/usr/bin/google-chrome') || fs.existsSync('/usr/bin/chromium-browser');
 }
 
+function getDevBrowserDataDirs(): string[] {
+  const homeDir = os.homedir();
+  const dirs = new Set<string>();
+
+  if (process.platform === 'darwin') {
+    dirs.add(path.join(homeDir, 'Library', 'Application Support', 'Accomplish', 'dev-browser'));
+  } else if (process.platform === 'win32') {
+    dirs.add(path.join(process.env.APPDATA || homeDir, 'Accomplish', 'dev-browser'));
+  } else {
+    dirs.add(path.join(homeDir, '.accomplish', 'dev-browser'));
+  }
+
+  if (app.isReady()) {
+    dirs.add(path.join(app.getPath('userData'), 'dev-browser'));
+  }
+
+  return Array.from(dirs);
+}
+
+function getPreferredDevBrowserPlaywrightDir(): string | null {
+  const dataDirs = getDevBrowserDataDirs();
+  const dataDir = dataDirs.length > 0 ? dataDirs[0] : null;
+  return dataDir ? path.join(dataDir, 'playwright-browsers') : null;
+}
+
 /**
  * Check if Playwright Chromium is installed
  */
 function isPlaywrightInstalled(): boolean {
   const homeDir = os.homedir();
-  const possiblePaths = [
-    path.join(homeDir, 'Library', 'Caches', 'ms-playwright'), // macOS
-    path.join(homeDir, '.cache', 'ms-playwright'), // Linux
-  ];
+  const possiblePaths = new Set<string>();
+
+  if (process.env.PLAYWRIGHT_BROWSERS_PATH) {
+    possiblePaths.add(process.env.PLAYWRIGHT_BROWSERS_PATH);
+  }
+
+  for (const dataDir of getDevBrowserDataDirs()) {
+    possiblePaths.add(path.join(dataDir, 'playwright-browsers'));
+  }
+
+  possiblePaths.add(path.join(homeDir, 'Library', 'Caches', 'ms-playwright')); // macOS
+  possiblePaths.add(path.join(homeDir, '.cache', 'ms-playwright')); // Linux
 
   if (process.platform === 'win32' && process.env.LOCALAPPDATA) {
-    possiblePaths.unshift(path.join(process.env.LOCALAPPDATA, 'ms-playwright'));
+    possiblePaths.add(path.join(process.env.LOCALAPPDATA, 'ms-playwright'));
   }
 
   for (const playwrightDir of possiblePaths) {
@@ -68,6 +102,22 @@ function isPlaywrightInstalled(): boolean {
     }
   }
   return false;
+}
+
+function resolveTsxCli(devBrowserDir: string): string | null {
+  const candidates = [
+    path.join(devBrowserDir, 'node_modules', 'tsx', 'dist', 'cli.cjs'),
+    path.join(devBrowserDir, 'node_modules', 'tsx', 'dist', 'cli.mjs'),
+    path.join(devBrowserDir, 'node_modules', 'tsx', 'dist', 'cli.js'),
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -94,6 +144,10 @@ async function installPlaywrightChromium(
     if (bundledPaths) {
       const delimiter = process.platform === 'win32' ? ';' : ':';
       spawnEnv.PATH = `${bundledPaths.binDir}${delimiter}${process.env.PATH || ''}`;
+    }
+    const preferredPlaywrightDir = getPreferredDevBrowserPlaywrightDir();
+    if (preferredPlaywrightDir) {
+      spawnEnv.PLAYWRIGHT_BROWSERS_PATH = preferredPlaywrightDir;
     }
 
     const child = spawn(npxPath, ['playwright', 'install', 'chromium'], {
@@ -149,11 +203,14 @@ async function installPlaywrightChromium(
 async function ensureDevBrowserServer(
   onProgress?: (progress: { stage: string; message?: string }) => void
 ): Promise<void> {
+  const preferSystemChrome = process.platform !== 'win32';
   // Check if we have a browser available
-  const hasChrome = isSystemChromeInstalled();
+  const hasChrome = preferSystemChrome && isSystemChromeInstalled();
   const hasPlaywright = isPlaywrightInstalled();
 
-  console.log(`[TaskManager] Browser check: Chrome=${hasChrome}, Playwright=${hasPlaywright}`);
+  console.log(
+    `[TaskManager] Browser check: Chrome=${hasChrome}, Playwright=${hasPlaywright}, preferSystemChrome=${preferSystemChrome}`
+  );
 
   // If no browser available, install Playwright first
   if (!hasChrome && !hasPlaywright) {
@@ -173,10 +230,27 @@ async function ensureDevBrowserServer(
     }
   }
 
+  // First check if server is already running (fast path)
+  try {
+    const res = await fetch('http://127.0.0.1:9224', { signal: AbortSignal.timeout(2000) });
+    if (res.ok) {
+      console.log('[TaskManager] dev-browser server already running');
+      return;
+    }
+  } catch {
+    // Server not running, continue to start it
+    console.log('[TaskManager] dev-browser server not running, starting...');
+  }
+
   // Now start the server
   try {
     const skillsPath = getSkillsPath();
-    const serverScript = path.join(skillsPath, 'dev-browser', 'server.sh');
+    const devBrowserDir = path.join(skillsPath, 'dev-browser');
+    const serverScriptPath = path.join(devBrowserDir, 'scripts', 'start-server.ts');
+    if (!fs.existsSync(serverScriptPath)) {
+      console.error('[TaskManager] dev-browser start-server.ts not found:', serverScriptPath);
+      throw new Error(`dev-browser start-server.ts not found: ${serverScriptPath}`);
+    }
 
     // Build environment with bundled Node.js in PATH
     const bundledPaths = getBundledNodePaths();
@@ -185,21 +259,131 @@ async function ensureDevBrowserServer(
       const delimiter = process.platform === 'win32' ? ';' : ':';
       spawnEnv.PATH = `${bundledPaths.binDir}${delimiter}${process.env.PATH || ''}`;
       spawnEnv.NODE_BIN_PATH = bundledPaths.binDir;
+    } else {
+      console.warn('[TaskManager] Bundled Node.js not found. Falling back to system Node.');
+    }
+    spawnEnv.DEV_BROWSER_USE_SYSTEM_CHROME = preferSystemChrome ? 'true' : 'false';
+
+    if (process.platform === 'win32') {
+      const nodeModulesDir = path.join(devBrowserDir, 'node_modules');
+      if (!fs.existsSync(nodeModulesDir)) {
+        console.log('[TaskManager] dev-browser dependencies not found. Installing...');
+        const npmPath = getNpmPath();
+        const installResult = spawnSync(npmPath, ['install'], {
+          cwd: devBrowserDir,
+          env: spawnEnv,
+          shell: true,
+          stdio: 'inherit',
+        });
+        if (installResult.status !== 0) {
+          console.warn('[TaskManager] dev-browser npm install failed; server may not start.');
+        }
+      }
+
+      const tsxCli = resolveTsxCli(devBrowserDir);
+      if (!tsxCli) {
+        console.error('[TaskManager] tsx CLI not found in dev-browser node_modules.');
+        throw new Error('tsx CLI not found in dev-browser node_modules. Run: npm install in the dev-browser skill folder');
+      }
+
+      const nodePath = bundledPaths?.nodePath || getNodePath();
+      const logPath = path.join(app.getPath('userData'), 'dev-browser.log');
+      const logFd = fs.openSync(logPath, 'a');
+      console.log('[TaskManager] dev-browser log file:', logPath);
+
+      const child = spawn(nodePath, [tsxCli, serverScriptPath], {
+        detached: true,
+        stdio: ['ignore', logFd, logFd],
+        cwd: devBrowserDir,
+        env: spawnEnv,
+      });
+      fs.closeSync(logFd);
+
+      // Track if child exits early (before server is ready)
+      let earlyExit = false;
+      let exitCode: number | null = null;
+      child.on('error', (error) => {
+        console.error('[TaskManager] Failed to spawn dev-browser server:', error);
+        earlyExit = true;
+      });
+      child.on('exit', (code) => {
+        exitCode = code;
+        if (code !== 0 && code !== null) {
+          console.error(`[TaskManager] dev-browser server exited early with code ${code}`);
+          earlyExit = true;
+        }
+      });
+      child.unref();
+
+      // Give the process a moment to fail fast if there's a startup error
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      if (earlyExit) {
+        throw new Error(`dev-browser server failed to start (exit code: ${exitCode}). Check ${logPath} for details.`);
+      }
+    } else {
+      const serverScript = path.join(devBrowserDir, 'server.sh');
+      const logPath = path.join(app.getPath('userData'), 'dev-browser.log');
+      const logFd = fs.openSync(logPath, 'a');
+      console.log('[TaskManager] dev-browser log file:', logPath);
+
+      const child = spawn('bash', [serverScript], {
+        detached: true,
+        stdio: ['ignore', logFd, logFd],
+        cwd: devBrowserDir,
+        env: spawnEnv,
+      });
+      fs.closeSync(logFd);
+      child.on('error', (error) => {
+        console.error('[TaskManager] Failed to spawn dev-browser server:', error);
+      });
+      child.unref();
     }
 
-    // Spawn server in background (detached, unref to not block)
-    const child = spawn('bash', [serverScript], {
-      detached: true,
-      stdio: 'ignore',
-      cwd: path.join(skillsPath, 'dev-browser'),
-      env: spawnEnv,
-    });
-    child.unref();
-
     console.log('[TaskManager] Dev-browser server spawn initiated');
+
+    if (process.platform === 'win32') {
+      const ready = await waitForDevBrowserServer(onProgress);
+      if (!ready) {
+        throw new Error('dev-browser server failed to start');
+      }
+    }
   } catch (error) {
     console.error('[TaskManager] Failed to start dev-browser server:', error);
+    throw error;
   }
+}
+
+async function waitForDevBrowserServer(
+  onProgress?: (progress: { stage: string; message?: string }) => void
+): Promise<boolean> {
+  const url = 'http://127.0.0.1:9224';
+  const maxAttempts = 30;
+  const delayMs = 1000;
+
+  console.log('[TaskManager] Waiting for dev-browser server...');
+  onProgress?.({ stage: 'setup', message: 'Starting browser automation server...' });
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(1000) });
+      if (res.ok) {
+        console.log('[TaskManager] dev-browser server is ready.');
+        onProgress?.({ stage: 'setup', message: 'Browser automation server is ready.' });
+        return true;
+      }
+    } catch {
+      // Ignore and retry.
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+
+  console.warn('[TaskManager] dev-browser server did not become ready in time.');
+  onProgress?.({
+    stage: 'setup',
+    message: 'Browser automation server is still starting. First run may take longer.',
+  });
+  return false;
 }
 
 /**
@@ -346,18 +530,24 @@ export class TaskManager {
       callbacks.onPermissionRequest(request);
     };
 
+    const completionCleanupDelayMs = 150;
+    const scheduleCleanup = () => {
+      setTimeout(() => {
+        this.cleanupTask(taskId);
+        this.processQueue();
+      }, completionCleanupDelayMs);
+    };
+
     const onComplete = (result: TaskResult) => {
       callbacks.onComplete(result);
       // Auto-cleanup on completion and process queue
-      this.cleanupTask(taskId);
-      this.processQueue();
+      scheduleCleanup();
     };
 
     const onError = (error: Error) => {
       callbacks.onError(error);
       // Auto-cleanup on error and process queue
-      this.cleanupTask(taskId);
-      this.processQueue();
+      scheduleCleanup();
     };
 
     const onDebug = (log: { type: string; message: string; data?: unknown }) => {
@@ -416,8 +606,7 @@ export class TaskManager {
       } catch (error) {
         // Cleanup on failure and process queue
         callbacks.onError(error instanceof Error ? error : new Error(String(error)));
-        this.cleanupTask(taskId);
-        this.processQueue();
+        scheduleCleanup();
       }
     })();
 

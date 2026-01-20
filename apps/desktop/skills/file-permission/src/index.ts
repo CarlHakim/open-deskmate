@@ -20,8 +20,7 @@ const PERMISSION_API_URL = `http://localhost:${PERMISSION_API_PORT}/permission`;
 
 interface FilePermissionInput {
   operation: 'create' | 'delete' | 'rename' | 'move' | 'modify' | 'overwrite';
-  filePath?: string;
-  filePaths?: string[];
+  filePath: string;
   targetPath?: string;
   contentPreview?: string;
 }
@@ -50,11 +49,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'string',
             description: 'Absolute path to the file being operated on',
           },
-          filePaths: {
-            type: 'array',
-            items: { type: 'string' },
-            description: 'Array of absolute paths for batch operations (e.g., deleting multiple files)',
-          },
           targetPath: {
             type: 'string',
             description: 'Target path for rename/move operations',
@@ -64,7 +58,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             description: 'Preview of file content for create/modify operations (first ~500 chars)',
           },
         },
-        required: ['operation'],
+        required: ['operation', 'filePath'],
       },
     },
   ],
@@ -80,12 +74,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
   }
 
   const args = request.params.arguments as FilePermissionInput;
-  const { operation, filePath, filePaths, targetPath, contentPreview } = args;
+  const { operation, filePath, targetPath, contentPreview } = args;
 
   // Validate required fields
-  if (!operation || (!filePath && (!filePaths || filePaths.length === 0))) {
+  if (!operation || !filePath) {
     return {
-      content: [{ type: 'text', text: 'Error: operation and either filePath or filePaths are required' }],
+      content: [{ type: 'text', text: 'Error: operation and filePath are required' }],
       isError: true,
     };
   }
@@ -98,7 +92,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
       body: JSON.stringify({
         operation,
         filePath,
-        filePaths,
         targetPath,
         contentPreview: contentPreview?.substring(0, 500), // Truncate preview
       }),

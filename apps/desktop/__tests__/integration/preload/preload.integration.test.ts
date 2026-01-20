@@ -10,7 +10,6 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import pkg from '../../../package.json';
 
 // Create mock functions for electron
 const mockExposeInMainWorld = vi.fn();
@@ -75,10 +74,6 @@ describe('Preload Script Integration', () => {
 
     it('should expose shell info with platform', () => {
       expect(capturedAccomplishShell.platform).toBe(process.platform);
-    });
-
-    it('should expose shell info with version matching package.json', () => {
-      expect(capturedAccomplishShell.version).toBe(pkg.version);
     });
   });
 

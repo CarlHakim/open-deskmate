@@ -1,7 +1,7 @@
 import express, { type Express, type Request, type Response } from "express";
 // Using rebrowser-playwright (via npm alias) for better anti-detection
 // Rebrowser patches fix CDP-level detection leaks (Runtime.Enable) that stealth plugins can't fix
-import { chromium, type BrowserContext, type Page } from "playwright";
+import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import { mkdirSync } from "fs";
 import { join } from "path";
 import type { Socket } from "net";
@@ -75,59 +75,153 @@ export async function serve(options: ServeOptions = {}): Promise<DevBrowserServe
   // Base profile directory
   const baseProfileDir = profileDir ?? join(process.cwd(), ".browser-data");
 
-  let context: BrowserContext;
-  let usedSystemChrome = false;
+  let context: BrowserContext | null = null;
+  let browser: Browser | null = null;
+  let wsEndpoint = "";
+  let contextClosed = false;
+  let restartPromise: Promise<void> | null = null;
+  const useChromiumSandbox = process.platform === "linux";
+  const usePersistentContext = process.platform !== "win32";
+  const shouldHarden = process.platform !== "win32";
+  const launchArgs = [
+    `--remote-debugging-port=${cdpPort}`,
+    ...(shouldHarden ? ["--disable-blink-features=AutomationControlled"] : []),
+  ];
+  const launchOptionsBase = {
+    headless,
+    args: launchArgs,
+    ...(shouldHarden ? { ignoreDefaultArgs: ["--enable-automation"] } : {}),
+    ...(useChromiumSandbox ? { chromiumSandbox: true } : {}),
+  };
 
-  // Try system Chrome first if enabled (much faster - no download needed)
-  if (useSystemChrome) {
-    try {
-      console.log("Trying to use system Chrome...");
-      // Use separate profile directory for system Chrome to avoid compatibility issues
-      const chromeUserDataDir = join(baseProfileDir, "chrome-profile");
-      mkdirSync(chromeUserDataDir, { recursive: true });
+  const markContextClosed = (reason: string) => {
+    contextClosed = true;
+    console.warn(`Browser context closed (${reason}).`);
+  };
 
-      context = await chromium.launchPersistentContext(chromeUserDataDir, {
-        headless,
-        channel: 'chrome', // Use system Chrome instead of Playwright's Chromium
-        ignoreDefaultArgs: ['--enable-automation'], // Remove automation flag
-        args: [
-          `--remote-debugging-port=${cdpPort}`,
-          '--disable-blink-features=AutomationControlled', // Hide navigator.webdriver
-        ],
-      });
-      usedSystemChrome = true;
-      console.log("Using system Chrome (fast startup!)");
-    } catch (chromeError) {
-      console.log("System Chrome not available, falling back to Playwright Chromium...");
-      // Fall through to Playwright Chromium below
+  const attachContextHandlers = () => {
+    if (!context) return;
+    contextClosed = false;
+    context.on("close", () => markContextClosed("context close event"));
+    if (browser) {
+      browser.on("disconnected", () => markContextClosed("browser disconnected"));
     }
-  }
+  };
 
-  // Fall back to Playwright's bundled Chromium
-  if (!usedSystemChrome) {
-    // Use separate profile directory for Playwright Chromium to avoid compatibility issues
-    const playwrightUserDataDir = join(baseProfileDir, "playwright-profile");
-    mkdirSync(playwrightUserDataDir, { recursive: true });
+  const closeContext = async () => {
+    if (context) {
+      try {
+        await context.close();
+      } catch {
+        // Context might already be closed
+      }
+    }
+    context = null;
 
-    console.log("Launching browser with Playwright Chromium...");
-    context = await chromium.launchPersistentContext(playwrightUserDataDir, {
-      headless,
-      ignoreDefaultArgs: ['--enable-automation'], // Remove automation flag
-      args: [
-        `--remote-debugging-port=${cdpPort}`,
-        '--disable-blink-features=AutomationControlled', // Hide navigator.webdriver
-      ],
-    });
-    console.log("Browser launched with Playwright Chromium");
-  }
+    if (browser) {
+      try {
+        await browser.close();
+      } catch {
+        // Browser might already be closed
+      }
+    }
+    browser = null;
+  };
 
-  console.log("Browser launched with persistent profile...");
+  const updateWsEndpoint = async () => {
+    const cdpResponse = await fetchWithRetry(`http://127.0.0.1:${cdpPort}/json/version`);
+    const cdpInfo = (await cdpResponse.json()) as { webSocketDebuggerUrl: string };
+    wsEndpoint = cdpInfo.webSocketDebuggerUrl;
+  };
 
-  // Get the CDP WebSocket endpoint from Chrome's JSON API (with retry for slow startup)
-  const cdpResponse = await fetchWithRetry(`http://127.0.0.1:${cdpPort}/json/version`);
-  const cdpInfo = (await cdpResponse.json()) as { webSocketDebuggerUrl: string };
-  const wsEndpoint = cdpInfo.webSocketDebuggerUrl;
-  console.log(`CDP WebSocket endpoint: ${wsEndpoint}`);
+  const launchContext = async () => {
+    let usedSystemChrome = false;
+    browser = null;
+
+    // Try system Chrome first if enabled (much faster - no download needed)
+    if (useSystemChrome) {
+      try {
+        console.log("Trying to use system Chrome...");
+        // Use separate profile directory for system Chrome to avoid compatibility issues
+        const chromeUserDataDir = join(baseProfileDir, "chrome-profile");
+        mkdirSync(chromeUserDataDir, { recursive: true });
+
+        if (usePersistentContext) {
+          context = await chromium.launchPersistentContext(chromeUserDataDir, {
+            ...launchOptionsBase,
+            channel: "chrome", // Use system Chrome instead of Playwright's Chromium
+          });
+        } else {
+          console.log("Windows detected: using non-persistent Chrome context.");
+          browser = await chromium.launch({
+            ...launchOptionsBase,
+            channel: "chrome",
+          });
+          context = await browser.newContext();
+        }
+        usedSystemChrome = true;
+        console.log("Using system Chrome (fast startup!)");
+      } catch (chromeError) {
+        console.log("System Chrome not available, falling back to Playwright Chromium...");
+        // Fall through to Playwright Chromium below
+      }
+    }
+
+    // Fall back to Playwright's bundled Chromium
+    if (!usedSystemChrome) {
+      // Use separate profile directory for Playwright Chromium to avoid compatibility issues
+      const playwrightUserDataDir = join(baseProfileDir, "playwright-profile");
+      mkdirSync(playwrightUserDataDir, { recursive: true });
+
+      console.log("Launching browser with Playwright Chromium...");
+      if (usePersistentContext) {
+        context = await chromium.launchPersistentContext(playwrightUserDataDir, {
+          ...launchOptionsBase,
+        });
+      } else {
+        console.log("Windows detected: using non-persistent Playwright Chromium context.");
+        browser = await chromium.launch({
+          ...launchOptionsBase,
+        });
+        context = await browser.newContext();
+      }
+      console.log("Browser launched with Playwright Chromium");
+    }
+
+    if (!context) {
+      throw new Error("Browser context failed to initialize");
+    }
+
+    // Close initial blank pages on non-Windows. On Windows, keep one page open
+    // to avoid the persistent context closing unexpectedly.
+    try {
+      const pages = context.pages();
+      if (process.platform === "win32") {
+        for (const page of pages.slice(1)) {
+          await page.close();
+        }
+        if (pages.length > 0) {
+          console.log("Keeping initial page open on Windows.");
+        }
+      } else {
+        for (const page of pages) {
+          await page.close();
+        }
+      }
+    } catch (err) {
+      console.warn("Failed to close initial pages:", err);
+    }
+
+    attachContextHandlers();
+
+    const contextLabel = usePersistentContext ? "persistent" : "non-persistent";
+    console.log(`Browser context ready (${contextLabel}).`);
+
+    await updateWsEndpoint();
+    console.log(`CDP WebSocket endpoint: ${wsEndpoint}`);
+  };
+
+  await launchContext();
 
   // Registry entry type for page tracking
   interface PageEntry {
@@ -139,14 +233,65 @@ export async function serve(options: ServeOptions = {}): Promise<DevBrowserServe
   const registry = new Map<string, PageEntry>();
 
   // Helper to get CDP targetId for a page
-  async function getTargetId(page: Page): Promise<string> {
-    const cdpSession = await context.newCDPSession(page);
+  async function getTargetId(page: Page, activeContext: BrowserContext): Promise<string> {
+    const cdpSession = await activeContext.newCDPSession(page);
     try {
       const { targetInfo } = await cdpSession.send("Target.getTargetInfo");
       return targetInfo.targetId;
     } finally {
       await cdpSession.detach();
     }
+  }
+
+  async function restartContext(reason: string): Promise<void> {
+    if (restartPromise) {
+      await restartPromise;
+      return;
+    }
+
+    restartPromise = (async () => {
+      console.warn(`Restarting browser context (${reason}).`);
+      await closeContext();
+      await launchContext();
+      registry.clear();
+    })();
+
+    try {
+      await restartPromise;
+    } finally {
+      restartPromise = null;
+    }
+  }
+
+  async function ensureContextReady(): Promise<void> {
+    if (!context || contextClosed || (browser && !browser.isConnected())) {
+      await restartContext("context not ready");
+    }
+  }
+
+  async function createPageEntry(
+    name: string,
+    viewport?: GetPageRequest["viewport"]
+  ): Promise<PageEntry> {
+    if (!context) {
+      throw new Error("Browser context not ready");
+    }
+
+    const page = await withTimeout(context.newPage(), 30000, "Page creation timed out after 30s");
+    if (viewport) {
+      await page.setViewportSize(viewport);
+    }
+
+    const targetId = await getTargetId(page, context);
+    const entry = { page, targetId };
+    registry.set(name, entry);
+
+    // Clean up registry when page is closed (e.g., user clicks X)
+    page.on("close", () => {
+      registry.delete(name);
+    });
+
+    return entry;
   }
 
   // Express server for page management
@@ -169,47 +314,50 @@ export async function serve(options: ServeOptions = {}): Promise<DevBrowserServe
 
   // POST /pages - get or create page
   app.post("/pages", async (req: Request, res: Response) => {
-    const body = req.body as GetPageRequest;
-    const { name, viewport } = body;
+    try {
+      const body = req.body as GetPageRequest;
+      const { name, viewport } = body;
 
-    if (!name || typeof name !== "string") {
-      res.status(400).json({ error: "name is required and must be a string" });
-      return;
-    }
-
-    if (name.length === 0) {
-      res.status(400).json({ error: "name cannot be empty" });
-      return;
-    }
-
-    if (name.length > 256) {
-      res.status(400).json({ error: "name must be 256 characters or less" });
-      return;
-    }
-
-    // Check if page already exists
-    let entry = registry.get(name);
-    if (!entry) {
-      // Create new page in the persistent context (with timeout to prevent hangs)
-      const page = await withTimeout(context.newPage(), 30000, "Page creation timed out after 30s");
-
-      // Apply viewport if provided
-      if (viewport) {
-        await page.setViewportSize(viewport);
+      if (!name || typeof name !== "string") {
+        res.status(400).json({ error: "name is required and must be a string" });
+        return;
       }
 
-      const targetId = await getTargetId(page);
-      entry = { page, targetId };
-      registry.set(name, entry);
+      if (name.length === 0) {
+        res.status(400).json({ error: "name cannot be empty" });
+        return;
+      }
 
-      // Clean up registry when page is closed (e.g., user clicks X)
-      page.on("close", () => {
-        registry.delete(name);
-      });
+      if (name.length > 256) {
+        res.status(400).json({ error: "name must be 256 characters or less" });
+        return;
+      }
+
+      await ensureContextReady();
+
+      // Check if page already exists
+      let entry = registry.get(name);
+      if (!entry) {
+        try {
+          entry = await createPageEntry(name, viewport);
+        } catch (error) {
+          console.warn("Page creation failed, restarting browser context.", error);
+          await restartContext("page creation failed");
+          entry = await createPageEntry(name, viewport);
+        }
+      }
+
+      if (!entry) {
+        throw new Error("Page creation failed");
+      }
+
+      const response: GetPageResponse = { wsEndpoint, name, targetId: entry.targetId };
+      res.json(response);
+    } catch (error) {
+      if (res.headersSent) return;
+      console.error("Failed to get page:", error);
+      res.status(500).json({ error: "failed to create page" });
     }
-
-    const response: GetPageResponse = { wsEndpoint, name, targetId: entry.targetId };
-    res.json(response);
   });
 
   // DELETE /pages/:name - close a page
@@ -265,12 +413,8 @@ export async function serve(options: ServeOptions = {}): Promise<DevBrowserServe
     }
     registry.clear();
 
-    // Close context (this also closes the browser)
-    try {
-      await context.close();
-    } catch {
-      // Context might already be closed
-    }
+    // Close context and browser
+    await closeContext();
 
     server.close();
     console.log("Server stopped.");
@@ -279,7 +423,13 @@ export async function serve(options: ServeOptions = {}): Promise<DevBrowserServe
   // Synchronous cleanup for forced exits
   const syncCleanup = () => {
     try {
-      context.close();
+      context?.close();
+    } catch {
+      // Best effort
+    }
+
+    try {
+      browser?.close();
     } catch {
       // Best effort
     }

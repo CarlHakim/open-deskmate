@@ -3,8 +3,11 @@ import { app } from 'electron';
 import * as crypto from 'crypto';
 import * as os from 'os';
 
+const KEYCHAIN_SERVICE = 'ai.accomplish.desktop';
+
 /**
- * Secure storage using electron-store with custom AES-256-GCM encryption.
+ * Secure storage using OS keychain when available (keytar),
+ * falling back to electron-store with custom AES-256-GCM encryption.
  *
  * This implementation derives an encryption key from machine-specific values
  * (hostname, platform, user home directory, app path) to avoid macOS Keychain
@@ -30,6 +33,22 @@ interface SecureStorageSchema {
 // Lazy initialization to ensure app is ready
 let _secureStore: Store<SecureStorageSchema> | null = null;
 let _derivedKey: Buffer | null = null;
+let _keytarModule: typeof import('keytar') | null | undefined = undefined;
+
+async function getKeytar(): Promise<typeof import('keytar') | null> {
+  if (_keytarModule !== undefined) {
+    return _keytarModule;
+  }
+  try {
+    const module = await import('keytar');
+    const resolved = (module as unknown as { default?: typeof import('keytar') }).default || module;
+    _keytarModule = resolved;
+    return resolved;
+  } catch {
+    _keytarModule = null;
+    return null;
+  }
+}
 
 function getSecureStore(): Store<SecureStorageSchema> {
   if (!_secureStore) {
@@ -145,88 +164,101 @@ function decryptValue(encryptedData: string): string | null {
 /**
  * Store an API key securely
  */
-export function storeApiKey(provider: string, apiKey: string): void {
+export async function storeApiKey(provider: string, apiKey: string): Promise<void> {
+  const keytar = await getKeytar();
+  const account = `apiKey:${provider}`;
+  if (keytar) {
+    await keytar.setPassword(KEYCHAIN_SERVICE, account, apiKey);
+    // Remove any legacy stored value to avoid duplication
+    const store = getSecureStore();
+    const values = store.get('values');
+    if (values[account]) {
+      delete values[account];
+      store.set('values', values);
+    }
+    return;
+  }
+
   const store = getSecureStore();
   const encrypted = encryptValue(apiKey);
   const values = store.get('values');
-  values[`apiKey:${provider}`] = encrypted;
+  values[account] = encrypted;
   store.set('values', values);
 }
 
 /**
  * Retrieve an API key
  */
-export function getApiKey(provider: string): string | null {
+export async function getApiKey(provider: string): Promise<string | null> {
+  const keytar = await getKeytar();
+  const account = `apiKey:${provider}`;
+  if (keytar) {
+    const stored = await keytar.getPassword(KEYCHAIN_SERVICE, account);
+    if (stored) {
+      return stored;
+    }
+  }
+
   const store = getSecureStore();
   const values = store.get('values');
-  if (!values) {
-    return null;
-  }
-  const encrypted = values[`apiKey:${provider}`];
+  const encrypted = values[account];
   if (!encrypted) {
     return null;
   }
-  return decryptValue(encrypted);
+  const decrypted = decryptValue(encrypted);
+  if (decrypted && keytar) {
+    try {
+      await keytar.setPassword(KEYCHAIN_SERVICE, account, decrypted);
+      delete values[account];
+      store.set('values', values);
+    } catch {
+      // Ignore migration failures and keep fallback data
+    }
+  }
+  return decrypted;
 }
 
 /**
  * Delete an API key
  */
-export function deleteApiKey(provider: string): boolean {
+export async function deleteApiKey(provider: string): Promise<boolean> {
+  const keytar = await getKeytar();
+  const account = `apiKey:${provider}`;
+  let removed = false;
+
+  if (keytar) {
+    removed = await keytar.deletePassword(KEYCHAIN_SERVICE, account);
+  }
+
   const store = getSecureStore();
   const values = store.get('values');
-  const key = `apiKey:${provider}`;
-  if (!(key in values)) {
-    return false;
+  if (account in values) {
+    delete values[account];
+    store.set('values', values);
+    removed = true;
   }
-  delete values[key];
-  store.set('values', values);
-  return true;
+
+  return removed;
 }
 
 /**
  * Supported API key providers
  */
-export type ApiKeyProvider = 'anthropic' | 'openai' | 'openrouter' | 'google' | 'xai' | 'deepseek' | 'zai' | 'custom' | 'bedrock' | 'litellm';
+export type ApiKeyProvider = 'anthropic' | 'openai' | 'google' | 'xai' | 'custom';
 
 /**
  * Get all API keys for all providers
  */
 export async function getAllApiKeys(): Promise<Record<ApiKeyProvider, string | null>> {
-  const [anthropic, openai, openrouter, google, xai, deepseek, zai, custom, bedrock, litellm] = await Promise.all([
+  const [anthropic, openai, google, xai, custom] = await Promise.all([
     getApiKey('anthropic'),
     getApiKey('openai'),
-    getApiKey('openrouter'),
     getApiKey('google'),
     getApiKey('xai'),
-    getApiKey('deepseek'),
-    getApiKey('zai'),
     getApiKey('custom'),
-    getApiKey('bedrock'),
-    getApiKey('litellm'),
   ]);
 
-  return { anthropic, openai, openrouter, google, xai, deepseek, zai, custom, bedrock, litellm };
-}
-
-/**
- * Store Bedrock credentials (JSON stringified)
- */
-export function storeBedrockCredentials(credentials: string): void {
-  storeApiKey('bedrock', credentials);
-}
-
-/**
- * Get Bedrock credentials (returns parsed object or null)
- */
-export function getBedrockCredentials(): Record<string, string> | null {
-  const stored = getApiKey('bedrock');
-  if (!stored) return null;
-  try {
-    return JSON.parse(stored);
-  } catch {
-    return null;
-  }
+  return { anthropic, openai, google, xai, custom };
 }
 
 /**
@@ -241,7 +273,18 @@ export async function hasAnyApiKey(): Promise<boolean> {
  * List all stored credentials for this service
  * Returns key names with their (decrypted) values
  */
-export function listStoredCredentials(): Array<{ account: string; password: string }> {
+export async function listStoredCredentials(): Promise<Array<{ account: string; password: string }>> {
+  const keytar = await getKeytar();
+  if (keytar) {
+    const creds = await keytar.findCredentials(KEYCHAIN_SERVICE);
+    if (creds.length > 0) {
+      return creds.map((cred) => ({
+        account: cred.account,
+        password: cred.password,
+      }));
+    }
+  }
+
   const store = getSecureStore();
   const values = store.get('values');
   const credentials: Array<{ account: string; password: string }> = [];
@@ -262,7 +305,15 @@ export function listStoredCredentials(): Array<{ account: string; password: stri
 /**
  * Clear all secure storage (used during fresh install cleanup)
  */
-export function clearSecureStorage(): void {
+export async function clearSecureStorage(): Promise<void> {
+  const keytar = await getKeytar();
+  if (keytar) {
+    const creds = await keytar.findCredentials(KEYCHAIN_SERVICE);
+    await Promise.all(
+      creds.map((cred) => keytar.deletePassword(KEYCHAIN_SERVICE, cred.account))
+    );
+  }
+
   const store = getSecureStore();
   store.clear();
   _derivedKey = null; // Clear cached key

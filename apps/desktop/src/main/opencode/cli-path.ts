@@ -2,6 +2,7 @@ import { app } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import { execSync } from 'child_process';
+import { getNodePath } from '../utils/bundled-node';
 
 /**
  * Get all possible nvm OpenCode CLI paths by scanning the nvm versions directory
@@ -36,6 +37,13 @@ function getNvmOpenCodePaths(): string[] {
  */
 export function getOpenCodeCliPath(): { command: string; args: string[] } {
   if (app.isPackaged) {
+    if (process.platform === 'win32') {
+      const winExe = findBundledWindowsOpenCodeExe();
+      if (winExe) {
+        return { command: winExe, args: [] };
+      }
+    }
+
     // In packaged app, OpenCode is in unpacked asar
     // process.resourcesPath points to Resources folder in macOS app bundle
     const cliPath = path.join(
@@ -50,6 +58,10 @@ export function getOpenCodeCliPath(): { command: string; args: string[] } {
     // Verify the file exists
     if (!fs.existsSync(cliPath)) {
       throw new Error(`OpenCode CLI not found at: ${cliPath}`);
+    }
+
+    if (process.platform === 'win32') {
+      return { command: getNodePath(), args: [cliPath] };
     }
 
     // OpenCode binary can be run directly
@@ -117,6 +129,13 @@ function isOpenCodeOnPath(): boolean {
 export function isOpenCodeBundled(): boolean {
   try {
     if (app.isPackaged) {
+      if (process.platform === 'win32') {
+        const winExe = findBundledWindowsOpenCodeExe();
+        if (winExe) {
+          return true;
+        }
+      }
+
       // In packaged mode, check if opencode exists
       const cliPath = path.join(
         process.resourcesPath,
@@ -179,7 +198,7 @@ export function getBundledOpenCodeVersion(): string | null {
   try {
     if (app.isPackaged) {
       // In packaged mode, read from package.json
-      const packageJsonPath = path.join(
+      const unpackedPath = path.join(
         process.resourcesPath,
         'app.asar.unpacked',
         'node_modules',
@@ -187,6 +206,15 @@ export function getBundledOpenCodeVersion(): string | null {
         'package.json'
       );
 
+      const packedPath = path.join(
+        process.resourcesPath,
+        'app.asar',
+        'node_modules',
+        'opencode-ai',
+        'package.json'
+      );
+
+      const packageJsonPath = fs.existsSync(unpackedPath) ? unpackedPath : packedPath;
       if (fs.existsSync(packageJsonPath)) {
         const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
         return pkg.version;
@@ -212,4 +240,33 @@ export function getBundledOpenCodeVersion(): string | null {
   } catch {
     return null;
   }
+}
+
+function findBundledWindowsOpenCodeExe(): string | null {
+  const unpackedModules = path.join(
+    process.resourcesPath,
+    'app.asar.unpacked',
+    'node_modules'
+  );
+  if (!fs.existsSync(unpackedModules)) {
+    return null;
+  }
+
+  const entries = fs.readdirSync(unpackedModules, { withFileTypes: true });
+  const preferred = `opencode-windows-${process.arch}`;
+  const candidates: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith('opencode-windows-')) {
+      continue;
+    }
+    const exePath = path.join(unpackedModules, entry.name, 'bin', 'opencode.exe');
+    if (fs.existsSync(exePath)) {
+      if (entry.name === preferred) {
+        return exePath;
+      }
+      candidates.push(exePath);
+    }
+  }
+
+  return candidates.length > 0 ? candidates[0] : null;
 }

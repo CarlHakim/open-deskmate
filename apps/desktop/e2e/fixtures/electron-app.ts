@@ -25,13 +25,7 @@ export const test = base.extend<ElectronFixtures>({
     const mainPath = resolve(__dirname, '../../dist-electron/main/index.js');
 
     const app = await electron.launch({
-      args: [
-        mainPath,
-        '--e2e-skip-auth',
-        '--e2e-mock-tasks',
-        // Disable sandbox in Docker (required for containerized Electron)
-        ...(process.env.DOCKER_ENV === '1' ? ['--no-sandbox', '--disable-gpu'] : []),
-      ],
+      args: [mainPath, '--e2e-skip-auth', '--e2e-mock-tasks'],
       env: {
         ...process.env,
         E2E_SKIP_AUTH: '1',
