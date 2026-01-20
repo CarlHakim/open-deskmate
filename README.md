@@ -1,217 +1,68 @@
-<p align="center">
-  <img src="docs/banner.svg" alt="Openwork - Open source AI desktop agent that automates file management, document creation, and browser tasks with your own AI API keys" width="100%" />
-</p>
+# OpenDeskmate
 
-<p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-22c55e?style=flat-square" alt="MIT License" /></a>
-  <a href="https://github.com/accomplish-ai/openwork/stargazers"><img src="https://img.shields.io/github/stars/accomplish-ai/openwork?style=flat-square&color=22c55e" alt="GitHub Stars" /></a>
-  <a href="https://github.com/accomplish-ai/openwork/issues"><img src="https://img.shields.io/github/issues/accomplish-ai/openwork?style=flat-square&color=22c55e" alt="GitHub Issues" /></a>
-  <a href="https://github.com/accomplish-ai/openwork/commits"><img src="https://img.shields.io/github/last-commit/accomplish-ai/openwork?style=flat-square&color=22c55e" alt="Last Commit" /></a>
-  <a href="https://downloads.openwork.me/downloads/0.2.1/macos/Openwork-0.2.1-mac-arm64.dmg"><img src="https://img.shields.io/badge/Download-macOS-0ea5e9?style=flat-square" alt="Download for macOS" /></a>
-</p>
-
-# Openwork™ - Open Source AI Desktop Agent
-
-Openwork is an open source AI desktop agent that automates file management, document creation, and browser tasks locally on your machine. Bring your own API keys (OpenAI, Anthropic, Google, xAI) or run local models via Ollama.
-
-<p align="center">
-  <strong>Runs locally on your machine. Bring your own API keys or local models. MIT licensed.</strong>
-</p>
-
-<p align="center">
-  <a href="https://downloads.openwork.me/downloads/0.2.1/macos/Openwork-0.2.1-mac-arm64.dmg"><strong>Download Openwork for Mac (Apple Silicon)</strong></a>
-  ·
-  <a href="https://www.openwork.me/">Openwork website</a>
-  ·
-  <a href="https://www.openwork.me/blog/">Openwork blog</a>
-  ·
-  <a href="https://github.com/accomplish-ai/openwork/releases">Openwork releases</a>
-</p>
-
-<br />
+An open-source desktop AI assistant for Windows. Run AI locally with your own API keys - no subscriptions, no cloud dependency.
 
 ---
 
-<br />
+## Features
 
-## What makes it different
-
-<table>
-<tr>
-<td width="50%" valign="top" align="center">
-
-### 🖥️  It runs locally
-
-<div align="left">
-
-- Your files stay on your machine
-- You decide which folders it can touch
-- Nothing gets sent to Openwork (or anyone else)
-
-</div>
-
-</td>
-<td width="50%" valign="top" align="center">
-
-### 🔑  You bring your own AI
-
-<div align="left">
-
-- Use your own API key (OpenAI, Anthropic, etc.)
-- Or run with [Ollama](https://ollama.com) (no API key needed)
-- No subscription, no upsell
-- It's a tool—not a service
-
-</div>
-
-</td>
-</tr>
-<tr>
-<td width="50%" valign="top" align="center">
-
-### 📖  It's open source
-
-<div align="left">
-
-- Every line of code is on GitHub
-- MIT licensed
-- Change it, fork it, break it, fix it
-
-</div>
-
-</td>
-<td width="50%" valign="top" align="center">
-
-### ⚡  It acts, not just chats
-
-<div align="left">
-
-- File management
-- Document creation
-- Custom automations
-- Skill learning
-
-</div>
-
-</td>
-</tr>
-</table>
-
-<br />
+- **Runs locally** - Your files stay on your machine
+- **Bring your own AI** - Use OpenAI, Anthropic, Google, xAI, or Ollama (free/local)
+- **Open source** - MIT licensed, fully transparent
+- **Takes action** - File management, document creation, custom automations
 
 ---
 
-<br />
+## Installation (Windows)
 
-## What it actually does
+### Option 1: Download Pre-built Release
+(coming later) Build from source, after creation of the exe you will find it in the folder apps/desktop/release/win-unpacked
+1. Go to [Releases](../../releases)
+2. Download `OpenDeskmate-x.x.x-win-x64.exe` (installer) or `OpenDeskmate-x.x.x-win-x64-portable.exe` (portable)
+3. Run the installer or portable executable
+4. Enter your API key (OpenAI, Anthropic, Google, or xAI) on first launch
 
-| | | |
-|:--|:--|:--|
-| **📁 File Management** | **✍️ Document Writing** | **🔗 Tool Connections** |
-| Sort, rename, and move files based on content or rules you give it | Prompt it to write, summarize, or rewrite documents | Works with Notion, Google Drive, Dropbox, and more (through local APIs) |
-| | | |
-| **⚙️ Custom Skills** | **🛡️ Full Control** | |
-| Define repeatable workflows, save them as skills | You approve every action. You can see logs. You can stop it anytime. | |
+### Option 2: Build from Source
 
-<br />
+#### Prerequisites
 
-## Use cases
+- **Node.js 20+** - [Download](https://nodejs.org/)
+- **pnpm 9+** - Install with `npm install -g pnpm`
+- **Visual Studio Build Tools 2022** with:
+  - Desktop development with C++
+  - MSVC v142 toolset
+  - C++ Spectre-mitigated libs (v142)
 
-- Clean up messy folders by project, file type, or date
-- Draft, summarize, and rewrite docs, reports, and meeting notes
-- Automate browser workflows like research and form entry
-- Generate weekly updates from files and notes
-- Prepare meeting materials from docs and calendars
+#### Build Steps
 
-<br />
+```powershell
+# Clone the repository
+git clone https://github.com/YourUsername/open-deskmate.git
+cd open-deskmate
 
-## Supported models and providers
+# Install dependencies
+pnpm install
 
-- OpenAI
-- Anthropic
-- Google
-- xAI
-- Ollama (local models)
+# Build the Windows executable
+pnpm -F @accomplish/desktop build:win
+```
 
-<br />
+The built files will be in `apps/desktop/release/`:
+- `OpenDeskmate-x.x.x-win-x64.exe` - NSIS installer
+- `OpenDeskmate-x.x.x-win-x64-portable.exe` - Portable executable
 
-## Privacy and local-first
+#### Alternative Build Commands
 
-Openwork runs locally on your machine. Your files stay on your device, and you choose which folders it can access.
+```powershell
+# Build unpacked version (for testing/development)
+pnpm -F @accomplish/desktop build:unpack
+# Output: apps/desktop/release/win-unpacked/OpenDeskmate.exe
 
-<br />
-
-## System requirements
-
-- macOS (Apple Silicon)
-- Windows support coming soon
-
-<br />
-
----
-
-<br />
-
-## How to use it
-
-> **Takes 2 minutes to set up.**
-
-| Step | Action | Details |
-|:----:|--------|---------|
-| **1** | **Install the App** | Download the DMG and drag it into Applications |
-| **2** | **Connect Your AI** | Use your own OpenAI or Anthropic API key, or Ollama. No subscriptions. |
-| **3** | **Give It Access** | Choose which folders it can see. You stay in control. |
-| **4** | **Start Working** | Ask it to summarize a doc, clean a folder, or create a report. You approve everything. |
-
-<br />
-
-<div align="center">
-
-[**Download for Mac (Apple Silicon)**](https://downloads.openwork.me/downloads/0.2.1/macos/Openwork-0.2.1-mac-arm64.dmg)
-
-</div>
-
-<br />
+# Build portable only
+pnpm -F @accomplish/desktop build:win:portable
+```
 
 ---
-
-<br />
-
-## Screenshots and Demo
-
-A quick look at Openwork on macOS, plus a short demo video.
-
-<p align="center">
-  <a href="https://youtu.be/UJ0FIufMOlc?si=iFcu3VTG4B4q9VCB">
-    <img src="docs/video-thumbnail.png" alt="Openwork demo - AI agent automating file management and browser tasks" width="600" />
-  </a>
-</p>
-
-<p align="center">
-  <a href="https://youtu.be/UJ0FIufMOlc?si=iFcu3VTG4B4q9VCB">Watch the demo →</a>
-</p>
-
-<br />
-
-## FAQ
-
-**Does Openwork run locally?**  
-Yes. Openwork runs locally on your machine and you control which folders it can access.
-
-**Do I need an API key?**  
-You can use your own API keys (OpenAI, Anthropic, Google, xAI) or run local models via Ollama.
-
-**Is Openwork free?**  
-Yes. Openwork is open source and MIT licensed.
-
-**Which platforms are supported?**  
-macOS (Apple Silicon) is available now. Windows support is coming soon.
-
-<br />
-
----
-
-<br />
 
 ## Development
 
@@ -221,27 +72,20 @@ pnpm install
 
 # Run in development mode
 pnpm dev
+
+# Run with clean start (clears stored data)
+pnpm dev:clean
 ```
 
-That's it.
-
-<details>
-<summary><strong>Prerequisites</strong></summary>
-
-- Node.js 20+
-- pnpm 9+
-
-</details>
-
-<details>
-<summary><strong>All Commands</strong></summary>
+### Available Commands
 
 | Command | Description |
 |---------|-------------|
 | `pnpm dev` | Run app in development mode |
 | `pnpm dev:clean` | Dev mode with clean start |
 | `pnpm build` | Build all workspaces |
-| `pnpm build:desktop` | Build desktop app only |
+| `pnpm -F @accomplish/desktop build:win` | Build Windows installer |
+| `pnpm -F @accomplish/desktop build:unpack` | Build unpacked (for testing) |
 | `pnpm lint` | TypeScript checks |
 | `pnpm -F @accomplish/desktop test:e2e` | Run E2E tests |
 
@@ -283,46 +127,18 @@ npm --prefix apps/desktop/skills/file-permission install
 
 ```
 apps/
-  desktop/        # Electron app (main + preload + renderer)
+  desktop/          # Electron app (main + preload + renderer)
+    release/        # Built executables
+    src/
+      main/         # Electron main process
+      preload/      # Context bridge
+      renderer/     # React UI
 packages/
-  shared/         # Shared TypeScript types
+  shared/           # Shared TypeScript types
 ```
-
-The desktop app uses Electron with a React UI bundled via Vite. The main process spawns [OpenCode](https://github.com/sst/opencode) CLI using `node-pty` to execute tasks. API keys are stored securely in the OS keychain.
-
-See [CLAUDE.md](CLAUDE.md) for detailed architecture documentation.
-
-</details>
-
-<br />
 
 ---
 
-<br />
+## License
 
-## Contributing
-
-Contributions welcome! Feel free to open a PR.
-
-```bash
-# Fork → Clone → Branch → Commit → Push → PR
-git checkout -b feature/amazing-feature
-git commit -m 'Add amazing feature'
-git push origin feature/amazing-feature
-```
-
-<br />
-
----
-
-<br />
-
-<div align="center">
-
-**[Openwork website](https://www.openwork.me/)** · **[Openwork blog](https://www.openwork.me/blog/)** · **[Openwork releases](https://github.com/accomplish-ai/openwork/releases)** · **[Issues](https://github.com/accomplish-ai/openwork/issues)** · **[Twitter](https://x.com/openwork_ai)**
-
-<br />
-
-MIT License · Built by [Accomplish](https://www.accomplish.ai)
-
-</div>
+MIT License - see [LICENSE](LICENSE) for details.
