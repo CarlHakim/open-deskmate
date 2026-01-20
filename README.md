@@ -1,3 +1,9 @@
+### Build steps
+
+    cmake -S . -B build -G "Visual Studio 17 2022"
+    cmake --build build --config Release
+
+
 <p align="center">
   <img src="docs/banner.svg" alt="Openwork - The open source AI coworker that lives on your desktop" width="100%" />
 </p>
