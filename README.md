@@ -16,7 +16,7 @@ An open-source desktop AI assistant for Windows. Run AI locally with your own AP
 ## Installation (Windows)
 
 ### Option 1: Download Pre-built Release
-(Coming soon) Until it is available, build from source, and it will be crfeated in the folder apps/desktop/release/win-unpacked/ 
+(Coming soon) Until it is available, build from source, and the OpenDeskmate.exe will be created in the folder apps/desktop/release/win-unpacked/ 
 1. Go to [Releases](../../releases)
 2. Download `OpenDeskmate-x.x.x-win-x64.exe` (installer) or `OpenDeskmate-x.x.x-win-x64-portable.exe` (portable)
 3. Run the installer or portable executable
