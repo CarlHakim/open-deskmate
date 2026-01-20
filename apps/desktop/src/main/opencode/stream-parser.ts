@@ -14,6 +14,7 @@ const MAX_BUFFER_SIZE = 10 * 1024 * 1024;
  */
 export class StreamParser extends EventEmitter<StreamParserEvents> {
   private buffer: string = '';
+  private pendingJson: string | null = null;
 
   /**
    * Feed raw data from stdout
@@ -45,6 +46,27 @@ export class StreamParser extends EventEmitter<StreamParserEvents> {
         this.parseLine(line);
       }
     }
+
+    // If the buffer already contains complete JSON objects without a trailing newline,
+    // parse them now to avoid losing messages on fast shutdown.
+    if (!this.pendingJson) {
+      const trimmed = this.buffer.trim();
+      if (trimmed.startsWith('{')) {
+        const { objects, remainder } = this.extractJsonObjects(this.buffer);
+        if (objects.length > 0 && remainder !== this.buffer) {
+          for (const obj of objects) {
+            this.tryParseJson(obj);
+          }
+          this.buffer = remainder;
+        }
+      }
+    }
+  }
+
+  private sanitizeLine(line: string): string {
+    return line
+      .replace(/\x1B\[[0-9;?]*[a-zA-Z]/g, '')
+      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
   }
 
   /**
@@ -53,6 +75,9 @@ export class StreamParser extends EventEmitter<StreamParserEvents> {
    */
   private isTerminalDecoration(line: string): boolean {
     const trimmed = line.trim();
+    if (trimmed.includes('{')) {
+      return false;
+    }
     // Box-drawing and UI characters used by the CLI's interactive prompts
     const terminalChars = ['│', '┌', '┐', '└', '┘', '├', '┤', '┬', '┴', '┼', '─', '◆', '●', '○', '◇'];
     // Check if line starts with a terminal decoration character
@@ -70,10 +95,38 @@ export class StreamParser extends EventEmitter<StreamParserEvents> {
    * Parse a single JSON line
    */
   private parseLine(line: string): void {
-    const trimmed = line.trim();
+    const sanitized = this.sanitizeLine(line);
+    const trimmed = sanitized.trim();
 
     // Skip empty lines
     if (!trimmed) return;
+
+    if (this.pendingJson) {
+      const combined = this.pendingJson + sanitized;
+      this.pendingJson = null;
+
+      const { objects, remainder } = this.extractJsonObjects(combined);
+      if (objects.length > 0) {
+        for (const obj of objects) {
+          this.tryParseJson(obj);
+        }
+      }
+
+      if (remainder) {
+        this.pendingJson = remainder;
+        this.tryParsePendingJson();
+      } else if (objects.length === 0) {
+        // Still incomplete; keep buffering until we can parse.
+        this.pendingJson = combined;
+        this.tryParsePendingJson();
+      }
+
+      if (this.pendingJson && this.pendingJson.length > MAX_BUFFER_SIZE / 2) {
+        this.emit('error', new Error('Pending JSON buffer size exceeded limit'));
+        this.pendingJson = null;
+      }
+      return;
+    }
 
     // Skip terminal UI decorations (interactive prompts, box-drawing chars)
     if (this.isTerminalDecoration(trimmed)) {
@@ -81,15 +134,93 @@ export class StreamParser extends EventEmitter<StreamParserEvents> {
     }
 
     // Only attempt to parse lines that look like JSON (start with {)
-    if (!trimmed.startsWith('{')) {
-      // Log non-JSON lines for debugging but don't emit errors
-      // These could be CLI status messages, etc.
-      console.log('[StreamParser] Skipping non-JSON line:', trimmed.substring(0, 50));
-      return;
+    let candidate = trimmed;
+    if (!candidate.startsWith('{')) {
+      const jsonStart = candidate.indexOf('{');
+      if (jsonStart !== -1) {
+        candidate = candidate.slice(jsonStart);
+      } else {
+        // Log non-JSON lines for debugging but don't emit errors
+        // These could be CLI status messages, etc.
+        console.log('[StreamParser] Skipping non-JSON line:', candidate.substring(0, 50));
+        return;
+      }
     }
 
+    const { objects, remainder } = this.extractJsonObjects(candidate);
+    if (objects.length > 0) {
+      for (const obj of objects) {
+        this.tryParseJson(obj);
+      }
+    }
+
+    if (remainder) {
+      this.pendingJson = remainder;
+      this.tryParsePendingJson();
+    } else if (objects.length === 0 && !this.tryParseJson(trimmed)) {
+      this.pendingJson = trimmed;
+      this.tryParsePendingJson();
+    }
+  }
+
+  private tryParsePendingJson(): boolean {
+    if (!this.pendingJson) return false;
+    const candidate = this.pendingJson.trim();
+    if (!candidate.startsWith('{')) {
+      this.pendingJson = null;
+      return false;
+    }
+    if (this.tryParseJson(candidate)) {
+      this.pendingJson = null;
+      return true;
+    }
+    return false;
+  }
+
+  private extractJsonObjects(text: string): { objects: string[]; remainder: string } {
+    const objects: string[] = [];
+    let depth = 0;
+    let start = -1;
+    let inString = false;
+    let escape = false;
+
+    for (let i = 0; i < text.length; i += 1) {
+      const char = text[i];
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (char === '\\' && inString) {
+        escape = true;
+        continue;
+      }
+      if (char === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (inString) continue;
+
+      if (char === '{') {
+        if (depth === 0) {
+          start = i;
+        }
+        depth += 1;
+      } else if (char === '}') {
+        depth -= 1;
+        if (depth === 0 && start !== -1) {
+          objects.push(text.slice(start, i + 1));
+          start = -1;
+        }
+      }
+    }
+
+    const remainder = start !== -1 ? text.slice(start) : '';
+    return { objects, remainder };
+  }
+
+  private tryParseJson(text: string): boolean {
     try {
-      const message = JSON.parse(trimmed) as OpenCodeMessage;
+      const message = JSON.parse(text) as OpenCodeMessage;
 
       // Log parsed message for debugging
       console.log('[StreamParser] Parsed message type:', message.type);
@@ -118,11 +249,9 @@ export class StreamParser extends EventEmitter<StreamParserEvents> {
       }
 
       this.emit('message', message);
+      return true;
     } catch (err) {
-      // Log parse error but continue processing - this shouldn't happen often
-      // since we already check for { prefix
-      console.error('[StreamParser] Failed to parse JSON line:', trimmed.substring(0, 100), err);
-      this.emit('error', new Error(`Failed to parse JSON: ${trimmed.substring(0, 50)}...`));
+      return false;
     }
   }
 
@@ -132,8 +261,11 @@ export class StreamParser extends EventEmitter<StreamParserEvents> {
   flush(): void {
     if (this.buffer.trim()) {
       this.parseLine(this.buffer);
-      this.buffer = '';
     }
+    if (this.pendingJson) {
+      this.tryParsePendingJson();
+    }
+    this.buffer = '';
   }
 
   /**
@@ -141,5 +273,6 @@ export class StreamParser extends EventEmitter<StreamParserEvents> {
    */
   reset(): void {
     this.buffer = '';
+    this.pendingJson = null;
   }
 }

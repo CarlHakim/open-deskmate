@@ -23,7 +23,7 @@ export async function generateTaskSummary(prompt: string): Promise<string> {
   const providers: ApiKeyProvider[] = ['anthropic', 'openai', 'google', 'xai'];
 
   for (const provider of providers) {
-    const apiKey = getApiKey(provider);
+    const apiKey = await getApiKey(provider);
     if (!apiKey) continue;
 
     try {

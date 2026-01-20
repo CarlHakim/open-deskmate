@@ -15,8 +15,6 @@ export interface PermissionRequest {
   toolInput?: unknown;
   /** Question text if type is 'question', or description for 'file' */
   question?: string;
-  /** Short header/title for the question */
-  header?: string;
   /** Available options for selection */
   options?: PermissionOption[];
   /** Allow multiple selections */
@@ -25,8 +23,6 @@ export interface PermissionRequest {
   fileOperation?: FileOperation;
   /** File path being operated on if type is 'file' */
   filePath?: string;
-  /** Multiple file paths for batch operations (e.g., deleting multiple files) */
-  filePaths?: string[];
   /** Target path for rename/move operations */
   targetPath?: string;
   /** Preview of content (truncated) for create/modify/overwrite */
@@ -50,6 +46,4 @@ export interface PermissionResponse {
   message?: string;
   /** Selected options for questions */
   selectedOptions?: string[];
-  /** Custom text response for "Other" option */
-  customText?: string;
 }

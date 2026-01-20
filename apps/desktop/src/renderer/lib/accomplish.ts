@@ -15,7 +15,6 @@ import type {
   TaskProgress,
   ApiKeyConfig,
   TaskMessage,
-  BedrockCredentials,
 } from '@accomplish/shared';
 
 // Define the API interface
@@ -44,7 +43,7 @@ interface AccomplishAPI {
 
   // Settings
   getApiKeys(): Promise<ApiKeyConfig[]>;
-  addApiKey(provider: 'anthropic' | 'openai' | 'openrouter' | 'google' | 'xai' | 'deepseek' | 'zai' | 'custom' | 'bedrock' | 'litellm', key: string, label?: string): Promise<ApiKeyConfig>;
+  addApiKey(provider: 'anthropic' | 'openai' | 'google' | 'xai' | 'custom', key: string, label?: string): Promise<ApiKeyConfig>;
   removeApiKey(id: string): Promise<void>;
   getDebugMode(): Promise<boolean>;
   setDebugMode(enabled: boolean): Promise<void>;
@@ -83,32 +82,6 @@ interface AccomplishAPI {
   getOllamaConfig(): Promise<{ baseUrl: string; enabled: boolean; lastValidated?: number; models?: Array<{ id: string; displayName: string; size: number }> } | null>;
   setOllamaConfig(config: { baseUrl: string; enabled: boolean; lastValidated?: number; models?: Array<{ id: string; displayName: string; size: number }> } | null): Promise<void>;
 
-  // OpenRouter configuration
-  fetchOpenRouterModels(): Promise<{
-    success: boolean;
-    models?: Array<{ id: string; name: string; provider: string; contextLength: number }>;
-    error?: string;
-  }>;
-
-  // LiteLLM configuration
-  testLiteLLMConnection(url: string, apiKey?: string): Promise<{
-    success: boolean;
-    models?: Array<{ id: string; name: string; provider: string; contextLength: number }>;
-    error?: string;
-  }>;
-  fetchLiteLLMModels(): Promise<{
-    success: boolean;
-    models?: Array<{ id: string; name: string; provider: string; contextLength: number }>;
-    error?: string;
-  }>;
-  getLiteLLMConfig(): Promise<{ baseUrl: string; enabled: boolean; lastValidated?: number; models?: Array<{ id: string; name: string; provider: string; contextLength: number }> } | null>;
-  setLiteLLMConfig(config: { baseUrl: string; enabled: boolean; lastValidated?: number; models?: Array<{ id: string; name: string; provider: string; contextLength: number }> } | null): Promise<void>;
-
-  // Bedrock configuration
-  validateBedrockCredentials(credentials: string): Promise<{ valid: boolean; error?: string }>;
-  saveBedrockCredentials(credentials: string): Promise<ApiKeyConfig>;
-  getBedrockCredentials(): Promise<BedrockCredentials | null>;
-
   // Event subscriptions
   onTaskUpdate(callback: (event: TaskUpdateEvent) => void): () => void;
   onTaskUpdateBatch?(callback: (event: { taskId: string; messages: TaskMessage[] }) => void): () => void;
@@ -141,25 +114,11 @@ declare global {
  * Get the accomplish API
  * Throws if not running in Electron
  */
-export function getAccomplish() {
+export function getAccomplish(): AccomplishAPI {
   if (!window.accomplish) {
     throw new Error('Accomplish API not available - not running in Electron');
   }
-  return {
-    ...window.accomplish,
-
-    validateBedrockCredentials: async (credentials: BedrockCredentials): Promise<{ valid: boolean; error?: string }> => {
-      return window.accomplish!.validateBedrockCredentials(JSON.stringify(credentials));
-    },
-
-    saveBedrockCredentials: async (credentials: BedrockCredentials): Promise<ApiKeyConfig> => {
-      return window.accomplish!.saveBedrockCredentials(JSON.stringify(credentials));
-    },
-
-    getBedrockCredentials: async (): Promise<BedrockCredentials | null> => {
-      return window.accomplish!.getBedrockCredentials();
-    },
-  };
+  return window.accomplish;
 }
 
 /**

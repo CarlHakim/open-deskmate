@@ -133,7 +133,7 @@ function hasExistingUserData(): boolean {
 /**
  * Clear all user data from previous installation
  */
-function clearPreviousInstallData(): void {
+async function clearPreviousInstallData(): Promise<void> {
   console.log('[FreshInstall] Clearing data from previous installation...');
 
   // Clear electron-store data using the store APIs
@@ -187,7 +187,7 @@ function clearPreviousInstallData(): void {
 
   // Clear secure storage (API keys stored via electron-store + safeStorage)
   try {
-    clearSecureStorage();
+    await clearSecureStorage();
     console.log('[FreshInstall]   - Cleared secure storage');
   } catch (err) {
     console.error('[FreshInstall]   - Failed to clear secure storage:', err);
@@ -225,7 +225,7 @@ export async function checkAndCleanupFreshInstall(): Promise<boolean> {
     const hadExistingData = hasExistingUserData();
     if (hadExistingData) {
       console.log('[FreshInstall] Found existing data but no install marker - this is a reinstall');
-      clearPreviousInstallData();
+      await clearPreviousInstallData();
     } else {
       console.log('[FreshInstall] First time install (no previous data)');
     }
@@ -247,7 +247,7 @@ export async function checkAndCleanupFreshInstall(): Promise<boolean> {
     console.log(`[FreshInstall]   Current:  ${currentMtimeStr}`);
 
     // Clear old data
-    clearPreviousInstallData();
+    await clearPreviousInstallData();
 
     // Update the marker
     writeInstallMarker({

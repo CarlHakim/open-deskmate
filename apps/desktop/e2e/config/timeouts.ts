@@ -23,9 +23,6 @@ export const TEST_TIMEOUTS = {
 
   /** Permission modal appearance */
   PERMISSION_MODAL: 10000,
-
-  /** Wait for task to reach completed/failed/stopped state */
-  TASK_COMPLETE_WAIT: 20000,
 } as const;
 
 /**
@@ -52,10 +49,6 @@ export const TEST_SCENARIOS = {
   INTERRUPTED: {
     keyword: '__e2e_interrupt__',
     description: 'Task is interrupted by user',
-  },
-  QUESTION: {
-    keyword: '__e2e_question__',
-    description: 'Task requires user question/choice',
   },
 } as const;
 

@@ -1,10 +1,8 @@
 import { app } from 'electron';
 import path from 'path';
 import fs from 'fs';
-import { PERMISSION_API_PORT, QUESTION_API_PORT } from '../permission-api';
-import { getOllamaConfig, getLiteLLMConfig } from '../store/appSettings';
-import { getApiKey } from '../store/secureStorage';
-import type { BedrockCredentials } from '@accomplish/shared';
+import { PERMISSION_API_PORT } from '../permission-api';
+import { getOllamaConfig } from '../store/appSettings';
 
 /**
  * Agent name used by Accomplish
@@ -19,7 +17,7 @@ export const ACCOMPLISH_AGENT_NAME = 'accomplish';
  * @see https://github.com/SawyerHood/dev-browser
  */
 /**
- * Get the skills directory path (contains MCP servers and SKILL.md files)
+ * Get the skills directory path
  * In dev: apps/desktop/skills
  * In packaged: resources/skills (unpacked from asar)
  */
@@ -34,18 +32,6 @@ export function getSkillsPath(): string {
   }
 }
 
-/**
- * Get the OpenCode config directory path (parent of skills/ for OPENCODE_CONFIG_DIR)
- * OpenCode looks for skills at $OPENCODE_CONFIG_DIR/skills/<name>/SKILL.md
- */
-export function getOpenCodeConfigDir(): string {
-  if (app.isPackaged) {
-    return process.resourcesPath;
-  } else {
-    return app.getAppPath();
-  }
-}
-
 const ACCOMPLISH_SYSTEM_PROMPT_TEMPLATE = `<identity>
 You are Accomplish, a browser automation assistant.
 </identity>
@@ -55,9 +41,34 @@ This app bundles Node.js. The bundled path is available in the NODE_BIN_PATH env
 Before running node/npx/npm commands, prepend it to PATH:
 
 PATH="\${NODE_BIN_PATH}:\$PATH" npx tsx script.ts
+Windows (cmd.exe):
+set "PATH=%NODE_BIN_PATH%;%PATH%" && set "NODE_EXE=%NODE_BIN_PATH%\\node.exe" && set "TSX_CLI={{SKILLS_PATH}}\\dev-browser\\node_modules\\tsx\\dist\\cli.cjs" && "%NODE_EXE%" "%TSX_CLI%" script.ts
 
 Never assume Node.js is installed system-wide. Always use the bundled version.
 </environment>
+
+<important name="windows-shell">
+##############################################################################
+# Windows shell rules
+##############################################################################
+On Windows, shell commands run under cmd.exe (not bash). Do NOT use bash-only
+commands like: ls, cat, pwd, touch, cp, mv, rm, which.
+Use Windows equivalents instead:
+- dir (list files), type (read file), mkdir, rmdir, copy, move, del, where.
+Always use absolute Windows paths (e.g., C:\\Users\\Name\\folder\\file.txt).
+Never assume the current working directory. If a file is referenced without a
+path, ask the user for its full location.
+Do NOT use bash heredocs (cat <<'EOF') or /tmp paths on Windows. For multi-line
+scripts, use a single-line node -e to write the file, or use the Write tool.
+Never use bash-style parameter expansion like \${VAR:-default} or %VAR:-default%
+in cmd.exe. Use: if not defined VAR set VAR=default
+If you need tsx on Windows, run it via node and the tsx CLI at
+{{SKILLS_PATH}}\\dev-browser\\node_modules\\tsx\\dist\\cli.cjs (avoid npx for
+scripts that must print output).
+Tool commands on Windows must be a single line (no embedded newlines). Chain
+steps with && or use cmd /c so stdout is captured.
+##############################################################################
+</important>
 
 <capabilities>
 When users ask about your capabilities, mention:
@@ -65,13 +76,20 @@ When users ask about your capabilities, mention:
 - **File Management**: Sort, rename, and move files based on content or rules you give it
 </capabilities>
 
+<important name="user-visible-results">
+##############################################################################
+# Users cannot see raw tool output. Always provide a final text response that
+# summarizes the result, even if a tool already printed it.
+##############################################################################
+</important>
+
 <important name="filesystem-rules">
 ##############################################################################
 # CRITICAL: FILE PERMISSION WORKFLOW - NEVER SKIP
 ##############################################################################
 
 BEFORE using Write, Edit, Bash (with file ops), or ANY tool that touches files:
-1. FIRST: Call request_file_permission tool and wait for response
+1. FIRST: Call file-permission_request_file_permission tool and wait for response
 2. ONLY IF response is "allowed": Proceed with the file operation
 3. IF "denied": Stop and inform the user
 
@@ -79,7 +97,7 @@ WRONG (never do this):
   Write({ path: "/tmp/file.txt", content: "..." })  ← NO! Permission not requested!
 
 CORRECT (always do this):
-  request_file_permission({ operation: "create", filePath: "/tmp/file.txt" })
+  file-permission_request_file_permission({ operation: "create", filePath: "/tmp/file.txt" })
   → Wait for "allowed"
   Write({ path: "/tmp/file.txt", content: "..." })  ← OK after permission granted
 
@@ -89,11 +107,11 @@ This applies to ALL file operations:
 - Deleting files (bash rm, delete commands)
 - Modifying files (Edit tool, bash sed/awk, any content changes)
 
-EXCEPTION: Temp scripts in /tmp/accomplish-*.mts for browser automation are auto-allowed.
+EXCEPTION: Temp scripts in /tmp/accomplish-*.mts (macOS/Linux) or %TEMP%\\accomplish-*.mts (Windows) for browser automation are auto-allowed.
 ##############################################################################
 </important>
 
-<tool name="request_file_permission">
+<tool name="file-permission_request_file_permission">
 Use this MCP tool to request user permission before performing file operations.
 
 <parameters>
@@ -117,7 +135,7 @@ Returns: "allowed" or "denied" - proceed only if allowed
 </parameters>
 
 <example>
-request_file_permission({
+file-permission_request_file_permission({
   operation: "create",
   filePath: "/Users/john/Desktop/report.txt"
 })
@@ -134,19 +152,33 @@ Browser automation that maintains page state across script executions. Write sma
 # tsx treats .mts files as ES modules, enabling top-level await.
 #
 # CORRECT (always do this - two steps):
-#   1. Write script to temp file with .mts extension:
-#      cat > /tmp/accomplish-\${ACCOMPLISH_TASK_ID:-default}.mts <<'EOF'
-#      import { connect } from "@/client.js";
-#      ...
-#      EOF
+#   1. Write script to a temp file with .mts extension
+#   2. Run it from the dev-browser directory with bundled Node in PATH
 #
-#   2. Run from dev-browser directory with bundled Node:
-#      cd {{SKILLS_PATH}}/dev-browser && PATH="\${NODE_BIN_PATH}:\$PATH" npx tsx /tmp/accomplish-\${ACCOMPLISH_TASK_ID:-default}.mts
-#
-# WRONG (will fail - .ts files in /tmp default to CJS mode):
-#   cat > /tmp/script.ts <<'EOF'
-#   import { connect } from "@/client.js";  # Top-level await won't work!
+# macOS/Linux (bash):
+#   cat > /tmp/accomplish-\${ACCOMPLISH_TASK_ID:-default}.mts <<'EOF'
+#   import { connect } from "@/client.js";
+#   ...
 #   EOF
+#   cd {{SKILLS_PATH}}/dev-browser && PATH="\${NODE_BIN_PATH}:\$PATH" npx tsx /tmp/accomplish-\${ACCOMPLISH_TASK_ID:-default}.mts
+#
+# Windows (cmd.exe) - single line:
+#   set "PATH=%NODE_BIN_PATH%;%PATH%" && set "NODE_EXE=%NODE_BIN_PATH%\\node.exe" && set "TSX_CLI={{SKILLS_PATH}}\\dev-browser\\node_modules\\tsx\\dist\\cli.cjs" && set "TASK_ID=%ACCOMPLISH_TASK_ID%" && if not defined TASK_ID set "TASK_ID=default" && set "SCRIPT=%TEMP%\\accomplish-%TASK_ID%.mts" && "%NODE_EXE%" -e "const fs=require('fs'); const p=require('path'); const taskId=process.env.ACCOMPLISH_TASK_ID||'default'; const scriptPath=p.join(process.env.TEMP, 'accomplish-'+taskId+'.mts'); const code='import { connect } from \"@/client.js\";\\n...'; fs.writeFileSync(scriptPath, code);" && cd "{{SKILLS_PATH}}\\dev-browser" && "%NODE_EXE%" "%TSX_CLI%" "%SCRIPT%"
+#
+# NOTE: Avoid PowerShell here-strings when running through "powershell -Command".
+# They must start on their own line and are easy to break. Prefer the cmd.exe
+# pattern above.
+#   $taskId = $env:ACCOMPLISH_TASK_ID; if (-not $taskId) { $taskId = "default" }
+#   $scriptPath = Join-Path $env:TEMP "accomplish-$taskId.mts"
+#   @'
+#   import { connect } from "@/client.js";
+#   ...
+#   '@ | Set-Content -Path $scriptPath -Encoding UTF8
+#   Set-Location "{{SKILLS_PATH}}\\dev-browser"
+#   $env:PATH = "$env:NODE_BIN_PATH;$env:PATH"
+#   & "$env:NODE_BIN_PATH\\node.exe" "{{SKILLS_PATH}}\\dev-browser\\node_modules\\tsx\\dist\\cli.cjs" $scriptPath
+#
+# WRONG: Windows cannot use bash heredocs (cat <<'EOF') or /tmp paths.
 #
 # ALWAYS use .mts extension for temp scripts!
 ##############################################################################
@@ -158,26 +190,38 @@ The dev-browser server is automatically started when you begin a task. Before yo
 \`\`\`bash
 curl -s http://localhost:9224
 \`\`\`
+Windows (PowerShell):
+\`\`\`powershell
+Invoke-WebRequest -UseBasicParsing http://127.0.0.1:9224 | Select-Object -ExpandProperty Content
+\`\`\`
 
 If it returns JSON with a \`wsEndpoint\`, proceed with browser automation. If connection is refused, the server is still starting - wait 2-3 seconds and check again.
 
-**Fallback** (only if server isn't running after multiple checks):
-\`\`\`bash
-cd {{SKILLS_PATH}}/dev-browser && PATH="\${NODE_BIN_PATH}:\$PATH" ./server.sh &
-\`\`\`
+Do NOT try to start the dev-browser server yourself. The desktop app manages it.
 </setup>
 
+<important name="browser-automation">
+##############################################################################
+# Browsing rules
+##############################################################################
+For tasks that require real web navigation or fresh results (news, search),
+use the dev-browser skill and navigate a page. Avoid webfetch for Google
+results because it often returns JS/redirect pages.
+##############################################################################
+</important>
+
 <usage>
-Write scripts to /tmp with .mts extension, then execute from dev-browser directory:
+Write scripts to a temp path with .mts extension, then execute from dev-browser directory:
 
 <example name="basic-navigation">
+macOS/Linux (bash):
 \`\`\`bash
 cat > /tmp/accomplish-\${ACCOMPLISH_TASK_ID:-default}.mts <<'EOF'
 import { connect, waitForPageLoad } from "@/client.js";
 
 const taskId = process.env.ACCOMPLISH_TASK_ID || 'default';
 const client = await connect();
-const page = await client.page(\`\${taskId}-main\`);
+const page = await client.page(taskId + "-main");
 
 await page.goto("https://example.com");
 await waitForPageLoad(page);
@@ -186,6 +230,11 @@ console.log({ title: await page.title(), url: page.url() });
 await client.disconnect();
 EOF
 cd {{SKILLS_PATH}}/dev-browser && PATH="\${NODE_BIN_PATH}:\$PATH" npx tsx /tmp/accomplish-\${ACCOMPLISH_TASK_ID:-default}.mts
+\`\`\`
+
+Windows (cmd.exe):
+\`\`\`bat
+set "PATH=%NODE_BIN_PATH%;%PATH%" && set "NODE_EXE=%NODE_BIN_PATH%\\node.exe" && set "TSX_CLI={{SKILLS_PATH}}\\dev-browser\\node_modules\\tsx\\dist\\cli.cjs" && set "TASK_ID=%ACCOMPLISH_TASK_ID%" && if not defined TASK_ID set "TASK_ID=default" && set "SCRIPT=%TEMP%\\accomplish-%TASK_ID%.mts" && "%NODE_EXE%" -e "const fs=require('fs'); const p=require('path'); const taskId=process.env.ACCOMPLISH_TASK_ID||'default'; const scriptPath=p.join(process.env.TEMP, 'accomplish-'+taskId+'.mts'); const code='import { connect, waitForPageLoad } from \"@/client.js\";\\n\\nconst taskId = process.env.ACCOMPLISH_TASK_ID || \"default\";\\nconst client = await connect();\\nconst page = await client.page(taskId + \"-main\");\\n\\nawait page.goto(\"https://example.com\");\\nawait waitForPageLoad(page);\\n\\nconsole.log({ title: await page.title(), url: page.url() });\\nawait client.disconnect();\\n'; fs.writeFileSync(scriptPath, code);" && cd "{{SKILLS_PATH}}\\dev-browser" && "%NODE_EXE%" "%TSX_CLI%" "%SCRIPT%"
 \`\`\`
 </example>
 </usage>
@@ -196,7 +245,7 @@ cd {{SKILLS_PATH}}/dev-browser && PATH="\${NODE_BIN_PATH}:\$PATH" npx tsx /tmp/a
 3. **Task-scoped page names**: ALWAYS prefix page names with the task ID from environment:
    \`\`\`typescript
    const taskId = process.env.ACCOMPLISH_TASK_ID || 'default';
-   const page = await client.page(\`\${taskId}-main\`);
+   const page = await client.page(taskId + "-main");
    \`\`\`
    This ensures parallel tasks don't interfere with each other's browser pages.
 4. **Task-scoped screenshot filenames**: ALWAYS prefix screenshot filenames with taskId to prevent parallel tasks from overwriting each other's screenshots:
@@ -295,15 +344,37 @@ For saving/downloading content:
 </filesystem>
 </skill>
 
-<important name="user-communication">
-CRITICAL: The user CANNOT see your text output or CLI prompts!
-To ask ANY question or get user input, you MUST use the AskUserQuestion MCP tool.
-See the ask-user-question skill for full documentation and examples.
+<important name="user-confirmations">
+CRITICAL: Always use AskUserQuestion to get explicit approval before sensitive actions.
+Users cannot see CLI/terminal prompts - you MUST ask through the chat interface.
+
+<rules>
+ALWAYS ask before these actions (no exceptions):
+- Financial: Clicking "Buy", "Purchase", "Pay", "Subscribe", "Donate", or any payment button
+- Messaging: Sending emails, messages, comments, reviews, or any communication
+- Forms: Submitting forms that create accounts, place orders, or share personal data
+- Deletion: Clicking "Delete", "Remove", "Cancel subscription", or any destructive action
+- Posting: Publishing content, tweets, posts, or updates to any platform
+- Settings: Changing account settings, passwords, or privacy options
+- Sharing: Sharing content, granting permissions, or connecting accounts
+</rules>
+
+<instructions>
+How to ask:
+- Use AskUserQuestion tool with clear options
+- Describe WHAT will happen: "This will send an email to john@example.com"
+- Show the CONTENT when relevant: "Message: 'Hello, I wanted to follow up...'"
+- Offer options: "Send" / "Edit first" / "Cancel"
+
+NEVER assume intent for irreversible actions. Even if the user said "send the email",
+confirm the final content before clicking send.
+
+When in doubt, ask. A brief confirmation is better than an irreversible mistake.
+</instructions>
 </important>
 
-
 <behavior>
-- Use AskUserQuestion tool for clarifying questions before starting ambiguous tasks
+- Ask clarifying questions before starting ambiguous tasks
 - Write small, focused scripts - each does ONE thing
 - After each script, evaluate the output before deciding next steps
 - Be concise - don't narrate every internal action
@@ -344,58 +415,6 @@ interface OllamaProviderConfig {
   models: Record<string, OllamaProviderModelConfig>;
 }
 
-interface BedrockProviderConfig {
-  options: {
-    region: string;
-    profile?: string;
-  };
-}
-
-interface OpenRouterProviderModelConfig {
-  name: string;
-  tools?: boolean;
-}
-
-interface OpenRouterProviderConfig {
-  npm: string;
-  name: string;
-  options: {
-    baseURL: string;
-  };
-  models: Record<string, OpenRouterProviderModelConfig>;
-}
-
-interface LiteLLMProviderModelConfig {
-  name: string;
-  tools?: boolean;
-}
-
-interface LiteLLMProviderConfig {
-  npm: string;
-  name: string;
-  options: {
-    baseURL: string;
-    apiKey?: string;
-  };
-  models: Record<string, LiteLLMProviderModelConfig>;
-}
-
-interface ZaiProviderModelConfig {
-  name: string;
-  tools?: boolean;
-}
-
-interface ZaiProviderConfig {
-  npm: string;
-  name: string;
-  options: {
-    baseURL: string;
-  };
-  models: Record<string, ZaiProviderModelConfig>;
-}
-
-type ProviderConfig = OllamaProviderConfig | BedrockProviderConfig | OpenRouterProviderConfig | LiteLLMProviderConfig | ZaiProviderConfig;
-
 interface OpenCodeConfig {
   $schema?: string;
   model?: string;
@@ -404,7 +423,7 @@ interface OpenCodeConfig {
   permission?: string | Record<string, string | Record<string, string>>;
   agent?: Record<string, AgentConfig>;
   mcp?: Record<string, McpServerConfig>;
-  provider?: Record<string, ProviderConfig>;
+  provider?: Record<string, OllamaProviderConfig>;
 }
 
 /**
@@ -425,31 +444,20 @@ export async function generateOpenCodeConfig(): Promise<string> {
   const skillsPath = getSkillsPath();
   const systemPrompt = ACCOMPLISH_SYSTEM_PROMPT_TEMPLATE.replace(/\{\{SKILLS_PATH\}\}/g, skillsPath);
 
-  // Get OpenCode config directory (parent of skills/) for OPENCODE_CONFIG_DIR
-  const openCodeConfigDir = getOpenCodeConfigDir();
-
   console.log('[OpenCode Config] Skills path:', skillsPath);
-  console.log('[OpenCode Config] OpenCode config dir:', openCodeConfigDir);
 
   // Build file-permission MCP server command
   const filePermissionServerPath = path.join(skillsPath, 'file-permission', 'src', 'index.ts');
 
-  // Enable providers - add ollama and litellm if configured
+  // Enable providers - add ollama if configured
   const ollamaConfig = getOllamaConfig();
-  const litellmConfig = getLiteLLMConfig();
-  const baseProviders = ['anthropic', 'openai', 'openrouter', 'google', 'xai', 'deepseek', 'zai-coding-plan', 'amazon-bedrock'];
-  let enabledProviders = [...baseProviders];
-  if (ollamaConfig?.enabled) {
-    enabledProviders.push('ollama');
-  }
-  if (litellmConfig?.enabled) {
-    enabledProviders.push('litellm');
-  }
+  const baseProviders = ['anthropic', 'openai', 'google', 'xai'];
+  const enabledProviders = ollamaConfig?.enabled
+    ? [...baseProviders, 'ollama']
+    : baseProviders;
 
-  // Build provider configurations
-  const providerConfig: Record<string, ProviderConfig> = {};
-
-  // Add Ollama provider configuration if enabled
+  // Build Ollama provider configuration if enabled
+  let providerConfig: Record<string, OllamaProviderConfig> | undefined;
   if (ollamaConfig?.enabled && ollamaConfig.models && ollamaConfig.models.length > 0) {
     const ollamaModels: Record<string, OllamaProviderModelConfig> = {};
     for (const model of ollamaConfig.models) {
@@ -459,140 +467,18 @@ export async function generateOpenCodeConfig(): Promise<string> {
       };
     }
 
-    providerConfig.ollama = {
-      npm: '@ai-sdk/openai-compatible',
-      name: 'Ollama (local)',
-      options: {
-        baseURL: `${ollamaConfig.baseUrl}/v1`,  // OpenAI-compatible endpoint
+    providerConfig = {
+      ollama: {
+        npm: '@ai-sdk/openai-compatible',
+        name: 'Ollama (local)',
+        options: {
+          baseURL: `${ollamaConfig.baseUrl}/v1`,  // OpenAI-compatible endpoint
+        },
+        models: ollamaModels,
       },
-      models: ollamaModels,
     };
 
     console.log('[OpenCode Config] Ollama provider configured with models:', Object.keys(ollamaModels));
-  }
-
-  // Add OpenRouter provider configuration if API key is set
-  const openrouterKey = getApiKey('openrouter');
-  if (openrouterKey) {
-    // Get the selected model to configure OpenRouter
-    const { getSelectedModel } = await import('../store/appSettings');
-    const selectedModel = getSelectedModel();
-
-    const openrouterModels: Record<string, OpenRouterProviderModelConfig> = {};
-
-    // If a model is selected via OpenRouter, add it to the config
-    if (selectedModel?.provider === 'openrouter' && selectedModel.model) {
-      // Extract model ID from full ID (e.g., "openrouter/anthropic/claude-3.5-sonnet" -> "anthropic/claude-3.5-sonnet")
-      const modelId = selectedModel.model.replace('openrouter/', '');
-      openrouterModels[modelId] = {
-        name: modelId,
-        tools: true,
-      };
-    }
-
-    // Only configure OpenRouter if we have at least one model
-    if (Object.keys(openrouterModels).length > 0) {
-      providerConfig.openrouter = {
-        npm: '@ai-sdk/openai-compatible',
-        name: 'OpenRouter',
-        options: {
-          baseURL: 'https://openrouter.ai/api/v1',
-        },
-        models: openrouterModels,
-      };
-      console.log('[OpenCode Config] OpenRouter provider configured with model:', Object.keys(openrouterModels));
-    }
-  }
-
-  // Add Bedrock provider configuration if credentials are stored
-  const bedrockCredsJson = getApiKey('bedrock');
-  if (bedrockCredsJson) {
-    try {
-      const creds = JSON.parse(bedrockCredsJson) as BedrockCredentials;
-
-      const bedrockOptions: BedrockProviderConfig['options'] = {
-        region: creds.region || 'us-east-1',
-      };
-
-      // Only add profile if using profile mode
-      if (creds.authType === 'profile' && creds.profileName) {
-        bedrockOptions.profile = creds.profileName;
-      }
-
-      providerConfig['amazon-bedrock'] = {
-        options: bedrockOptions,
-      };
-
-      console.log('[OpenCode Config] Bedrock provider configured:', bedrockOptions);
-    } catch (e) {
-      console.warn('[OpenCode Config] Failed to parse Bedrock credentials:', e);
-    }
-  }
-
-  // Add LiteLLM provider configuration if enabled
-  if (litellmConfig?.enabled && litellmConfig.baseUrl) {
-    // Get the selected model to configure LiteLLM
-    const { getSelectedModel } = await import('../store/appSettings');
-    const selectedModel = getSelectedModel();
-
-    const litellmModels: Record<string, LiteLLMProviderModelConfig> = {};
-
-    // If a model is selected via LiteLLM, add it to the config
-    if (selectedModel?.provider === 'litellm' && selectedModel.model) {
-      // Extract model ID from full ID (e.g., "litellm/openai/gpt-4" -> "openai/gpt-4")
-      const modelId = selectedModel.model.replace('litellm/', '');
-      litellmModels[modelId] = {
-        name: modelId,
-        tools: true,
-      };
-    }
-
-    // Only configure LiteLLM if we have at least one model
-    if (Object.keys(litellmModels).length > 0) {
-      // Get LiteLLM API key if configured
-      const litellmApiKey = getApiKey('litellm');
-      
-      const litellmOptions: LiteLLMProviderConfig['options'] = {
-        baseURL: `${litellmConfig.baseUrl}/v1`,
-      };
-      
-      // Add API key to options if available
-      if (litellmApiKey) {
-        litellmOptions.apiKey = litellmApiKey;
-        console.log('[OpenCode Config] LiteLLM API key configured');
-      }
-      
-      providerConfig.litellm = {
-        npm: '@ai-sdk/openai-compatible',
-        name: 'LiteLLM',
-        options: litellmOptions,
-        models: litellmModels,
-      };
-      console.log('[OpenCode Config] LiteLLM provider configured with model:', Object.keys(litellmModels));
-    }
-  }
-
-  // Add Z.AI Coding Plan provider configuration with all supported models
-  // This is needed because OpenCode's built-in zai-coding-plan provider may not have all models
-  const zaiKey = getApiKey('zai');
-  if (zaiKey) {
-    const zaiModels: Record<string, ZaiProviderModelConfig> = {
-      'glm-4.7-flashx': { name: 'GLM-4.7 FlashX (Latest)', tools: true },
-      'glm-4.7': { name: 'GLM-4.7', tools: true },
-      'glm-4.7-flash': { name: 'GLM-4.7 Flash', tools: true },
-      'glm-4.6': { name: 'GLM-4.6', tools: true },
-      'glm-4.5-flash': { name: 'GLM-4.5 Flash', tools: true },
-    };
-
-    providerConfig['zai-coding-plan'] = {
-      npm: '@ai-sdk/openai-compatible',
-      name: 'Z.AI Coding Plan',
-      options: {
-        baseURL: 'https://open.bigmodel.cn/api/paas/v4',
-      },
-      models: zaiModels,
-    };
-    console.log('[OpenCode Config] Z.AI Coding Plan provider configured with models:', Object.keys(zaiModels));
   }
 
   const config: OpenCodeConfig = {
@@ -604,7 +490,7 @@ export async function generateOpenCodeConfig(): Promise<string> {
     // AskUserQuestion for user confirmations, which shows in the UI as an interactive modal.
     // CLI-level permission prompts don't show in the UI and would block task execution.
     permission: 'allow',
-    provider: Object.keys(providerConfig).length > 0 ? providerConfig : undefined,
+    provider: providerConfig,
     agent: {
       [ACCOMPLISH_AGENT_NAME]: {
         description: 'Browser automation assistant using dev-browser',
@@ -623,15 +509,6 @@ export async function generateOpenCodeConfig(): Promise<string> {
         },
         timeout: 10000,
       },
-      'ask-user-question': {
-        type: 'local',
-        command: ['npx', 'tsx', path.join(skillsPath, 'ask-user-question', 'src', 'index.ts')],
-        enabled: true,
-        environment: {
-          QUESTION_API_PORT: String(QUESTION_API_PORT),
-        },
-        timeout: 10000,
-      },
     },
   };
 
@@ -639,14 +516,12 @@ export async function generateOpenCodeConfig(): Promise<string> {
   const configJson = JSON.stringify(config, null, 2);
   fs.writeFileSync(configPath, configJson);
 
-  // Set environment variables for OpenCode to find the config and skills
+  // Set environment variable for OpenCode to find the config
   process.env.OPENCODE_CONFIG = configPath;
-  process.env.OPENCODE_CONFIG_DIR = openCodeConfigDir;
 
   console.log('[OpenCode Config] Generated config at:', configPath);
   console.log('[OpenCode Config] Full config:', configJson);
   console.log('[OpenCode Config] OPENCODE_CONFIG env set to:', process.env.OPENCODE_CONFIG);
-  console.log('[OpenCode Config] OPENCODE_CONFIG_DIR env set to:', process.env.OPENCODE_CONFIG_DIR);
 
   return configPath;
 }
@@ -656,70 +531,4 @@ export async function generateOpenCodeConfig(): Promise<string> {
  */
 export function getOpenCodeConfigPath(): string {
   return path.join(app.getPath('userData'), 'opencode', 'opencode.json');
-}
-
-/**
- * Get the path to OpenCode CLI's auth.json
- * OpenCode stores credentials in ~/.local/share/opencode/auth.json
- */
-export function getOpenCodeAuthPath(): string {
-  const homeDir = app.getPath('home');
-  if (process.platform === 'win32') {
-    return path.join(homeDir, 'AppData', 'Local', 'opencode', 'auth.json');
-  }
-  return path.join(homeDir, '.local', 'share', 'opencode', 'auth.json');
-}
-
-/**
- * Sync API keys from Openwork's secure storage to OpenCode CLI's auth.json
- * This allows OpenCode CLI to recognize DeepSeek and Z.AI providers
- */
-export async function syncApiKeysToOpenCodeAuth(): Promise<void> {
-  const { getAllApiKeys } = await import('../store/secureStorage');
-  const apiKeys = await getAllApiKeys();
-
-  const authPath = getOpenCodeAuthPath();
-  const authDir = path.dirname(authPath);
-
-  // Ensure directory exists
-  if (!fs.existsSync(authDir)) {
-    fs.mkdirSync(authDir, { recursive: true });
-  }
-
-  // Read existing auth.json or create empty object
-  let auth: Record<string, { type: string; key: string }> = {};
-  if (fs.existsSync(authPath)) {
-    try {
-      auth = JSON.parse(fs.readFileSync(authPath, 'utf-8'));
-    } catch (e) {
-      console.warn('[OpenCode Auth] Failed to parse existing auth.json, creating new one');
-      auth = {};
-    }
-  }
-
-  let updated = false;
-
-  // Sync DeepSeek API key
-  if (apiKeys.deepseek) {
-    if (!auth['deepseek'] || auth['deepseek'].key !== apiKeys.deepseek) {
-      auth['deepseek'] = { type: 'api', key: apiKeys.deepseek };
-      updated = true;
-      console.log('[OpenCode Auth] Synced DeepSeek API key');
-    }
-  }
-
-  // Sync Z.AI Coding Plan API key (maps to 'zai-coding-plan' provider in OpenCode CLI)
-  if (apiKeys.zai) {
-    if (!auth['zai-coding-plan'] || auth['zai-coding-plan'].key !== apiKeys.zai) {
-      auth['zai-coding-plan'] = { type: 'api', key: apiKeys.zai };
-      updated = true;
-      console.log('[OpenCode Auth] Synced Z.AI Coding Plan API key');
-    }
-  }
-
-  // Write updated auth.json
-  if (updated) {
-    fs.writeFileSync(authPath, JSON.stringify(auth, null, 2));
-    console.log('[OpenCode Auth] Updated auth.json at:', authPath);
-  }
 }

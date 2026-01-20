@@ -2,7 +2,6 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import electron from 'vite-plugin-electron';
 import path from 'path';
-import pkg from './package.json';
 
 // Desktop app with local React UI
 // No longer uses remote UI from Vercel
@@ -33,9 +32,6 @@ export default defineConfig(() => ({
           reload();
         },
         vite: {
-          define: {
-            'process.env.npm_package_version': JSON.stringify(pkg.version),
-          },
           build: {
             outDir: 'dist-electron/preload',
             lib: {
@@ -56,6 +52,7 @@ export default defineConfig(() => ({
   ],
   resolve: {
     alias: {
+      '@accomplish/shared': path.resolve(__dirname, '../../packages/shared/src'),
       '@': path.resolve(__dirname, 'src/renderer'),
       '@main': path.resolve(__dirname, 'src/main'),
       '@renderer': path.resolve(__dirname, 'src/renderer'),

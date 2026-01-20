@@ -1,16 +1,16 @@
-import * as pty from 'node-pty';
 import { EventEmitter } from 'events';
 import { app } from 'electron';
 import fs from 'fs';
+import type * as pty from 'node-pty';
 import { StreamParser } from './stream-parser';
 import {
   getOpenCodeCliPath,
   isOpenCodeBundled,
   getBundledOpenCodeVersion,
 } from './cli-path';
-import { getAllApiKeys, getBedrockCredentials } from '../store/secureStorage';
+import { getAllApiKeys } from '../store/secureStorage';
 import { getSelectedModel } from '../store/appSettings';
-import { generateOpenCodeConfig, ACCOMPLISH_AGENT_NAME, syncApiKeysToOpenCodeAuth } from './config-generator';
+import { generateOpenCodeConfig, ACCOMPLISH_AGENT_NAME } from './config-generator';
 import { getExtendedNodePath } from '../utils/system-path';
 import { getBundledNodePaths, logBundledNodeInfo } from '../utils/bundled-node';
 import path from 'path';
@@ -32,6 +32,16 @@ export class OpenCodeCliNotFoundError extends Error {
       'OpenCode CLI is not available. The bundled CLI may be missing or corrupted. Please reinstall the application.'
     );
     this.name = 'OpenCodeCliNotFoundError';
+  }
+}
+
+/**
+ * Error thrown when node-pty is unavailable or fails to load
+ */
+export class NodePtyUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NodePtyUnavailableError';
   }
 }
 
@@ -62,11 +72,15 @@ export interface OpenCodeAdapterEvents {
 
 export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
   private ptyProcess: pty.IPty | null = null;
+  private ptyModule: typeof import('node-pty') | null = null;
+  private hasPtyOutput: boolean = false;
   private streamParser: StreamParser;
   private currentSessionId: string | null = null;
   private currentTaskId: string | null = null;
   private messages: TaskMessage[] = [];
   private hasCompleted: boolean = false;
+  private pendingComplete: TaskResult | null = null;
+  private completeTimer: NodeJS.Timeout | null = null;
   private isDisposed: boolean = false;
   private wasInterrupted: boolean = false;
 
@@ -104,9 +118,6 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
     this.hasCompleted = false;
     this.wasInterrupted = false;
 
-    // Sync API keys to OpenCode CLI's auth.json (for DeepSeek, Z.AI support)
-    await syncApiKeysToOpenCodeAuth();
-
     // Generate OpenCode config file with MCP settings and agent
     console.log('[OpenCode CLI] Generating OpenCode config with MCP settings and agent...');
     const configPath = await generateOpenCodeConfig();
@@ -143,7 +154,7 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
     // Always use PTY for proper terminal emulation
     // We spawn via shell because posix_spawnp doesn't interpret shebangs
     {
-      const fullCommand = [command, ...allArgs].map(arg => {
+      let fullCommand = [command, ...allArgs].map(arg => {
         // Escape single quotes in arguments for shell (Unix) or handle Windows quoting
         if (process.platform === 'win32') {
           // Windows: use double quotes for arguments with spaces
@@ -166,12 +177,16 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
 
       // Use platform-appropriate shell
       const shellCmd = this.getPlatformShell();
-      const shellArgs = this.getShellArgs(fullCommand);
+      if (process.platform === 'win32' && /powershell\.exe$/i.test(shellCmd)) {
+        fullCommand = `& ${fullCommand}`;
+      }
+      const shellArgs = this.getShellArgs(fullCommand, shellCmd);
       const shellMsg = `Using shell: ${shellCmd} ${shellArgs.join(' ')}`;
       console.log('[OpenCode CLI]', shellMsg);
       this.emit('debug', { type: 'info', message: shellMsg });
 
-      this.ptyProcess = pty.spawn(shellCmd, shellArgs, {
+      const ptyModule = await this.getPtyModule();
+      this.ptyProcess = ptyModule.spawn(shellCmd, shellArgs, {
         name: 'xterm-256color',
         cols: 200,
         rows: 30,
@@ -184,9 +199,16 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
 
       // Handle PTY data (combines stdout/stderr)
       this.ptyProcess.onData((data: string) => {
-        // Filter out ANSI escape codes and control characters for cleaner parsing
-        const cleanData = data.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '');
+        // Filter out ANSI escape codes and terminal control sequences for cleaner parsing
+        const cleanData = data
+          .replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '')
+          .replace(/\x1B\][^\x07]*\x07/g, '')
+          .replace(/\x1B\][^\x1B]*(?:\x1B\\)/g, '')
+          .replace(/\r/g, '')
+          // Strip control chars that break JSON parsing (keep \n for line splitting).
+          .replace(/[\x00-\x09\x0B\x0C\x0E-\x1F\x7F]/g, '');
         if (cleanData.trim()) {
+          this.hasPtyOutput = true;
           // Truncate for console.log to avoid flooding terminal
           const truncated = cleanData.substring(0, 500) + (cleanData.length > 500 ? '...' : '');
           console.log('[OpenCode CLI stdout]:', truncated);
@@ -202,6 +224,14 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
         const exitMsg = `PTY Process exited with code: ${exitCode}, signal: ${signal}`;
         console.log('[OpenCode CLI]', exitMsg);
         this.emit('debug', { type: 'exit', message: exitMsg, data: { exitCode, signal } });
+        if (exitCode && !this.hasPtyOutput) {
+          this.emit('debug', {
+            type: 'warn',
+            message: 'PTY exited without output; check shell invocation or model selection.',
+          });
+        }
+        // Flush any trailing JSON without a newline before completing.
+        this.streamParser.flush();
         this.handleProcessExit(exitCode);
       });
     }
@@ -353,6 +383,21 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
         console.log('[OpenCode CLI] Added bundled Node.js to PATH:', bundledNode.binDir);
       }
 
+      if (process.platform === 'win32') {
+        const delimiter = ';';
+        const system32 = 'C:\\Windows\\System32';
+        const powershell = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0';
+        const currentPath = env.PATH || '';
+        const pathParts = currentPath.split(delimiter).filter(Boolean);
+        if (!pathParts.includes(system32)) {
+          pathParts.push(system32);
+        }
+        if (!pathParts.includes(powershell)) {
+          pathParts.push(powershell);
+        }
+        env.PATH = pathParts.join(delimiter);
+      }
+
       // For packaged apps on macOS, also extend PATH to include common Node.js locations as fallback.
       // This avoids using login shell which triggers folder access permissions.
       if (process.platform === 'darwin') {
@@ -379,42 +424,6 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
     if (apiKeys.xai) {
       env.XAI_API_KEY = apiKeys.xai;
       console.log('[OpenCode CLI] Using xAI API key from settings');
-    }
-    if (apiKeys.deepseek) {
-      env.DEEPSEEK_API_KEY = apiKeys.deepseek;
-      console.log('[OpenCode CLI] Using DeepSeek API key from settings');
-    }
-    if (apiKeys.zai) {
-      env.ZAI_API_KEY = apiKeys.zai;
-      console.log('[OpenCode CLI] Using Z.AI API key from settings');
-    }
-    if (apiKeys.openrouter) {
-      env.OPENROUTER_API_KEY = apiKeys.openrouter;
-      console.log('[OpenCode CLI] Using OpenRouter API key from settings');
-    }
-    if (apiKeys.litellm) {
-      env.LITELLM_API_KEY = apiKeys.litellm;
-      console.log('[OpenCode CLI] Using LiteLLM API key from settings');
-    }
-
-    // Set Bedrock credentials if configured
-    const bedrockCredentials = getBedrockCredentials();
-    if (bedrockCredentials) {
-      if (bedrockCredentials.authType === 'accessKeys') {
-        env.AWS_ACCESS_KEY_ID = bedrockCredentials.accessKeyId;
-        env.AWS_SECRET_ACCESS_KEY = bedrockCredentials.secretAccessKey;
-        if (bedrockCredentials.sessionToken) {
-          env.AWS_SESSION_TOKEN = bedrockCredentials.sessionToken;
-        }
-        console.log('[OpenCode CLI] Using Bedrock Access Key credentials');
-      } else if (bedrockCredentials.authType === 'profile') {
-        env.AWS_PROFILE = bedrockCredentials.profileName;
-        console.log('[OpenCode CLI] Using Bedrock AWS Profile:', bedrockCredentials.profileName);
-      }
-      if (bedrockCredentials.region) {
-        env.AWS_REGION = bedrockCredentials.region;
-        console.log('[OpenCode CLI] Using Bedrock region:', bedrockCredentials.region);
-      }
     }
 
     // Set Ollama host if configured
@@ -455,21 +464,7 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
 
     // Add model selection if specified
     if (selectedModel?.model) {
-      if (selectedModel.provider === 'zai') {
-        // Z.AI Coding Plan uses 'zai-coding-plan' provider in OpenCode CLI
-        const modelId = selectedModel.model.split('/').pop();
-        args.push('--model', `zai-coding-plan/${modelId}`);
-      } else if (selectedModel.provider === 'deepseek') {
-        // DeepSeek uses 'deepseek' provider in OpenCode CLI
-        const modelId = selectedModel.model.split('/').pop();
-        args.push('--model', `deepseek/${modelId}`);
-      } else if (selectedModel.provider === 'openrouter') {
-        // OpenRouter models use format: openrouter/provider/model
-        // The fullId is already in the correct format (e.g., openrouter/anthropic/claude-opus-4-5)
-        args.push('--model', selectedModel.model);
-      } else {
-        args.push('--model', selectedModel.model);
-      }
+      args.push('--model', selectedModel.model);
     }
 
     // Resume session if specified
@@ -481,6 +476,26 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
     args.push('--agent', ACCOMPLISH_AGENT_NAME);
 
     return args;
+  }
+
+  private async getPtyModule(): Promise<typeof import('node-pty')> {
+    if (this.ptyModule) {
+      return this.ptyModule;
+    }
+
+    try {
+      const module = await import('node-pty');
+      this.ptyModule = module;
+      return module;
+    } catch (error) {
+      const details =
+        process.platform === 'win32'
+          ? 'On Windows, install the "C++ Spectre-mitigated libs (v142)" component in Visual Studio Build Tools, then re-run electron-rebuild.'
+          : 'Rebuild native modules for Electron and try again.';
+      throw new NodePtyUnavailableError(
+        `node-pty failed to load. ${details}`
+      );
+    }
   }
 
   private setupStreamParsing(): void {
@@ -607,14 +622,12 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
         // Only complete if reason is 'stop' or 'end_turn' (final completion)
         // 'tool_use' means there are more steps coming
         if (message.part.reason === 'stop' || message.part.reason === 'end_turn') {
-          this.hasCompleted = true;
-          this.emit('complete', {
+          this.scheduleComplete({
             status: 'success',
             sessionId: this.currentSessionId || undefined,
           });
         } else if (message.part.reason === 'error') {
-          this.hasCompleted = true;
-          this.emit('complete', {
+          this.scheduleComplete({
             status: 'error',
             sessionId: this.currentSessionId || undefined,
             error: 'Task failed',
@@ -662,7 +675,7 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
 
   private handleProcessExit(code: number | null): void {
     // Only emit complete/error if we haven't already received a result message
-    if (!this.hasCompleted) {
+    if (!this.hasCompleted && !this.pendingComplete) {
       if (this.wasInterrupted && code === 0) {
         // User interrupted the task - emit interrupted status so they can continue
         console.log('[OpenCode CLI] Task was interrupted by user');
@@ -684,6 +697,30 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
 
     this.ptyProcess = null;
     this.currentTaskId = null;
+  }
+
+  private scheduleComplete(result: TaskResult): void {
+    if (this.hasCompleted) {
+      return;
+    }
+
+    this.pendingComplete = result;
+    if (this.completeTimer) {
+      clearTimeout(this.completeTimer);
+    }
+
+    // Defer completion so any trailing messages in the same chunk are processed first.
+    this.completeTimer = setTimeout(() => {
+      this.completeTimer = null;
+      if (this.hasCompleted) {
+        return;
+      }
+      // Flush any trailing JSON without a newline before marking complete.
+      this.streamParser.flush();
+      this.hasCompleted = true;
+      this.emit('complete', result);
+      this.pendingComplete = null;
+    }, 0);
   }
 
   private generateTaskId(): string {
@@ -709,8 +746,19 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
    */
   private getPlatformShell(): string {
     if (process.platform === 'win32') {
-      // Use PowerShell on Windows for better compatibility
-      return 'powershell.exe';
+      // Use PowerShell on Windows for better compatibility; fallback to cmd.exe
+      const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+      const powershellPath = path.join(
+        systemRoot,
+        'System32',
+        'WindowsPowerShell',
+        'v1.0',
+        'powershell.exe'
+      );
+      if (fs.existsSync(powershellPath)) {
+        return powershellPath;
+      }
+      return 'cmd.exe';
     } else if (app.isPackaged && process.platform === 'darwin') {
       // In packaged macOS apps, use /bin/sh to avoid loading user shell configs
       // (zsh always loads ~/.zshenv, which may trigger TCC permissions)
@@ -738,10 +786,14 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
    * Instead, we extend PATH in buildEnvironment() using path_helper and common
    * Node.js installation paths. This is the proper macOS approach for GUI apps.
    */
-  private getShellArgs(command: string): string[] {
+  private getShellArgs(command: string, shellCmd: string): string[] {
     if (process.platform === 'win32') {
-      // PowerShell: -NoProfile for faster startup, -Command to run the command
-      return ['-NoProfile', '-Command', command];
+      if (/powershell\.exe$/i.test(shellCmd)) {
+        const utf8Preamble = '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new();';
+        return ['-NoProfile', '-Command', `${utf8Preamble} ${command}`];
+      }
+      // cmd.exe: force UTF-8 codepage for consistent output
+      return ['/d', '/s', '/c', `chcp 65001 >NUL & ${command}`];
     } else {
       // Unix shells: -c to run command (no -l to avoid profile loading)
       return ['-c', command];

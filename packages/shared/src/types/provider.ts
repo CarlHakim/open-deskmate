@@ -2,7 +2,7 @@
  * Provider and model configuration types for multi-provider support
  */
 
-export type ProviderType = 'anthropic' | 'openai' | 'openrouter' | 'google' | 'xai' | 'ollama' | 'deepseek' | 'zai' | 'custom' | 'bedrock' | 'litellm';
+export type ProviderType = 'anthropic' | 'openai' | 'google' | 'xai' | 'ollama' | 'custom';
 
 export interface ProviderConfig {
   id: ProviderType;
@@ -46,44 +46,6 @@ export interface OllamaConfig {
   enabled: boolean;
   lastValidated?: number;
   models?: OllamaModelInfo[];  // Discovered models from Ollama API
-}
-
-/**
- * OpenRouter model info from API
- */
-export interface OpenRouterModel {
-  id: string;           // e.g., "anthropic/claude-3.5-sonnet"
-  name: string;         // e.g., "Claude 3.5 Sonnet"
-  provider: string;     // e.g., "anthropic" (extracted from id)
-  contextLength: number;
-}
-
-/**
- * OpenRouter configuration
- */
-export interface OpenRouterConfig {
-  models: OpenRouterModel[];
-  lastFetched?: number;
-}
-
-/**
- * LiteLLM model info from API
- */
-export interface LiteLLMModel {
-  id: string;           // e.g., "openai/gpt-4"
-  name: string;         // Display name (same as id for LiteLLM)
-  provider: string;     // Extracted from model ID
-  contextLength: number;
-}
-
-/**
- * LiteLLM configuration
- */
-export interface LiteLLMConfig {
-  baseUrl: string;      // e.g., "http://localhost:4000"
-  enabled: boolean;
-  lastValidated?: number;
-  models?: LiteLLMModel[];
 }
 
 /**
@@ -184,111 +146,6 @@ export const DEFAULT_PROVIDERS: ProviderConfig[] = [
         fullId: 'xai/grok-3',
         contextWindow: 131000,
         supportsVision: false,
-      },
-    ],
-  },
-  {
-    id: 'deepseek',
-    name: 'DeepSeek',
-    requiresApiKey: true,
-    apiKeyEnvVar: 'DEEPSEEK_API_KEY',
-    baseUrl: 'https://api.deepseek.com',
-    models: [
-      {
-        id: 'deepseek-chat',
-        displayName: 'DeepSeek Chat (V3)',
-        provider: 'deepseek',
-        fullId: 'deepseek/deepseek-chat',
-        contextWindow: 64000,
-        supportsVision: false,
-      },
-      {
-        id: 'deepseek-reasoner',
-        displayName: 'DeepSeek Reasoner (R1)',
-        provider: 'deepseek',
-        fullId: 'deepseek/deepseek-reasoner',
-        contextWindow: 64000,
-        supportsVision: false,
-      },
-    ],
-  },
-  {
-    id: 'zai',
-    name: 'Z.AI Coding Plan',
-    requiresApiKey: true,
-    apiKeyEnvVar: 'ZAI_API_KEY',
-    baseUrl: 'https://open.bigmodel.cn',
-    models: [
-      {
-        id: 'glm-4.7-flashx',
-        displayName: 'GLM-4.7 FlashX (Latest)',
-        provider: 'zai',
-        fullId: 'zai/glm-4.7-flashx',
-        contextWindow: 200000,
-        supportsVision: false,
-      },
-      {
-        id: 'glm-4.7',
-        displayName: 'GLM-4.7',
-        provider: 'zai',
-        fullId: 'zai/glm-4.7',
-        contextWindow: 200000,
-        supportsVision: false,
-      },
-      {
-        id: 'glm-4.7-flash',
-        displayName: 'GLM-4.7 Flash',
-        provider: 'zai',
-        fullId: 'zai/glm-4.7-flash',
-        contextWindow: 200000,
-        supportsVision: false,
-      },
-      {
-        id: 'glm-4.6',
-        displayName: 'GLM-4.6',
-        provider: 'zai',
-        fullId: 'zai/glm-4.6',
-        contextWindow: 200000,
-        supportsVision: false,
-      },
-      {
-        id: 'glm-4.5-flash',
-        displayName: 'GLM-4.5 Flash',
-        provider: 'zai',
-        fullId: 'zai/glm-4.5-flash',
-        contextWindow: 128000,
-        supportsVision: false,
-      },
-    ],
-  },
-  {
-    id: 'bedrock',
-    name: 'Amazon Bedrock',
-    requiresApiKey: false, // Uses AWS credentials
-    models: [
-      {
-        id: 'anthropic.claude-opus-4-5-20251101-v1:0',
-        displayName: 'Claude Opus 4.5',
-        provider: 'bedrock',
-        fullId: 'amazon-bedrock/anthropic.claude-opus-4-5-20251101-v1:0',
-        contextWindow: 200000,
-        supportsVision: true,
-      },
-      {
-        id: 'anthropic.claude-sonnet-4-5-20250929-v1:0',
-        displayName: 'Claude Sonnet 4.5',
-        provider: 'bedrock',
-        fullId: 'amazon-bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0',
-        contextWindow: 200000,
-        supportsVision: true,
-      },
-      {
-        id: 'anthropic.claude-haiku-4-5-20251001-v1:0',
-        displayName: 'Claude Haiku 4.5',
-        provider: 'bedrock',
-        fullId: 'amazon-bedrock/anthropic.claude-haiku-4-5-20251001-v1:0',
-        contextWindow: 200000,
-        supportsVision: true,
       },
     ],
   },

@@ -205,7 +205,6 @@ let mockPendingPermissions = new Map<string, { resolve: Function }>();
 
 vi.mock('@main/permission-api', () => ({
   startPermissionApiServer: vi.fn(),
-  startQuestionApiServer: vi.fn(),
   initPermissionApi: vi.fn(),
   resolvePermission: vi.fn((requestId: string, allowed: boolean) => {
     const pending = mockPendingPermissions.get(requestId);
@@ -216,10 +215,7 @@ vi.mock('@main/permission-api', () => ({
     }
     return false;
   }),
-  resolveQuestion: vi.fn(() => true),
   isFilePermissionRequest: vi.fn((requestId: string) => requestId.startsWith('filereq_')),
-  isQuestionRequest: vi.fn((requestId: string) => requestId.startsWith('question_')),
-  QUESTION_API_PORT: 9227,
 }));
 
 // Import after mocks are set up

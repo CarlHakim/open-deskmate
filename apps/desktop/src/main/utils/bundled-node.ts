@@ -46,13 +46,33 @@ export function getBundledNodePaths(): BundledNodePaths | null {
   const scriptExt = isWindows ? '.cmd' : '';
 
   // Node.js directory is architecture-specific
-  const nodeDir = path.join(
-    process.resourcesPath,
-    'nodejs',
-    arch // 'x64' or 'arm64' subdirectory
-  );
+  const baseDir = path.join(process.resourcesPath, 'nodejs', arch);
+  let nodeDir = baseDir;
+  let binDir = isWindows ? baseDir : path.join(baseDir, 'bin');
 
-  const binDir = isWindows ? nodeDir : path.join(nodeDir, 'bin');
+  const expectedDirName = isWindows
+    ? `node-v${NODE_VERSION}-win-${arch}`
+    : `node-v${NODE_VERSION}-${platform}-${arch}`;
+
+  const nodeCandidate = path.join(binDir, `node${ext}`);
+  if (!fs.existsSync(nodeCandidate)) {
+    try {
+      const entries = fs.readdirSync(baseDir, { withFileTypes: true });
+      const versionedDirs = entries
+        .filter((entry) => entry.isDirectory() && entry.name.startsWith('node-v'))
+        .map((entry) => entry.name);
+
+      if (versionedDirs.length > 0) {
+        const selected = versionedDirs.includes(expectedDirName)
+          ? expectedDirName
+          : versionedDirs[0];
+        nodeDir = path.join(baseDir, selected);
+        binDir = isWindows ? nodeDir : path.join(nodeDir, 'bin');
+      }
+    } catch {
+      // Fall back to baseDir layout
+    }
+  }
 
   return {
     nodePath: path.join(binDir, `node${ext}`),

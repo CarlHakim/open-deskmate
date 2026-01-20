@@ -1,26 +1,14 @@
-## Description
+## Summary
+Brief description of changes.
 
-<!-- Brief description of what this PR does -->
+## Changes
+- Change 1
+- Change 2
 
-## Type of Change
-
-<!-- Mark the relevant option with 'x' -->
-
-- [ ] `feat`: New feature or functionality
-- [ ] `fix`: Bug fix
-- [ ] `docs`: Documentation only changes
-- [ ] `chore`: Maintenance, dependencies, or tooling
-- [ ] `refactor`: Code refactoring (no feature change)
-- [ ] `test`: Adding or updating tests
-- [ ] `perf`: Performance improvement
-- [ ] `ci`: CI/CD changes
+## Testing
+How was this tested?
 
 ## Checklist
-
-- [ ] PR title follows conventional commit format (e.g., `feat: add dark mode support`)
-- [ ] Changes have been tested locally
-- [ ] Any new dependencies are justified
-
-## Related Issues
-
-<!-- Link any related issues: Fixes #123, Relates to #456 -->
+- [ ] Code builds without errors (`pnpm build`)
+- [ ] Type checks pass (`pnpm typecheck`)
+- [ ] Documentation updated (if needed)

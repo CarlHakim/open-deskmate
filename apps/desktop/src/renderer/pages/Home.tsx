@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import TaskInputBar from '../components/landing/TaskInputBar';
 import SettingsDialog from '../components/layout/SettingsDialog';
@@ -9,6 +9,7 @@ import { useTaskStore } from '../stores/taskStore';
 import { getAccomplish } from '../lib/accomplish';
 import { springs, staggerContainer, staggerItem } from '../lib/animations';
 import { Card, CardContent } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import { ChevronDown } from 'lucide-react';
 
 // Import use case images for proper bundling in production
@@ -81,10 +82,13 @@ const USE_CASE_EXAMPLES = [
 
 export default function HomePage() {
   const [prompt, setPrompt] = useState('');
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [showExamples, setShowExamples] = useState(true);
   const [showSettingsDialog, setShowSettingsDialog] = useState(false);
-  const { startTask, isLoading, addTaskUpdate, setPermissionRequest } = useTaskStore();
+  const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
+  const { startTask, isLoading, addTaskUpdate, setPermissionRequest, error, currentTask } = useTaskStore();
   const navigate = useNavigate();
+  const location = useLocation();
   const accomplish = getAccomplish();
 
   // Subscribe to task events
@@ -109,20 +113,38 @@ export default function HomePage() {
     const taskId = `task_${Date.now()}`;
     const task = await startTask({ prompt: prompt.trim(), taskId });
     if (task) {
-      navigate(`/execution/${task.id}`);
+      setPendingTaskId(task.id);
+    } else {
+      setPendingTaskId(null);
     }
   }, [prompt, isLoading, startTask, navigate]);
 
+  useEffect(() => {
+    if (!pendingTaskId || location.pathname !== '/') return;
+    if (currentTask?.id === pendingTaskId) {
+      navigate(`/execution/${pendingTaskId}`);
+      setPendingTaskId(null);
+    }
+  }, [pendingTaskId, currentTask?.id, location.pathname, navigate]);
+
   const handleSubmit = async () => {
     if (!prompt.trim() || isLoading) return;
+    setSubmitError(null);
 
-    // Check if user has any API key (Anthropic, OpenAI, Google, etc.) or local/proxy provider configured
-    const hasKey = await accomplish.hasAnyApiKey();
-    const selectedModel = await accomplish.getSelectedModel();
-    const hasOllamaConfigured = selectedModel?.provider === 'ollama';
-    const hasLiteLLMConfigured = selectedModel?.provider === 'litellm';
+    // Check if user has any API key (Anthropic, OpenAI, Google, etc.) or Ollama configured before sending
+    let hasKey = false;
+    let hasOllamaConfigured = false;
+    try {
+      hasKey = await accomplish.hasAnyApiKey();
+      const selectedModel = await accomplish.getSelectedModel();
+      hasOllamaConfigured = selectedModel?.provider === 'ollama';
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : 'Failed to check API key status.');
+      setShowSettingsDialog(true);
+      return;
+    }
 
-    if (!hasKey && !hasOllamaConfigured && !hasLiteLLMConfigured) {
+    if (!hasKey && !hasOllamaConfigured) {
       setShowSettingsDialog(true);
       return;
     }
@@ -186,6 +208,24 @@ export default function HomePage() {
                 large={true}
                 autoFocus={true}
               />
+              {(submitError || error) && (
+                <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  {submitError || error}
+                </div>
+              )}
+              {pendingTaskId && currentTask?.id === pendingTaskId && location.pathname === '/' && (
+                <div className="mt-3 flex items-center justify-between rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
+                  <span>Task started. Opening task view...</span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => navigate(`/execution/${pendingTaskId}`)}
+                  >
+                    Open task
+                  </Button>
+                </div>
+              )}
             </CardContent>
 
             {/* Examples Toggle */}

@@ -62,9 +62,8 @@ export default function TaskLauncher() {
         const hasKey = await accomplish.hasAnyApiKey();
         const selectedModel = await accomplish.getSelectedModel();
         const hasOllamaConfigured = selectedModel?.provider === 'ollama';
-        const hasLiteLLMConfigured = selectedModel?.provider === 'litellm';
 
-        if (!hasKey && !hasOllamaConfigured && !hasLiteLLMConfigured) {
+        if (!hasKey && !hasOllamaConfigured) {
           closeLauncher();
           navigate('/');
           return;

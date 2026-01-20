@@ -42,7 +42,7 @@ const accomplishAPI = {
   // Settings
   getApiKeys: (): Promise<unknown[]> => ipcRenderer.invoke('settings:api-keys'),
   addApiKey: (
-    provider: 'anthropic' | 'openai' | 'openrouter' | 'google' | 'xai' | 'deepseek' | 'zai' | 'custom' | 'bedrock' | 'litellm',
+    provider: 'anthropic' | 'openai' | 'google' | 'xai' | 'custom',
     key: string,
     label?: string
   ): Promise<unknown> =>
@@ -110,40 +110,6 @@ const accomplishAPI = {
   setOllamaConfig: (config: { baseUrl: string; enabled: boolean; lastValidated?: number; models?: Array<{ id: string; displayName: string; size: number }> } | null): Promise<void> =>
     ipcRenderer.invoke('ollama:set-config', config),
 
-  // OpenRouter configuration
-  fetchOpenRouterModels: (): Promise<{
-    success: boolean;
-    models?: Array<{ id: string; name: string; provider: string; contextLength: number }>;
-    error?: string;
-  }> => ipcRenderer.invoke('openrouter:fetch-models'),
-
-  // LiteLLM configuration
-  testLiteLLMConnection: (url: string, apiKey?: string): Promise<{
-    success: boolean;
-    models?: Array<{ id: string; name: string; provider: string; contextLength: number }>;
-    error?: string;
-  }> => ipcRenderer.invoke('litellm:test-connection', url, apiKey),
-
-  fetchLiteLLMModels: (): Promise<{
-    success: boolean;
-    models?: Array<{ id: string; name: string; provider: string; contextLength: number }>;
-    error?: string;
-  }> => ipcRenderer.invoke('litellm:fetch-models'),
-
-  getLiteLLMConfig: (): Promise<{ baseUrl: string; enabled: boolean; lastValidated?: number; models?: Array<{ id: string; name: string; provider: string; contextLength: number }> } | null> =>
-    ipcRenderer.invoke('litellm:get-config'),
-
-  setLiteLLMConfig: (config: { baseUrl: string; enabled: boolean; lastValidated?: number; models?: Array<{ id: string; name: string; provider: string; contextLength: number }> } | null): Promise<void> =>
-    ipcRenderer.invoke('litellm:set-config', config),
-
-  // Bedrock
-  validateBedrockCredentials: (credentials: string) =>
-    ipcRenderer.invoke('bedrock:validate', credentials),
-  saveBedrockCredentials: (credentials: string) =>
-    ipcRenderer.invoke('bedrock:save', credentials),
-  getBedrockCredentials: () =>
-    ipcRenderer.invoke('bedrock:get-credentials'),
-
   // Event subscriptions
   onTaskUpdate: (callback: (event: unknown) => void) => {
     const listener = (_: unknown, event: unknown) => callback(event);
@@ -198,12 +164,8 @@ const accomplishAPI = {
 contextBridge.exposeInMainWorld('accomplish', accomplishAPI);
 
 // Also expose shell info for compatibility checks
-const packageVersion = process.env.npm_package_version;
-if (!packageVersion) {
-  throw new Error('Package version is not defined. Build is misconfigured.');
-}
 contextBridge.exposeInMainWorld('accomplishShell', {
-  version: packageVersion,
+  version: process.env.npm_package_version || '1.0.0',
   platform: process.platform,
   isElectron: true,
 });
