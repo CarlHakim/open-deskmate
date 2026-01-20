@@ -57,5 +57,10 @@ prisma/*.db-journal
 # Bundled Node.js binaries (downloaded via `pnpm -F @accomplish/desktop download:nodejs`)
 apps/desktop/resources/nodejs/
 
+# MD files to Inore
+CLAUDE.md
+TESTING.md
+CONTRIBUTING.md
+
 # Claude Instructions
 CLAUDE.md
