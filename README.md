@@ -1,6 +1,6 @@
 # OpenDeskmate
 
-An open-source desktop AI assistant for Windows. Run AI locally with your own API keys - no subscriptions, no cloud dependency.
+An open-source desktop AI assistant for Windows forked from the Openwork for Mac github project. Run AI locally with your own API keys - no subscriptions, no cloud dependency.
 
 ---
 
@@ -16,7 +16,7 @@ An open-source desktop AI assistant for Windows. Run AI locally with your own AP
 ## Installation (Windows)
 
 ### Option 1: Download Pre-built Release
-(coming later) Build from source, after creation of the exe you will find it in the folder apps/desktop/release/win-unpacked
+(Pre-built release coming soon) Go to Build from source section below, after creation of the exe you will find it in the folder apps/desktop/release/win-unpacked
 1. Go to [Releases](../../releases)
 2. Download `OpenDeskmate-x.x.x-win-x64.exe` (installer) or `OpenDeskmate-x.x.x-win-x64-portable.exe` (portable)
 3. Run the installer or portable executable

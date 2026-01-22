@@ -715,7 +715,7 @@ describe('SettingsDialog Integration', () => {
 
       // Assert
       await waitFor(() => {
-        expect(screen.getByText('Openwork')).toBeInTheDocument();
+        expect(screen.getByText('Open Deskmate')).toBeInTheDocument();
       });
     });
 

@@ -134,7 +134,7 @@ This document describes the modifications made to convert Open-Deskmate from a M
 | `apps/desktop/resources/icon.ico` | Windows application icon |
 | `apps/desktop/scripts/postinstall.cjs` | Cross-platform postinstall script |
 | `apps/desktop/scripts/opencode-smoke.cjs` | Smoke test script for OpenCode CLI |
-| `kill-processes.ps1` | PowerShell script to kill Openwork processes during development |
+| `kill-processes.ps1` | PowerShell script to kill Open Deskmate processes during development |
 | `CONTEXT.md` | Project context documentation |
 | `TESTING.md` | Testing documentation |
 | `docs/plans/2026-01-15-task-launcher-design.md` | Task launcher design document |

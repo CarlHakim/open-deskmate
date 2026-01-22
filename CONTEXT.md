@@ -1,7 +1,7 @@
 # Open-deskmate / CarlHakim/desktop — Windows Context
 
 ## Project Purpose
-The goal of this work is to make the Openwork desktop application build, package, and run reliably on Windows 10/11 (x64). The app must support workspace-based file access, OpenCode agent execution, browser automation via dev-browser, permission prompts, and a usable UI in both dev and packaged `.exe` builds.
+The goal of this work is to make the Open Deskmate desktop application build, package, and run reliably on Windows 10/11 (x64). The app must support workspace-based file access, OpenCode agent execution, browser automation via dev-browser, permission prompts, and a usable UI in both dev and packaged `.exe` builds.
 
 ## Architecture
 - pnpm monorepo
@@ -14,7 +14,7 @@ The goal of this work is to make the Openwork desktop application build, package
   - dev-browser
   - file-permission MCP
 - Packaged artifacts:
-  - `apps/desktop/release/win-unpacked/Openwork.exe`
+  - `apps/desktop/release/win-unpacked/Open Deskmate.exe`
 - Bundled Node is required for packaged runtime
 
 ## Key Technical Decisions & Fixes
@@ -48,7 +48,7 @@ The goal of this work is to make the Openwork desktop application build, package
 
 ## Current State
 - `pnpm dev` works on Windows.
-- Packaged `Openwork.exe` launches and accepts prompts.
+- Packaged `Open Deskmate.exe` launches and accepts prompts.
 - Tasks are created, saved, and visible in the sidebar.
 - Execution page opens automatically.
 - File operations (list/create/edit) work.

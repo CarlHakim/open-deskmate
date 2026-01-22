@@ -43,28 +43,71 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Shadcn-inspired theme variables */
+/* Open Deskmate Theme - Based on Logo Colors
+   Primary colors from logo:
+   - Deep Navy Blue: #1e3a5f (text)
+   - Teal/Cyan: #4db6ac (cup handle/base)
+   - Light Blue/Lavender: #b8d4f0 (cup body)
+   - Pink/Magenta: #e091b8 (tie)
+   - Yellow: #fdd835 (sticky note)
+   - Mint Green: #69f0ae (robot eye)
+*/
+
 :root {
-  --background: 0 0% 97.6%; /* #f9f9f9 */
-  --foreground: 0 0% 12.5%; /* #202020 */
-  --card: 0 0% 98.8%; /* #fcfcfc */
-  --card-foreground: 0 0% 12.5%; /* #202020 */
-  --popover: 0 0% 98.8%; /* #fcfcfc */
-  --popover-foreground: 0 0% 12.5%; /* #202020 */
-  --primary: 123 30% 20%; /* #213c20 */
+  /* Light theme - Clean, modern with navy and teal accents */
+  --background: 210 30% 98%; /* #f8fafc - soft blue-gray white */
+  --foreground: 215 45% 20%; /* #1e3a5f - deep navy from logo text */
+  --card: 0 0% 100%; /* #ffffff - pure white cards */
+  --card-foreground: 215 45% 20%; /* #1e3a5f */
+  --popover: 0 0% 100%; /* #ffffff */
+  --popover-foreground: 215 45% 20%; /* #1e3a5f */
+  --primary: 174 42% 51%; /* #4db6ac - teal from cup handle */
   --primary-foreground: 0 0% 100%; /* #ffffff */
-  --secondary: 120 14% 85%; /* #d8dfd7 */
-  --secondary-foreground: 100 20% 18%; /* #2b391e */
-  --muted: 0 0% 93.7%; /* #efefef */
-  --muted-foreground: 0 0% 39.2%; /* #646464 */
-  --accent: 0 0% 91%; /* #e8e8e8 */
-  --accent-foreground: 0 0% 12.5%; /* #202020 */
-  --destructive: 8 78% 54%; /* #e54d2e */
+  --secondary: 210 40% 94%; /* #e8f1fb - light blue tint */
+  --secondary-foreground: 215 45% 25%; /* #243d5c */
+  --muted: 210 25% 95%; /* #f1f5f9 - subtle blue-gray */
+  --muted-foreground: 215 20% 46%; /* #64748b */
+  --accent: 174 42% 94%; /* #e0f5f3 - light teal */
+  --accent-foreground: 174 42% 30%; /* #2a7a73 */
+  --destructive: 0 72% 51%; /* #ef4444 - modern red */
   --destructive-foreground: 0 0% 100%; /* #ffffff */
-  --border: 12 8% 90%; /* #eae2e1 */
-  --input: 0 0% 84.7%; /* #d8d8d8 */
-  --ring: 20 25% 33%; /* #644a40 */
-  --radius: 0.5rem;
+  --border: 214 32% 91%; /* #e2e8f0 - soft blue-gray border */
+  --input: 214 32% 91%; /* #e2e8f0 */
+  --ring: 174 42% 51%; /* #4db6ac - teal ring */
+  --radius: 0.625rem;
+
+  /* Additional accent colors from logo */
+  --success: 158 64% 52%; /* #34d399 - mint green inspired */
+  --warning: 45 93% 58%; /* #fbbf24 - yellow from sticky note */
+  --info: 210 100% 50%; /* #3b82f6 - bright blue */
+}
+
+/* Dark theme - Rich navy with vibrant teal accents */
+.dark {
+  --background: 220 30% 8%; /* #0f1419 - deep navy-black */
+  --foreground: 210 40% 96%; /* #f1f5f9 - soft white */
+  --card: 220 25% 12%; /* #161d26 - elevated navy */
+  --card-foreground: 210 40% 96%; /* #f1f5f9 */
+  --popover: 220 25% 12%; /* #161d26 */
+  --popover-foreground: 210 40% 96%; /* #f1f5f9 */
+  --primary: 174 50% 55%; /* #4ecdc4 - brighter teal for dark mode */
+  --primary-foreground: 220 30% 8%; /* #0f1419 - dark text on teal */
+  --secondary: 220 20% 18%; /* #242d38 - muted navy */
+  --secondary-foreground: 210 30% 80%; /* #b8c5d4 */
+  --muted: 220 20% 15%; /* #1e2630 - subtle elevation */
+  --muted-foreground: 215 20% 60%; /* #8899aa */
+  --accent: 174 35% 20%; /* #1f3d3a - dark teal */
+  --accent-foreground: 174 50% 65%; /* #6dd5cd */
+  --destructive: 0 72% 55%; /* #f45d5d - softer red for dark */
+  --destructive-foreground: 0 0% 100%; /* #ffffff */
+  --border: 220 20% 20%; /* #2a3441 - subtle border */
+  --input: 220 20% 22%; /* #303c4a */
+  --ring: 174 50% 55%; /* #4ecdc4 - teal ring */
+
+  /* Additional accent colors for dark mode */
+  --success: 158 64% 45%; /* #2eb888 - mint green */
+  --warning: 45 93% 50%; /* #f59e0b - golden yellow */
+  --info: 210 100% 60%; /* #5b9bf5 - bright blue */
 }
 
 /* Custom scrollbar */
@@ -139,4 +182,222 @@ textarea::placeholder {
   font-family: 'DM Sans', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif !important;
 }
 
-/* Component utilities - removed as we're using shadcn components now */
+/* ============================================
+   MODERN UI UTILITIES & EFFECTS
+   ============================================ */
+
+/* Glassmorphism effect */
+.glass {
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.dark .glass {
+  background: rgba(22, 29, 38, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Subtle gradient backgrounds */
+.gradient-subtle {
+  background: linear-gradient(
+    135deg,
+    hsl(var(--background)) 0%,
+    hsl(var(--muted)) 100%
+  );
+}
+
+.dark .gradient-subtle {
+  background: linear-gradient(
+    135deg,
+    hsl(var(--background)) 0%,
+    hsl(220 25% 14%) 100%
+  );
+}
+
+/* Animated gradient for hero sections */
+.gradient-animated {
+  background: linear-gradient(
+    -45deg,
+    hsl(var(--primary) / 0.1),
+    hsl(var(--accent)),
+    hsl(var(--secondary)),
+    hsl(var(--muted))
+  );
+  background-size: 400% 400%;
+  animation: gradientShift 15s ease infinite;
+}
+
+@keyframes gradientShift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+/* Modern shadow utilities */
+.shadow-soft {
+  box-shadow:
+    0 2px 8px -2px rgba(0, 0, 0, 0.05),
+    0 4px 16px -4px rgba(0, 0, 0, 0.1);
+}
+
+.shadow-glow {
+  box-shadow:
+    0 0 20px -5px hsl(var(--primary) / 0.3),
+    0 4px 16px -4px rgba(0, 0, 0, 0.1);
+}
+
+.dark .shadow-soft {
+  box-shadow:
+    0 2px 8px -2px rgba(0, 0, 0, 0.3),
+    0 4px 16px -4px rgba(0, 0, 0, 0.4);
+}
+
+.dark .shadow-glow {
+  box-shadow:
+    0 0 30px -5px hsl(var(--primary) / 0.4),
+    0 4px 16px -4px rgba(0, 0, 0, 0.3);
+}
+
+/* Hover lift effect */
+.hover-lift {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.hover-lift:hover {
+  transform: translateY(-2px);
+}
+
+/* Smooth transitions */
+.transition-smooth {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Modern card styles */
+@layer components {
+  .card-modern {
+    @apply rounded-xl border border-border bg-card shadow-soft;
+    transition: all 0.2s ease;
+  }
+
+  .card-modern:hover {
+    @apply shadow-glow;
+    border-color: hsl(var(--primary) / 0.3);
+  }
+
+  .card-glass {
+    @apply rounded-xl glass shadow-soft;
+  }
+
+  /* Modern button enhancements */
+  .btn-modern {
+    @apply relative overflow-hidden;
+    transition: all 0.2s ease;
+  }
+
+  .btn-modern::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      135deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0.1) 50%,
+      transparent 100%
+    );
+    transform: translateX(-100%);
+    transition: transform 0.3s ease;
+  }
+
+  .btn-modern:hover::before {
+    transform: translateX(100%);
+  }
+
+  /* Sidebar modern styles */
+  .sidebar-modern {
+    @apply bg-card/80 backdrop-blur-sm;
+    border-right: 1px solid hsl(var(--border) / 0.5);
+  }
+
+  .dark .sidebar-modern {
+    @apply bg-card/90;
+  }
+
+  /* Input modern styles */
+  .input-modern {
+    @apply rounded-xl border-2 border-border/50 bg-background/50 backdrop-blur-sm;
+    transition: all 0.2s ease;
+  }
+
+  .input-modern:focus {
+    @apply border-primary/50 bg-background;
+    box-shadow: 0 0 0 4px hsl(var(--primary) / 0.1);
+  }
+
+  /* Status indicator pulse */
+  .status-pulse {
+    animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+
+  /* Subtle text gradient */
+  .text-gradient {
+    background: linear-gradient(
+      135deg,
+      hsl(var(--foreground)) 0%,
+      hsl(var(--primary)) 100%
+    );
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+}
+
+/* Counter-clockwise spin animation for loading indicators */
+@keyframes spin-ccw {
+  from { transform: rotate(360deg); }
+  to { transform: rotate(0deg); }
+}
+
+.animate-spin-ccw {
+  animation: spin-ccw 1s linear infinite;
+}
+
+/* Smooth page transitions */
+.page-enter {
+  opacity: 0;
+  transform: translateY(10px);
+}
+
+.page-enter-active {
+  opacity: 1;
+  transform: translateY(0);
+  transition: all 0.3s ease;
+}
+
+/* Task list item hover enhancement */
+.task-item {
+  @apply relative overflow-hidden;
+}
+
+.task-item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: hsl(var(--primary));
+  transform: scaleY(0);
+  transition: transform 0.2s ease;
+}
+
+.task-item:hover::before,
+.task-item.active::before {
+  transform: scaleY(1);
+}

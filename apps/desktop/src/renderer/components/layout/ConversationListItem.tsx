@@ -67,26 +67,32 @@ export default function ConversationListItem({ task }: ConversationListItemProps
       }}
       title={task.summary || task.prompt}
       className={cn(
-        'w-full text-left px-3 py-2 rounded-md text-sm transition-colors duration-200',
-        'text-zinc-700 hover:bg-accent hover:text-accent-foreground',
-        'flex items-center gap-2 group relative cursor-pointer',
-        isActive && 'bg-accent text-accent-foreground'
+        'task-item w-full text-left px-3 py-2.5 rounded-xl text-sm transition-all duration-200',
+        'text-foreground/80 hover:bg-accent/60 hover:text-foreground',
+        'flex items-center gap-2.5 group relative cursor-pointer',
+        'border border-transparent hover:border-border/50',
+        isActive && 'active bg-accent text-foreground border-primary/20 shadow-soft'
       )}
     >
-      {getStatusIcon()}
-      <span className="block truncate flex-1">{task.summary || task.prompt}</span>
+      <div className={cn(
+        'flex items-center justify-center w-6 h-6 rounded-lg',
+        isActive ? 'bg-primary/10' : 'bg-muted/50'
+      )}>
+        {getStatusIcon()}
+      </div>
+      <span className="block truncate flex-1 font-medium">{task.summary || task.prompt}</span>
       <button
         type="button"
         onClick={handleDelete}
         className={cn(
-          'opacity-0 group-hover:opacity-100 transition-opacity duration-200',
-          'p-1 rounded hover:bg-red-100 dark:hover:bg-red-900/20',
-          'text-zinc-400 hover:text-red-600 dark:hover:text-red-400',
+          'opacity-0 group-hover:opacity-100 transition-all duration-200',
+          'p-1.5 rounded-lg hover:bg-destructive/10',
+          'text-muted-foreground hover:text-destructive',
           'shrink-0'
         )}
         aria-label="Delete task"
       >
-        <X className="h-3 w-3" />
+        <X className="h-3.5 w-3.5" />
       </button>
     </div>
   );

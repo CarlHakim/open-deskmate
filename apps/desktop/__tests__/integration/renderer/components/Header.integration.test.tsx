@@ -48,7 +48,7 @@ describe('Header Integration', () => {
       );
 
       // Assert
-      expect(screen.getByText('Openwork')).toBeInTheDocument();
+      expect(screen.getByText('Open Deskmate')).toBeInTheDocument();
     });
   });
 

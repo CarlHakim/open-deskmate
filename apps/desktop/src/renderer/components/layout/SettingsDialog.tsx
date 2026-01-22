@@ -9,7 +9,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Trash2 } from 'lucide-react';
+import { Trash2, Sun, Moon, Monitor } from 'lucide-react';
+import { useTheme } from '@/contexts/ThemeContext';
 import type { ApiKeyConfig, SelectedModel } from '@accomplish/shared';
 import { DEFAULT_PROVIDERS } from '@accomplish/shared';
 import logoImage from '/assets/logo.png';
@@ -31,6 +32,7 @@ const API_KEY_PROVIDERS = [
 type ProviderId = typeof API_KEY_PROVIDERS[number]['id'];
 
 export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: SettingsDialogProps) {
+  const { theme, setTheme } = useTheme();
   const [apiKey, setApiKey] = useState('');
   const [provider, setProvider] = useState<ProviderId>('anthropic');
   const [isSaving, setIsSaving] = useState(false);
@@ -606,6 +608,54 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
             </section>
           )}
 
+          {/* Appearance Section */}
+          <section>
+            <h2 className="mb-4 text-base font-medium text-foreground">Appearance</h2>
+            <div className="rounded-lg border border-border bg-card p-5">
+              <div className="flex-1 mb-4">
+                <div className="font-medium text-foreground">Theme</div>
+                <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
+                  Choose your preferred color scheme for the application.
+                </p>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <button
+                  onClick={() => setTheme('light')}
+                  className={`flex flex-col items-center gap-2 rounded-xl border p-4 transition-all duration-200 ease-accomplish ${
+                    theme === 'light'
+                      ? 'border-primary bg-muted'
+                      : 'border-border hover:border-ring'
+                  }`}
+                >
+                  <Sun className="h-5 w-5" />
+                  <span className="text-sm font-medium">Light</span>
+                </button>
+                <button
+                  onClick={() => setTheme('dark')}
+                  className={`flex flex-col items-center gap-2 rounded-xl border p-4 transition-all duration-200 ease-accomplish ${
+                    theme === 'dark'
+                      ? 'border-primary bg-muted'
+                      : 'border-border hover:border-ring'
+                  }`}
+                >
+                  <Moon className="h-5 w-5" />
+                  <span className="text-sm font-medium">Dark</span>
+                </button>
+                <button
+                  onClick={() => setTheme('system')}
+                  className={`flex flex-col items-center gap-2 rounded-xl border p-4 transition-all duration-200 ease-accomplish ${
+                    theme === 'system'
+                      ? 'border-primary bg-muted'
+                      : 'border-border hover:border-ring'
+                  }`}
+                >
+                  <Monitor className="h-5 w-5" />
+                  <span className="text-sm font-medium">System</span>
+                </button>
+              </div>
+            </div>
+          </section>
+
           {/* Developer Section */}
           <section>
             <h2 className="mb-4 text-base font-medium text-foreground">Developer</h2>
@@ -656,16 +706,16 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
               <div className="flex items-center gap-4">
                 <img
                   src={logoImage}
-                  alt="Openwork"
+                  alt="Open Deskmate"
                   className="h-12 w-12 rounded-xl"
                 />
                 <div>
-                  <div className="font-medium text-foreground">Openwork</div>
+                  <div className="font-medium text-foreground">Open Deskmate</div>
                   <div className="text-sm text-muted-foreground">Version {appVersion || '0.1.0'}</div>
                 </div>
               </div>
               <p className="mt-4 text-sm text-muted-foreground leading-relaxed">
-              Openwork is a local computer-use AI agent for your Mac that reads your files, creates documents, and automates repetitive knowledge work—all open-source with your AI models of choice.
+              Open Deskmate is a local computer-use AI agent for your Windows PC that reads your files, creates documents, and automates repetitive knowledge work—all open-source with your AI models of choice.
               </p>
               <p className="mt-3 text-sm text-muted-foreground">
               Any questions or feedback? <a href="mailto:openwork-support@accomplish.ai" className="text-primary hover:underline">Click here to contact us</a>.

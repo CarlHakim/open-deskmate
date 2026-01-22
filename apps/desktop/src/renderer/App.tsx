@@ -49,7 +49,7 @@ export default function App() {
     const checkStatus = async () => {
       // Check if running in Electron
       if (!isRunningInElectron()) {
-        setErrorMessage('This application must be run inside the Openwork desktop app.');
+        setErrorMessage('This application must be run inside the Open Deskmate desktop app.');
         setStatus('error');
         return;
       }
