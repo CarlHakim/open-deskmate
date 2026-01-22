@@ -115,13 +115,14 @@
       "!node_modules/@accomplish/**",
       "!node_modules/opencode-darwin-*/**",
       "!node_modules/opencode-linux-*/**",
-      "!node_modules/opencode-win32-*/**"
+      "!node_modules/opencode-win32-*/**",
+      "!node_modules/opencode-windows-x64-baseline/**"
     ],
     "asar": true,
     "asarUnpack": [
       "node_modules/opencode-ai/bin/opencode",
       "node_modules/opencode-ai/package.json",
-      "node_modules/opencode-windows-*/bin/opencode.exe",
+      "node_modules/opencode-windows-x64/bin/opencode.exe",
       "node_modules/node-pty/build/**/*.node",
       "node_modules/node-pty/package.json",
       "node_modules/keytar/build/**/*.node",

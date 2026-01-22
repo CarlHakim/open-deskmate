@@ -54,7 +54,7 @@ export default function TaskInputBar({
   };
 
   return (
-    <div className="relative flex items-end gap-2 rounded-xl border border-border bg-background px-3 py-2.5 shadow-sm transition-all duration-200 ease-accomplish focus-within:border-ring focus-within:ring-1 focus-within:ring-ring">
+    <div className="relative flex items-end gap-3 rounded-2xl border-2 border-border/60 bg-background/80 backdrop-blur-sm px-4 py-3 shadow-soft transition-all duration-300 ease-out focus-within:border-primary/50 focus-within:shadow-glow focus-within:bg-background">
       {/* Text input */}
       <textarea
         data-testid="task-input-textarea"
@@ -65,7 +65,7 @@ export default function TaskInputBar({
         placeholder={placeholder}
         disabled={isDisabled}
         rows={1}
-        className={`max-h-[200px] min-h-[36px] flex-1 resize-none bg-transparent text-foreground placeholder:text-gray-400 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${large ? 'text-[20px]' : 'text-sm'}`}
+        className={`max-h-[200px] min-h-[40px] flex-1 resize-none bg-transparent text-foreground placeholder:text-muted-foreground/60 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 leading-relaxed ${large ? 'text-lg' : 'text-sm'}`}
       />
 
       {/* Submit button */}
@@ -82,8 +82,8 @@ export default function TaskInputBar({
           onSubmit();
         }}
         disabled={!value.trim() || isDisabled}
-        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-all duration-200 ease-accomplish hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
-        title="Submit"
+        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-soft transition-all duration-200 ease-out hover:bg-primary/90 hover:shadow-glow hover:scale-105 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:scale-100 disabled:hover:shadow-soft"
+        title="Submit (Enter)"
       >
         {isLoading ? (
           <Loader2 className="h-4 w-4 animate-spin" />

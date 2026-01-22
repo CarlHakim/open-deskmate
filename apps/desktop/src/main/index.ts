@@ -37,7 +37,7 @@ if (process.env.CLEAN_START === '1') {
 }
 
 // Set app name before anything else (affects deep link dialogs)
-app.name = 'Openwork';
+app.name = 'Open Deskmate';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -87,7 +87,7 @@ function createWindow() {
     height: 800,
     minWidth: 900,
     minHeight: 600,
-    title: 'Openwork',
+    title: 'Open Deskmate',
     icon: icon.isEmpty() ? undefined : icon,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     trafficLightPosition: { x: 16, y: 16 },

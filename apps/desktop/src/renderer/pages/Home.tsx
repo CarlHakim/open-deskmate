@@ -176,19 +176,26 @@ export default function HomePage() {
         onApiKeySaved={handleApiKeySaved}
       />
       <div
-        className="h-full flex items-center justify-center p-6 overflow-y-auto bg-accent"
+        className="h-full flex items-center justify-center p-8 overflow-y-auto gradient-subtle"
       >
-      <div className="w-full max-w-2xl flex flex-col items-center gap-8">
+      <div className="w-full max-w-2xl flex flex-col items-center gap-10">
         {/* Main Title */}
-        <motion.h1
-          data-testid="home-title"
+        <motion.div
           initial={{ opacity: 0, y: -20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={springs.gentle}
-          className="text-4xl font-light tracking-tight text-foreground"
+          className="text-center"
         >
-          What will you accomplish today?
-        </motion.h1>
+          <h1
+            data-testid="home-title"
+            className="text-4xl font-semibold tracking-tight text-gradient mb-3"
+          >
+            What will you accomplish today?
+          </h1>
+          <p className="text-muted-foreground text-base">
+            Describe a task and let AI handle the rest
+          </p>
+        </motion.div>
 
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -196,7 +203,7 @@ export default function HomePage() {
           transition={{ ...springs.gentle, delay: 0.1 }}
           className="w-full"
         >
-          <Card className="w-full bg-card/95 backdrop-blur-md shadow-xl gap-0 py-0 flex flex-col max-h-[calc(100vh-3rem)]">
+          <Card className="w-full card-glass shadow-glow gap-0 py-0 flex flex-col max-h-[calc(100vh-4rem)] overflow-hidden">
             <CardContent className="p-6 pb-4 flex-shrink-0">
               {/* Input Section */}
               <TaskInputBar
@@ -204,7 +211,7 @@ export default function HomePage() {
                 onChange={setPrompt}
                 onSubmit={handleSubmit}
                 isLoading={isLoading}
-                placeholder="Describe a task and let AI handle the rest"
+                placeholder="Type your task here..."
                 large={true}
                 autoFocus={true}
               />
@@ -229,17 +236,18 @@ export default function HomePage() {
             </CardContent>
 
             {/* Examples Toggle */}
-            <div className="border-t border-border">
+            <div className="border-t border-border/50">
               <button
                 onClick={() => setShowExamples(!showExamples)}
-                className="w-full px-6 py-3 flex items-center justify-between text-sm text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors duration-200"
+                className="w-full px-6 py-3.5 flex items-center justify-between text-sm text-muted-foreground hover:text-foreground hover:bg-accent/30 transition-all duration-200"
               >
-                <span>Example prompts</span>
+                <span className="font-medium">Example prompts</span>
                 <motion.div
                   animate={{ rotate: showExamples ? 180 : 0 }}
                   transition={{ duration: 0.2 }}
+                  className="bg-muted rounded-full p-1"
                 >
-                  <ChevronDown className="h-4 w-4" />
+                  <ChevronDown className="h-3.5 w-3.5" />
                 </motion.div>
               </button>
 
@@ -249,14 +257,13 @@ export default function HomePage() {
                     initial={{ height: 0, opacity: 0 }}
                     animate={{ height: 'auto', opacity: 1 }}
                     exit={{ height: 0, opacity: 0 }}
-                    transition={{ duration: 0.2 }}
+                    transition={{ duration: 0.25, ease: 'easeInOut' }}
                     className="overflow-hidden"
                   >
                     <div
-                      className="px-6 pt-1 pb-4 overflow-y-auto max-h-[360px]"
+                      className="px-5 pt-2 pb-5 overflow-y-auto max-h-[360px]"
                       style={{
-                        background: 'linear-gradient(to bottom, hsl(var(--muted)) 0%, hsl(var(--background)) 100%)',
-                        backgroundAttachment: 'fixed',
+                        background: 'linear-gradient(to bottom, hsl(var(--muted) / 0.3) 0%, transparent 100%)',
                       }}
                     >
                       <motion.div
@@ -271,21 +278,23 @@ export default function HomePage() {
                             data-testid={`home-example-${index}`}
                             variants={staggerItem}
                             transition={springs.gentle}
-                            whileHover={{ scale: 1.03, transition: { duration: 0.15 } }}
-                            whileTap={{ scale: 0.97 }}
+                            whileHover={{ scale: 1.02, y: -2, transition: { duration: 0.15 } }}
+                            whileTap={{ scale: 0.98 }}
                             onClick={() => handleExampleClick(example.prompt)}
-                            className="flex flex-col items-center gap-2 p-3 rounded-lg border border-border bg-card hover:border-ring hover:bg-muted/50"
+                            className="flex flex-col items-center gap-2.5 p-3.5 rounded-xl border border-border/50 bg-card/80 hover:border-primary/30 hover:bg-accent/50 hover:shadow-soft transition-all duration-200"
                           >
-                            <img
-                              src={example.image}
-                              alt={example.title}
-                              className="w-12 h-12 object-cover rounded"
-                            />
+                            <div className="w-14 h-14 rounded-xl overflow-hidden shadow-soft">
+                              <img
+                                src={example.image}
+                                alt={example.title}
+                                className="w-full h-full object-cover"
+                              />
+                            </div>
                             <div className="flex flex-col items-center gap-1 w-full">
-                              <div className="font-medium text-xs text-foreground text-center">
+                              <div className="font-semibold text-xs text-foreground text-center">
                                 {example.title}
                               </div>
-                              <div className="text-xs text-muted-foreground text-center line-clamp-2">
+                              <div className="text-[11px] text-muted-foreground text-center line-clamp-2 leading-relaxed">
                                 {example.description}
                               </div>
                             </div>

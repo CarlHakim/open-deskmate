@@ -12,7 +12,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import ConversationListItem from './ConversationListItem';
 import SettingsDialog from './SettingsDialog';
 import { Settings, MessageSquarePlus, Search } from 'lucide-react';
-import logoImage from '/assets/logo-1.png';
+import logoImage from '/assets/open-deskmate-logo.png';
 
 export default function Sidebar() {
   const navigate = useNavigate();
@@ -48,15 +48,15 @@ export default function Sidebar() {
 
   return (
     <>
-      <div className="flex h-screen w-[260px] flex-col border-r border-border bg-card pt-12">
+      <div className="flex h-screen w-[280px] flex-col sidebar-modern pt-12">
         {/* Action Buttons */}
-        <div className="px-3 py-3 border-b border-border flex gap-2">
+        <div className="px-4 py-4 border-b border-border/50 flex gap-2">
           <Button
             data-testid="sidebar-new-task-button"
             onClick={handleNewConversation}
             variant="default"
             size="sm"
-            className="flex-1 justify-center gap-2"
+            className="flex-1 justify-center gap-2 btn-modern shadow-soft hover:shadow-glow rounded-xl h-10"
             title="New Task"
           >
             <MessageSquarePlus className="h-4 w-4" />
@@ -66,7 +66,7 @@ export default function Sidebar() {
             onClick={openLauncher}
             variant="outline"
             size="sm"
-            className="px-2"
+            className="px-3 rounded-xl h-10 hover:bg-accent/80"
             title="Search Tasks (⌘K)"
           >
             <Search className="h-4 w-4" />
@@ -75,17 +75,21 @@ export default function Sidebar() {
 
         {/* Conversation List */}
         <ScrollArea className="flex-1">
-          <div className="p-2 space-y-1">
+          <div className="p-3 space-y-1">
             <AnimatePresence mode="wait">
               {tasks.length === 0 ? (
                 <motion.div
                   key="empty"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  className="px-3 py-8 text-center text-sm text-muted-foreground"
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  className="px-4 py-12 text-center"
                 >
-                  No conversations yet
+                  <div className="w-12 h-12 mx-auto mb-4 rounded-full bg-muted flex items-center justify-center">
+                    <MessageSquarePlus className="h-5 w-5 text-muted-foreground" />
+                  </div>
+                  <p className="text-sm text-muted-foreground">No conversations yet</p>
+                  <p className="text-xs text-muted-foreground/70 mt-1">Start a new task to begin</p>
                 </motion.div>
               ) : (
                 <motion.div
@@ -105,13 +109,14 @@ export default function Sidebar() {
         </ScrollArea>
 
         {/* Bottom Section - Logo and Settings */}
-        <div className="px-3 py-4 border-t border-border flex items-center justify-between">
+        <div className="px-4 py-4 border-t border-border/50 flex items-center justify-between bg-gradient-to-t from-muted/30 to-transparent">
           {/* Logo - Bottom Left */}
           <div className="flex items-center">
             <img
               src={logoImage}
-              alt="Openwork"
-              style={{ height: '20px', paddingLeft: '6px' }}
+              alt="Open Deskmate"
+              className="hover-lift transition-smooth"
+              style={{ height: '60px', objectFit: 'contain' }}
             />
           </div>
 
@@ -125,6 +130,7 @@ export default function Sidebar() {
               setShowSettings(true);
             }}
             title="Settings"
+            className="rounded-xl hover:bg-accent/80 transition-smooth"
           >
             <Settings className="h-4 w-4" />
           </Button>
