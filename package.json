@@ -1,13 +1,13 @@
 {
   "name": "accomplish",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
-  "description": "The open source AI coworker that lives on your desktop",
-  "author": "Accomplish Inc",
+  "description": "An open-source desktop AI assistant for Windows",
+  "author": "Renewables Talent BV",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/accomplish-ai/openwork.git"
+    "url": "https://github.com/CarlHakim/open-deskmate.git"
   },
   "scripts": {
     "dev": "pnpm -F @accomplish/desktop dev",

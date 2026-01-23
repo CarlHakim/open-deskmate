@@ -18,7 +18,7 @@ An open-source desktop AI assistant for Windows forked from the Openwork for Mac
 ### Option 1: Download Pre-built Release
 (Pre-built release coming soon) Go to Build from source section below, after creation of the exe you will find it in the folder apps/desktop/release/win-unpacked
 1. Go to [Releases](../../releases)
-2. Download `OpenDeskmate-x.x.x-win-x64.exe` (installer) or `OpenDeskmate-x.x.x-win-x64-portable.exe` (portable)
+2. Download `OpenDeskmate-x.x.x-win-x64-installer.exe` (installer) or `OpenDeskmate-x.x.x-win-x64-portable.exe` (portable)
 3. Run the installer or portable executable
 4. Enter your API key (OpenAI, Anthropic, Google, or xAI) on first launch
 
@@ -37,7 +37,7 @@ An open-source desktop AI assistant for Windows forked from the Openwork for Mac
 
 ```powershell
 # Clone the repository
-git clone https://github.com/YourUsername/open-deskmate.git
+git clone https://github.com/CarlHakim/open-deskmate.git
 cd open-deskmate
 
 # Install dependencies
@@ -48,7 +48,7 @@ pnpm -F @accomplish/desktop build:win
 ```
 
 The built files will be in `apps/desktop/release/`:
-- `OpenDeskmate-x.x.x-win-x64.exe` - NSIS installer
+- `OpenDeskmate-x.x.x-win-x64-installer.exe` - NSIS installer
 - `OpenDeskmate-x.x.x-win-x64-portable.exe` - Portable executable
 
 #### Alternative Build Commands

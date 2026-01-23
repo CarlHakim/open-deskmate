@@ -4,17 +4,19 @@ import { useEffect, useState, useRef, useMemo, useCallback, memo } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useTaskStore } from '../stores/taskStore';
+import { useSavedPromptsStore } from '../stores/savedPromptsStore';
 import { getAccomplish } from '../lib/accomplish';
 import { springs } from '../lib/animations';
 import type { TaskMessage } from '@accomplish/shared';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
-import { XCircle, CornerDownLeft, ArrowLeft, CheckCircle2, AlertCircle, Terminal, Wrench, FileText, Search, Code, Brain, Clock, Square, Play, Download, File, Bug, ChevronUp, ChevronDown, Trash2, Check } from 'lucide-react';
+import { XCircle, CornerDownLeft, ArrowLeft, CheckCircle2, AlertCircle, Terminal, Wrench, FileText, Search, Code, Brain, Clock, Square, Play, Download, File, Bug, ChevronUp, ChevronDown, Trash2, Check, Folder, X, Bookmark, BookmarkCheck, Settings } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ReactMarkdown from 'react-markdown';
 import { StreamingText } from '../components/ui/streaming-text';
 import { isWaitingForUser } from '../lib/waiting-detection';
+import SavedPromptsDialog from '../components/layout/SavedPromptsDialog';
 import loadingSymbol from '/assets/loading-symbol.svg';
 
 // Debug log entry type
@@ -88,6 +90,7 @@ export default function ExecutionPage() {
   const [debugModeEnabled, setDebugModeEnabled] = useState(false);
   const [debugExported, setDebugExported] = useState(false);
   const debugPanelRef = useRef<HTMLDivElement>(null);
+  const [workingFolder, setWorkingFolder] = useState<string | null>(null);
 
   const {
     currentTask,
@@ -232,13 +235,61 @@ export default function ExecutionPage() {
 
   const handleFollowUp = async () => {
     if (!followUp.trim()) return;
-    await sendFollowUp(followUp);
+    // Include working folder context if selected
+    const message = workingFolder
+      ? `[Working in folder: ${workingFolder}]\n\n${followUp.trim()}`
+      : followUp.trim();
+    await sendFollowUp(message);
     setFollowUp('');
+    setWorkingFolder(null); // Clear after sending
   };
 
   const handleContinue = async () => {
     // Send a simple "continue" message to resume the task
     await sendFollowUp('continue');
+  };
+
+  const handleSelectFolder = async () => {
+    const folder = await accomplish.selectFolder();
+    if (folder) {
+      setWorkingFolder(folder);
+    }
+  };
+
+  const clearWorkingFolder = () => {
+    setWorkingFolder(null);
+  };
+
+  const { savePrompt, prompts, loadPrompts } = useSavedPromptsStore();
+  const [promptToSave, setPromptToSave] = useState<string | null>(null);
+  const [savePromptTitle, setSavePromptTitle] = useState('');
+  const [showSavePromptDialog, setShowSavePromptDialog] = useState(false);
+  const [showSavedPromptsSelector, setShowSavedPromptsSelector] = useState(false);
+  const [savedPromptsMode, setSavedPromptsMode] = useState<'select' | 'manage'>('select');
+
+  // Load saved prompts on mount
+  useEffect(() => {
+    loadPrompts();
+  }, [loadPrompts]);
+
+  const handleSelectSavedPrompt = (content: string) => {
+    setFollowUp(content);
+    followUpInputRef.current?.focus();
+  };
+
+  const handleSavePrompt = (content: string) => {
+    setPromptToSave(content);
+    setSavePromptTitle('');
+    setShowSavePromptDialog(true);
+  };
+
+  const handleConfirmSavePrompt = () => {
+    if (promptToSave && savePromptTitle.trim()) {
+      savePrompt(savePromptTitle, promptToSave);
+      setShowSavePromptDialog(false);
+      setPromptToSave(null);
+      setSavePromptTitle('');
+    }
   };
 
   const handleExportDebugLogs = useCallback(() => {
@@ -481,7 +532,7 @@ export default function ExecutionPage() {
             {currentTask.messages
               .filter((m) => !(m.type === 'tool' && m.toolName?.toLowerCase() === 'bash'))
               .map((message) => (
-              <MessageBubble key={message.id} message={message} />
+              <MessageBubble key={message.id} message={message} onSavePrompt={handleSavePrompt} />
             ))}
 
             {/* Inline waiting indicator */}
@@ -565,6 +616,7 @@ export default function ExecutionPage() {
                   continueLabel={currentTask.status === 'interrupted' ? 'Continue' : 'Done, Continue'}
                   onContinue={handleContinue}
                   isLoading={isLoading}
+                  onSavePrompt={handleSavePrompt}
                 />
               );
             })}
@@ -710,6 +762,70 @@ export default function ExecutionPage() {
         )}
       </AnimatePresence>
 
+      {/* Save Prompt Dialog */}
+      <AnimatePresence>
+        {showSavePromptDialog && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              transition={springs.bouncy}
+            >
+              <Card className="w-full max-w-md p-6 mx-4">
+                <div className="flex items-start gap-4">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 shrink-0">
+                    <Bookmark className="h-5 w-5 text-primary" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h3 className="text-lg font-semibold text-foreground mb-4">
+                      Save Prompt
+                    </h3>
+                    <div className="space-y-3">
+                      <Input
+                        placeholder="Enter a title for this prompt..."
+                        value={savePromptTitle}
+                        onChange={(e) => setSavePromptTitle(e.target.value)}
+                        autoFocus
+                      />
+                      <div className="p-3 rounded-lg bg-muted text-sm max-h-32 overflow-y-auto">
+                        <p className="text-muted-foreground whitespace-pre-wrap break-words">
+                          {promptToSave}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex gap-3 mt-4">
+                      <Button
+                        variant="outline"
+                        onClick={() => {
+                          setShowSavePromptDialog(false);
+                          setPromptToSave(null);
+                        }}
+                        className="flex-1"
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        onClick={handleConfirmSavePrompt}
+                        disabled={!savePromptTitle.trim()}
+                        className="flex-1"
+                      >
+                        Save
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </Card>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
 {/* Running state input with Stop button */}
       {currentTask.status === 'running' && !permissionRequest && (
         <div className="flex-shrink-0 border-t border-border bg-card/50 px-6 py-4">
@@ -736,9 +852,53 @@ export default function ExecutionPage() {
       {/* Follow-up input */}
       {canFollowUp && (
         <div className="flex-shrink-0 border-t border-border bg-card/50 px-6 py-4">
-          <div className="max-w-4xl mx-auto">
-            {/* Input field with Send button */}
-            <div className="flex gap-3">
+          <div className="max-w-4xl mx-auto space-y-2">
+            {/* Input field with Work in folder button and Send button */}
+            <div className="flex gap-3 items-center">
+              {/* Work in folder button */}
+              <button
+                type="button"
+                onClick={handleSelectFolder}
+                disabled={isLoading}
+                className="flex items-center gap-1.5 shrink-0 px-2.5 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-50 border border-border/50 hover:border-border"
+                title="Select a working folder"
+              >
+                <Folder className="h-3.5 w-3.5" />
+                <span>Work in folder</span>
+              </button>
+
+              {/* Saved prompts button */}
+              <button
+                type="button"
+                onClick={() => {
+                  setSavedPromptsMode('select');
+                  setShowSavedPromptsSelector(true);
+                }}
+                disabled={isLoading || prompts.length === 0}
+                className="flex items-center gap-1.5 shrink-0 px-2 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-50 border border-border/50 hover:border-border"
+                title={prompts.length === 0 ? 'No saved prompts' : 'Use a saved prompt'}
+              >
+                <FileText className="h-3.5 w-3.5" />
+                {prompts.length > 0 && (
+                  <span className="px-1.5 py-0.5 rounded-full bg-primary/10 text-primary text-[10px]">
+                    {prompts.length}
+                  </span>
+                )}
+              </button>
+              {/* Manage saved prompts button */}
+              <button
+                type="button"
+                onClick={() => {
+                  setSavedPromptsMode('manage');
+                  setShowSavedPromptsSelector(true);
+                }}
+                disabled={isLoading}
+                className="flex items-center gap-1.5 shrink-0 px-2 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-50 border border-border/50 hover:border-border"
+                title="Manage saved prompts"
+              >
+                <Settings className="h-3.5 w-3.5" />
+              </button>
+
               <Input
                 ref={followUpInputRef}
                 value={followUp}
@@ -769,9 +929,36 @@ export default function ExecutionPage() {
                 Send
               </Button>
             </div>
+
+            {/* Working folder display */}
+            {workingFolder && (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-primary/10 border border-primary/20 text-sm">
+                <Folder className="h-4 w-4 text-primary shrink-0" />
+                <span className="text-muted-foreground">Working in:</span>
+                <span className="text-foreground truncate flex-1" title={workingFolder}>
+                  {workingFolder}
+                </span>
+                <button
+                  type="button"
+                  onClick={clearWorkingFolder}
+                  className="p-1 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+                  title="Clear working folder"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
+
+      {/* Saved Prompts Selector Dialog */}
+      <SavedPromptsDialog
+        open={showSavedPromptsSelector}
+        onOpenChange={setShowSavedPromptsSelector}
+        onSelectPrompt={handleSelectSavedPrompt}
+        mode={savedPromptsMode}
+      />
 
       {/* Completed/Failed state (no session to continue) */}
       {isComplete && !canFollowUp && (
@@ -916,11 +1103,13 @@ interface MessageBubbleProps {
   continueLabel?: string;
   onContinue?: () => void;
   isLoading?: boolean;
+  onSavePrompt?: (content: string) => void;
 }
 
 // Memoized MessageBubble to prevent unnecessary re-renders and markdown re-parsing
-const MessageBubble = memo(function MessageBubble({ message, shouldStream = false, isLastMessage = false, isRunning = false, showContinueButton = false, continueLabel, onContinue, isLoading = false }: MessageBubbleProps) {
+const MessageBubble = memo(function MessageBubble({ message, shouldStream = false, isLastMessage = false, isRunning = false, showContinueButton = false, continueLabel, onContinue, isLoading = false, onSavePrompt }: MessageBubbleProps) {
   const [streamComplete, setStreamComplete] = useState(!shouldStream);
+  const [saved, setSaved] = useState(false);
   const isUser = message.type === 'user';
   const isTool = message.type === 'tool';
   const isSystem = message.type === 'system';
@@ -1001,14 +1190,34 @@ const MessageBubble = memo(function MessageBubble({ message, shouldStream = fals
               </div>
             )}
             {isUser ? (
-              <p
-                className={cn(
-                  'text-sm whitespace-pre-wrap break-words',
-                  'text-primary-foreground'
+              <div className="flex items-start gap-2">
+                <p
+                  className={cn(
+                    'text-sm whitespace-pre-wrap break-words flex-1',
+                    'text-primary-foreground'
+                  )}
+                >
+                  {message.content}
+                </p>
+                {onSavePrompt && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onSavePrompt(message.content);
+                      setSaved(true);
+                      setTimeout(() => setSaved(false), 2000);
+                    }}
+                    className="shrink-0 p-1 rounded-md hover:bg-primary-foreground/20 text-primary-foreground/70 hover:text-primary-foreground transition-colors"
+                    title={saved ? 'Saved!' : 'Save this prompt'}
+                  >
+                    {saved ? (
+                      <BookmarkCheck className="h-4 w-4" />
+                    ) : (
+                      <Bookmark className="h-4 w-4" />
+                    )}
+                  </button>
                 )}
-              >
-                {message.content}
-              </p>
+              </div>
             ) : isAssistant && shouldStream && !streamComplete ? (
               <StreamingText
                 text={message.content}

@@ -41,6 +41,8 @@ export interface Task {
   startedAt?: string;
   completedAt?: string;
   result?: TaskResult;
+  /** Optional folder ID for organizing tasks */
+  folderId?: string;
 }
 
 export interface TaskAttachment {
