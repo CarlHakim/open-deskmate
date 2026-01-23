@@ -94,8 +94,10 @@
   "build": {
     "appId": "ai.accomplish.desktop",
     "productName": "OpenDeskmate",
+
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
-    "compression": "store",
+
+    "compression": "normal",
     "directories": {
       "output": "release",
       "buildResources": "resources"
@@ -162,30 +164,24 @@
       "entitlements": "resources/entitlements.mac.plist",
       "entitlementsInherit": "resources/entitlements.mac.plist",
       "icon": "resources/icon.png",
-      "target": [
-        "dmg",
-        "zip"
-      ]
+      "target": ["dmg", "zip"]
     },
     "win": {
       "icon": "resources/icon.ico",
-      "target": [
-        "nsis",
-        "portable"
-      ]
+      "target": ["nsis"]
     },
+
+    "nsis": {
+      "artifactName": "OpenDeskmate-${version}-win-x64-installer.${ext}"
+    },
+    "portable": {
+      "artifactName": "OpenDeskmate-${version}-win-x64-portable.${ext}"
+    },
+
     "dmg": {
       "contents": [
-        {
-          "x": 130,
-          "y": 220
-        },
-        {
-          "x": 410,
-          "y": 220,
-          "type": "link",
-          "path": "/Applications"
-        }
+        { "x": 130, "y": 220 },
+        { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
       ]
     }
   }

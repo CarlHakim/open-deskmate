@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow, shell, app } from 'electron';
+import { ipcMain, BrowserWindow, shell, app, dialog } from 'electron';
 import type { IpcMainInvokeEvent } from 'electron';
 import { URL } from 'url';
 import {
@@ -1069,6 +1069,25 @@ export function registerIPCHandlers(): void {
   // Onboarding: Set onboarding complete status
   handle('onboarding:set-complete', async (_event: IpcMainInvokeEvent, complete: boolean) => {
     setOnboardingComplete(complete);
+  });
+
+  // Dialog: Select folder
+  handle('dialog:select-folder', async (event: IpcMainInvokeEvent) => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (!window) {
+      throw new Error('No window found');
+    }
+
+    const result = await dialog.showOpenDialog(window, {
+      properties: ['openDirectory'],
+      title: 'Select Working Folder',
+    });
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return null;
+    }
+
+    return result.filePaths[0];
   });
 
   // Shell: Open URL in external browser

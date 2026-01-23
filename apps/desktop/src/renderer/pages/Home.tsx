@@ -107,11 +107,20 @@ export default function HomePage() {
     };
   }, [addTaskUpdate, setPermissionRequest, accomplish]);
 
-  const executeTask = useCallback(async () => {
+  const executeTask = useCallback(async (workingFolder?: string) => {
     if (!prompt.trim() || isLoading) return;
 
     const taskId = `task_${Date.now()}`;
-    const task = await startTask({ prompt: prompt.trim(), taskId });
+    // Build prompt with working folder prefix if specified (not shown in UI)
+    const finalPrompt = workingFolder
+      ? `[Working in folder: ${workingFolder}]\n\n${prompt.trim()}`
+      : prompt.trim();
+
+    const task = await startTask({
+      prompt: finalPrompt,
+      taskId,
+      workingDirectory: workingFolder,
+    });
     if (task) {
       setPendingTaskId(task.id);
     } else {
@@ -127,7 +136,7 @@ export default function HomePage() {
     }
   }, [pendingTaskId, currentTask?.id, location.pathname, navigate]);
 
-  const handleSubmit = async () => {
+  const handleSubmit = async (workingFolder?: string) => {
     if (!prompt.trim() || isLoading) return;
     setSubmitError(null);
 
@@ -149,7 +158,7 @@ export default function HomePage() {
       return;
     }
 
-    await executeTask();
+    await executeTask(workingFolder);
   };
 
   const handleSettingsDialogChange = (open: boolean) => {

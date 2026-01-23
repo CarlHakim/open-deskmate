@@ -62,6 +62,9 @@ interface TaskState {
   deleteTask: (taskId: string) => Promise<void>;
   clearHistory: () => Promise<void>;
   reset: () => void;
+  // Folder management
+  setTaskFolder: (taskId: string, folderId: string | null) => void;
+  getTasksByFolder: (folderId: string | null) => Task[];
 }
 
 function createMessageId(): string {
@@ -429,7 +432,13 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   loadTasks: async () => {
     const accomplish = getAccomplish();
     const tasks = await accomplish.listTasks();
-    set({ tasks });
+    // Apply folder assignments from localStorage
+    const folderAssignments = JSON.parse(localStorage.getItem('open-deskmate-task-folders') || '{}');
+    const tasksWithFolders = tasks.map((task) => ({
+      ...task,
+      folderId: folderAssignments[task.id] || task.folderId,
+    }));
+    set({ tasks: tasksWithFolders });
   },
 
   loadTaskById: async (taskId: string) => {
@@ -467,6 +476,36 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
   openLauncher: () => set({ isLauncherOpen: true }),
   closeLauncher: () => set({ isLauncherOpen: false }),
+
+  // Set a task's folder (null to remove from folder)
+  setTaskFolder: (taskId: string, folderId: string | null) => {
+    set((state) => ({
+      tasks: state.tasks.map((task) =>
+        task.id === taskId ? { ...task, folderId: folderId ?? undefined } : task
+      ),
+      currentTask:
+        state.currentTask?.id === taskId
+          ? { ...state.currentTask, folderId: folderId ?? undefined }
+          : state.currentTask,
+    }));
+    // Also persist the folder assignment to localStorage
+    const folderAssignments = JSON.parse(localStorage.getItem('open-deskmate-task-folders') || '{}');
+    if (folderId) {
+      folderAssignments[taskId] = folderId;
+    } else {
+      delete folderAssignments[taskId];
+    }
+    localStorage.setItem('open-deskmate-task-folders', JSON.stringify(folderAssignments));
+  },
+
+  // Get tasks by folder ID (null for unfiled tasks)
+  getTasksByFolder: (folderId: string | null) => {
+    const { tasks } = get();
+    if (folderId === null) {
+      return tasks.filter((task) => !task.folderId);
+    }
+    return tasks.filter((task) => task.folderId === folderId);
+  },
 }));
 
 // Global subscription to setup progress events (browser download, etc.)
