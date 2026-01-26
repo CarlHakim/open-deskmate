@@ -45,7 +45,7 @@ describe('secureStorage Integration', () => {
     // Clear secure storage
     try {
       const { clearSecureStorage } = await import('@main/store/secureStorage');
-      clearSecureStorage();
+      await clearSecureStorage();
     } catch {
       // Module may not be loaded
     }
@@ -64,8 +64,8 @@ describe('secureStorage Integration', () => {
       const testKey = 'sk-test-anthropic-key-12345';
 
       // Act
-      storeApiKey('anthropic', testKey);
-      const result = getApiKey('anthropic');
+      await storeApiKey('anthropic', testKey);
+      const result = await getApiKey('anthropic');
 
       // Assert
       expect(result).toBe(testKey);
@@ -76,7 +76,7 @@ describe('secureStorage Integration', () => {
       const { getApiKey } = await import('@main/store/secureStorage');
 
       // Act
-      const result = getApiKey('anthropic');
+      const result = await getApiKey('anthropic');
 
       // Assert
       expect(result).toBeNull();
@@ -88,7 +88,7 @@ describe('secureStorage Integration', () => {
       const testKey = 'sk-test-visible-key';
 
       // Act
-      storeApiKey('anthropic', testKey);
+      await storeApiKey('anthropic', testKey);
 
       // Assert - check that the raw file does not contain the key in plain text
       const files = fs.readdirSync(tempDir);
@@ -106,9 +106,9 @@ describe('secureStorage Integration', () => {
       const secondKey = 'sk-second-key';
 
       // Act
-      storeApiKey('anthropic', firstKey);
-      storeApiKey('anthropic', secondKey);
-      const result = getApiKey('anthropic');
+      await storeApiKey('anthropic', firstKey);
+      await storeApiKey('anthropic', secondKey);
+      const result = await getApiKey('anthropic');
 
       // Assert
       expect(result).toBe(secondKey);
@@ -120,8 +120,8 @@ describe('secureStorage Integration', () => {
       const testKey = 'sk-test_key+with/special=chars!@#$%^&*()';
 
       // Act
-      storeApiKey('anthropic', testKey);
-      const result = getApiKey('anthropic');
+      await storeApiKey('anthropic', testKey);
+      const result = await getApiKey('anthropic');
 
       // Assert
       expect(result).toBe(testKey);
@@ -133,8 +133,8 @@ describe('secureStorage Integration', () => {
       const testKey = 'sk-' + 'a'.repeat(500);
 
       // Act
-      storeApiKey('anthropic', testKey);
-      const result = getApiKey('anthropic');
+      await storeApiKey('anthropic', testKey);
+      const result = await getApiKey('anthropic');
 
       // Assert
       expect(result).toBe(testKey);
@@ -145,11 +145,11 @@ describe('secureStorage Integration', () => {
       const { storeApiKey, getApiKey } = await import('@main/store/secureStorage');
 
       // Act
-      storeApiKey('anthropic', '');
-      const result = getApiKey('anthropic');
+      await storeApiKey('anthropic', '');
+      const result = await getApiKey('anthropic');
 
       // Assert
-      expect(result).toBe('');
+      expect(result).toBeNull();
     });
   });
 
@@ -159,30 +159,30 @@ describe('secureStorage Integration', () => {
       const { storeApiKey, getApiKey } = await import('@main/store/secureStorage');
 
       // Act
-      storeApiKey('anthropic', 'anthropic-key-123');
-      storeApiKey('openai', 'openai-key-456');
-      storeApiKey('google', 'google-key-789');
-      storeApiKey('custom', 'custom-key-xyz');
+      await storeApiKey('anthropic', 'anthropic-key-123');
+      await storeApiKey('openai', 'openai-key-456');
+      await storeApiKey('google', 'google-key-789');
+      await storeApiKey('custom', 'custom-key-xyz');
 
       // Assert
-      expect(getApiKey('anthropic')).toBe('anthropic-key-123');
-      expect(getApiKey('openai')).toBe('openai-key-456');
-      expect(getApiKey('google')).toBe('google-key-789');
-      expect(getApiKey('custom')).toBe('custom-key-xyz');
+      expect(await getApiKey('anthropic')).toBe('anthropic-key-123');
+      expect(await getApiKey('openai')).toBe('openai-key-456');
+      expect(await getApiKey('google')).toBe('google-key-789');
+      expect(await getApiKey('custom')).toBe('custom-key-xyz');
     });
 
     it('should not affect other providers when updating one', async () => {
       // Arrange
       const { storeApiKey, getApiKey } = await import('@main/store/secureStorage');
-      storeApiKey('anthropic', 'anthropic-original');
-      storeApiKey('openai', 'openai-original');
+      await storeApiKey('anthropic', 'anthropic-original');
+      await storeApiKey('openai', 'openai-original');
 
       // Act
-      storeApiKey('anthropic', 'anthropic-updated');
+      await storeApiKey('anthropic', 'anthropic-updated');
 
       // Assert
-      expect(getApiKey('anthropic')).toBe('anthropic-updated');
-      expect(getApiKey('openai')).toBe('openai-original');
+      expect(await getApiKey('anthropic')).toBe('anthropic-updated');
+      expect(await getApiKey('openai')).toBe('openai-original');
     });
   });
 
@@ -190,16 +190,16 @@ describe('secureStorage Integration', () => {
     it('should remove only the target provider key', async () => {
       // Arrange
       const { storeApiKey, getApiKey, deleteApiKey } = await import('@main/store/secureStorage');
-      storeApiKey('anthropic', 'anthropic-key');
-      storeApiKey('openai', 'openai-key');
+      await storeApiKey('anthropic', 'anthropic-key');
+      await storeApiKey('openai', 'openai-key');
 
       // Act
-      const deleted = deleteApiKey('anthropic');
+      const deleted = await deleteApiKey('anthropic');
 
       // Assert
       expect(deleted).toBe(true);
-      expect(getApiKey('anthropic')).toBeNull();
-      expect(getApiKey('openai')).toBe('openai-key');
+      expect(await getApiKey('anthropic')).toBeNull();
+      expect(await getApiKey('openai')).toBe('openai-key');
     });
 
     it('should return false when deleting non-existent key', async () => {
@@ -207,7 +207,7 @@ describe('secureStorage Integration', () => {
       const { deleteApiKey } = await import('@main/store/secureStorage');
 
       // Act
-      const result = deleteApiKey('anthropic');
+      const result = await deleteApiKey('anthropic');
 
       // Assert
       expect(result).toBe(false);
@@ -216,12 +216,12 @@ describe('secureStorage Integration', () => {
     it('should allow re-storing after deletion', async () => {
       // Arrange
       const { storeApiKey, getApiKey, deleteApiKey } = await import('@main/store/secureStorage');
-      storeApiKey('anthropic', 'original-key');
-      deleteApiKey('anthropic');
+      await storeApiKey('anthropic', 'original-key');
+      await deleteApiKey('anthropic');
 
       // Act
-      storeApiKey('anthropic', 'new-key');
-      const result = getApiKey('anthropic');
+      await storeApiKey('anthropic', 'new-key');
+      const result = await getApiKey('anthropic');
 
       // Assert
       expect(result).toBe('new-key');
@@ -249,9 +249,9 @@ describe('secureStorage Integration', () => {
     it('should return all stored API keys', async () => {
       // Arrange
       const { storeApiKey, getAllApiKeys } = await import('@main/store/secureStorage');
-      storeApiKey('anthropic', 'anthropic-key');
-      storeApiKey('openai', 'openai-key');
-      storeApiKey('google', 'google-key');
+      await storeApiKey('anthropic', 'anthropic-key');
+      await storeApiKey('openai', 'openai-key');
+      await storeApiKey('google', 'google-key');
 
       // Act
       const result = await getAllApiKeys();
@@ -266,8 +266,8 @@ describe('secureStorage Integration', () => {
     it('should return partial results when some providers are set', async () => {
       // Arrange
       const { storeApiKey, getAllApiKeys } = await import('@main/store/secureStorage');
-      storeApiKey('anthropic', 'anthropic-key');
-      storeApiKey('custom', 'custom-key');
+      await storeApiKey('anthropic', 'anthropic-key');
+      await storeApiKey('custom', 'custom-key');
 
       // Act
       const result = await getAllApiKeys();
@@ -295,7 +295,7 @@ describe('secureStorage Integration', () => {
     it('should return true when at least one key is stored', async () => {
       // Arrange
       const { storeApiKey, hasAnyApiKey } = await import('@main/store/secureStorage');
-      storeApiKey('anthropic', 'test-key');
+      await storeApiKey('anthropic', 'test-key');
 
       // Act
       const result = await hasAnyApiKey();
@@ -307,8 +307,8 @@ describe('secureStorage Integration', () => {
     it('should return true when multiple keys are stored', async () => {
       // Arrange
       const { storeApiKey, hasAnyApiKey } = await import('@main/store/secureStorage');
-      storeApiKey('anthropic', 'anthropic-key');
-      storeApiKey('openai', 'openai-key');
+      await storeApiKey('anthropic', 'anthropic-key');
+      await storeApiKey('openai', 'openai-key');
 
       // Act
       const result = await hasAnyApiKey();
@@ -320,8 +320,8 @@ describe('secureStorage Integration', () => {
     it('should return false after all keys are deleted', async () => {
       // Arrange
       const { storeApiKey, deleteApiKey, hasAnyApiKey } = await import('@main/store/secureStorage');
-      storeApiKey('anthropic', 'test-key');
-      deleteApiKey('anthropic');
+      await storeApiKey('anthropic', 'test-key');
+      await deleteApiKey('anthropic');
 
       // Act
       const result = await hasAnyApiKey();
@@ -335,12 +335,12 @@ describe('secureStorage Integration', () => {
     it('should remove all stored API keys', async () => {
       // Arrange
       const { storeApiKey, getAllApiKeys, clearSecureStorage } = await import('@main/store/secureStorage');
-      storeApiKey('anthropic', 'anthropic-key');
-      storeApiKey('openai', 'openai-key');
-      storeApiKey('google', 'google-key');
+      await storeApiKey('anthropic', 'anthropic-key');
+      await storeApiKey('openai', 'openai-key');
+      await storeApiKey('google', 'google-key');
 
       // Act
-      clearSecureStorage();
+      await clearSecureStorage();
       const result = await getAllApiKeys();
 
       // Assert
@@ -356,12 +356,12 @@ describe('secureStorage Integration', () => {
     it('should allow storing new keys after clear', async () => {
       // Arrange
       const { storeApiKey, getApiKey, clearSecureStorage } = await import('@main/store/secureStorage');
-      storeApiKey('anthropic', 'old-key');
-      clearSecureStorage();
+      await storeApiKey('anthropic', 'old-key');
+      await clearSecureStorage();
 
       // Act
-      storeApiKey('anthropic', 'new-key');
-      const result = getApiKey('anthropic');
+      await storeApiKey('anthropic', 'new-key');
+      const result = await getApiKey('anthropic');
 
       // Assert
       expect(result).toBe('new-key');
@@ -370,12 +370,12 @@ describe('secureStorage Integration', () => {
     it('should reset salt and derived key', async () => {
       // Arrange
       const { storeApiKey, getApiKey, clearSecureStorage } = await import('@main/store/secureStorage');
-      storeApiKey('anthropic', 'test-key-1');
+      await storeApiKey('anthropic', 'test-key-1');
 
       // Act
-      clearSecureStorage();
-      storeApiKey('anthropic', 'test-key-2');
-      const result = getApiKey('anthropic');
+      await clearSecureStorage();
+      await storeApiKey('anthropic', 'test-key-2');
+      const result = await getApiKey('anthropic');
 
       // Assert - key should be retrievable with new encryption
       expect(result).toBe('test-key-2');
@@ -388,7 +388,7 @@ describe('secureStorage Integration', () => {
       const { listStoredCredentials } = await import('@main/store/secureStorage');
 
       // Act
-      const result = listStoredCredentials();
+      const result = await listStoredCredentials();
 
       // Assert
       expect(result).toEqual([]);
@@ -397,11 +397,11 @@ describe('secureStorage Integration', () => {
     it('should return all stored credentials with decrypted values', async () => {
       // Arrange
       const { storeApiKey, listStoredCredentials } = await import('@main/store/secureStorage');
-      storeApiKey('anthropic', 'anthropic-key-123');
-      storeApiKey('openai', 'openai-key-456');
+      await storeApiKey('anthropic', 'anthropic-key-123');
+      await storeApiKey('openai', 'openai-key-456');
 
       // Act
-      const result = listStoredCredentials();
+      const result = await listStoredCredentials();
 
       // Assert
       expect(result).toHaveLength(2);
@@ -414,12 +414,12 @@ describe('secureStorage Integration', () => {
     it('should decrypt values correctly after module reload', async () => {
       // Arrange - store key in first module instance
       const module1 = await import('@main/store/secureStorage');
-      module1.storeApiKey('anthropic', 'persistent-key-123');
+      await module1.storeApiKey('anthropic', 'persistent-key-123');
 
       // Act - reset modules and reimport
       vi.resetModules();
       const module2 = await import('@main/store/secureStorage');
-      const result = module2.getApiKey('anthropic');
+      const result = await module2.getApiKey('anthropic');
 
       // Assert
       expect(result).toBe('persistent-key-123');
@@ -432,8 +432,8 @@ describe('secureStorage Integration', () => {
       // Act - multiple cycles
       for (let i = 0; i < 5; i++) {
         const key = `test-key-cycle-${i}`;
-        storeApiKey('anthropic', key);
-        const result = getApiKey('anthropic');
+        await storeApiKey('anthropic', key);
+        const result = await getApiKey('anthropic');
         expect(result).toBe(key);
       }
     });
@@ -445,12 +445,12 @@ describe('secureStorage Integration', () => {
       const { storeApiKey, getApiKey, clearSecureStorage } = await import('@main/store/secureStorage');
 
       // Store the same plaintext for two different providers
-      storeApiKey('anthropic', 'same-key-value');
-      storeApiKey('openai', 'same-key-value');
+      await storeApiKey('anthropic', 'same-key-value');
+      await storeApiKey('openai', 'same-key-value');
 
       // Both should decrypt correctly (proving unique IVs didn't break anything)
-      const anthropicKey = getApiKey('anthropic');
-      const openaiKey = getApiKey('openai');
+      const anthropicKey = await getApiKey('anthropic');
+      const openaiKey = await getApiKey('openai');
 
       expect(anthropicKey).toBe('same-key-value');
       expect(openaiKey).toBe('same-key-value');
@@ -468,8 +468,8 @@ describe('secureStorage Integration', () => {
       const unicodeKey = 'sk-test-key-with-unicode-chars';
 
       // Act
-      storeApiKey('anthropic', unicodeKey);
-      const result = getApiKey('anthropic');
+      await storeApiKey('anthropic', unicodeKey);
+      const result = await getApiKey('anthropic');
 
       // Assert
       expect(result).toBe(unicodeKey);
@@ -481,9 +481,9 @@ describe('secureStorage Integration', () => {
 
       // Act - rapid stores
       for (let i = 0; i < 10; i++) {
-        storeApiKey('anthropic', `key-${i}`);
+        await storeApiKey('anthropic', `key-${i}`);
       }
-      const result = getApiKey('anthropic');
+      const result = await getApiKey('anthropic');
 
       // Assert - should have the last stored value
       expect(result).toBe('key-9');
@@ -494,16 +494,17 @@ describe('secureStorage Integration', () => {
       const { storeApiKey, getApiKey } = await import('@main/store/secureStorage');
 
       // Act - interleaved operations
-      storeApiKey('anthropic', 'a1');
-      storeApiKey('openai', 'o1');
-      storeApiKey('anthropic', 'a2');
-      storeApiKey('google', 'g1');
-      storeApiKey('openai', 'o2');
+      await storeApiKey('anthropic', 'a1');
+      await storeApiKey('openai', 'o1');
+      await storeApiKey('anthropic', 'a2');
+      await storeApiKey('google', 'g1');
+      await storeApiKey('openai', 'o2');
 
       // Assert
-      expect(getApiKey('anthropic')).toBe('a2');
-      expect(getApiKey('openai')).toBe('o2');
-      expect(getApiKey('google')).toBe('g1');
+      expect(await getApiKey('anthropic')).toBe('a2');
+      expect(await getApiKey('openai')).toBe('o2');
+      expect(await getApiKey('google')).toBe('g1');
     });
   });
 });
+

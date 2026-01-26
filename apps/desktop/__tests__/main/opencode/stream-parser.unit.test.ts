@@ -251,6 +251,30 @@ describe('StreamParser', () => {
       expect(messageHandler).toHaveBeenCalledTimes(2);
       expect(messageHandler).toHaveBeenNthCalledWith(2, message2);
     });
+
+    it('should handle line-wrapped JSON inside strings', () => {
+      // Arrange
+      const message: OpenCodeMessage = {
+        type: 'text',
+        part: {
+          id: 'msg_1',
+          sessionID: 'session_1',
+          messageID: 'msg_1',
+          type: 'text',
+          text: 'LineWrapTestString',
+        },
+      };
+      const json = JSON.stringify(message);
+      const insertAt = json.indexOf('LineWrapTestString') + 8;
+      const wrapped = json.slice(0, insertAt) + '\n' + json.slice(insertAt);
+
+      // Act
+      parser.feed(wrapped + '\n');
+
+      // Assert
+      expect(messageHandler).toHaveBeenCalledTimes(1);
+      expect(messageHandler).toHaveBeenCalledWith(message);
+    });
   });
 
   describe('incomplete JSON handling', () => {
@@ -266,7 +290,7 @@ describe('StreamParser', () => {
       expect(errorHandler).not.toHaveBeenCalled();
     });
 
-    it('should flush incomplete buffer when flush() is called', () => {
+    it('should parse complete JSON without trailing newline', () => {
       // Arrange
       const message: OpenCodeMessage = {
         type: 'text',
@@ -281,8 +305,6 @@ describe('StreamParser', () => {
 
       // Act
       parser.feed(JSON.stringify(message));
-      expect(messageHandler).not.toHaveBeenCalled();
-
       parser.flush();
 
       // Assert
@@ -567,6 +589,7 @@ describe('StreamParser', () => {
 
       // Act
       parser.feed(truncatedJson);
+      parser.flush();
 
       // Assert
       expect(errorHandler).toHaveBeenCalledTimes(1);

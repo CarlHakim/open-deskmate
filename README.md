@@ -16,7 +16,7 @@ An open-source desktop AI assistant for Windows forked from the Openwork for Mac
 ## Installation (Windows)
 
 ### Option 1: Download Pre-built Release
-(Pre-built release coming soon) Go to Build from source section below, after creation of the exe you will find it in the folder apps/desktop/release/win-unpacked
+
 1. Go to [Releases](../../releases)
 2. Download `OpenDeskmate-x.x.x-win-x64-installer.exe` (installer) or `OpenDeskmate-x.x.x-win-x64-portable.exe` (portable)
 3. Run the installer or portable executable
@@ -43,7 +43,7 @@ cd open-deskmate
 # Install dependencies
 pnpm install
 
-# Build the Windows executable
+# Build the Windows installer + portable executables
 pnpm -F @accomplish/desktop build:win
 ```
 
@@ -84,7 +84,7 @@ pnpm dev:clean
 | `pnpm dev` | Run app in development mode |
 | `pnpm dev:clean` | Dev mode with clean start |
 | `pnpm build` | Build all workspaces |
-| `pnpm -F @accomplish/desktop build:win` | Build Windows installer |
+| `pnpm -F @accomplish/desktop build:win` | Build Windows installer + portable |
 | `pnpm -F @accomplish/desktop build:unpack` | Build unpacked (for testing) |
 | `pnpm lint` | TypeScript checks |
 | `pnpm -F @accomplish/desktop test:e2e` | Run E2E tests |

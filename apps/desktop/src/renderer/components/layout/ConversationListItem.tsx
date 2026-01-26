@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, type SyntheticEvent } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import type { Task, FolderConfig } from '@accomplish/shared';
 import { cn } from '@/lib/utils';
@@ -35,6 +35,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -57,7 +58,12 @@ export default function ConversationListItem({ task, draggable = true }: Convers
   const [showCreateFolder, setShowCreateFolder] = useState(false);
   const [pendingMoveAfterCreate, setPendingMoveAfterCreate] = useState(false);
   const [showRenameDialog, setShowRenameDialog] = useState(false);
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [newName, setNewName] = useState(task.summary || task.prompt);
+
+  const stopEventPropagation = (event: SyntheticEvent) => {
+    event.stopPropagation();
+  };
 
   // Sort folders by order
   const sortedFolders = [...folders].sort((a, b) => a.order - b.order);
@@ -66,17 +72,26 @@ export default function ConversationListItem({ task, draggable = true }: Convers
     navigate(`/execution/${task.id}`);
   };
 
-  const handleDelete = () => {
-    if (!window.confirm('Are you sure you want to delete this task?')) {
-      return;
-    }
+  const handleDeleteClick = () => {
+    // Show custom dialog instead of window.confirm() to avoid blocking
+    // the main thread and interfering with dropdown focus management
+    setShowDeleteDialog(true);
+  };
 
-    deleteTask(task.id);
+  const handleDeleteConfirm = () => {
+    setShowDeleteDialog(false);
 
-    // Navigate to home if deleting the currently active task
-    if (isActive) {
-      navigate('/');
-    }
+    // Small delay to let the dialog close animation complete
+    setTimeout(() => {
+      void deleteTask(task.id).catch((err) => {
+        console.error('Failed to delete task:', err);
+      });
+
+      // Navigate to home if deleting the currently active task
+      if (isActive) {
+        navigate('/');
+      }
+    }, 50);
   };
 
   const handleDragStart = (e: React.DragEvent) => {
@@ -165,7 +180,7 @@ export default function ConversationListItem({ task, draggable = true }: Convers
 
         {/* Three-dot dropdown menu */}
         <DropdownMenu>
-          <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+          <DropdownMenuTrigger asChild onClick={stopEventPropagation} onKeyDown={stopEventPropagation}>
             <button
               type="button"
               className={cn(
@@ -179,7 +194,12 @@ export default function ConversationListItem({ task, draggable = true }: Convers
               <MoreHorizontal className="h-3.5 w-3.5" />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-48">
+          <DropdownMenuContent
+            align="end"
+            className="w-48"
+            onClick={stopEventPropagation}
+            onKeyDown={stopEventPropagation}
+          >
             {/* Rename option */}
             <DropdownMenuItem onClick={() => setShowRenameDialog(true)}>
               <Pencil className="h-4 w-4 mr-2" />
@@ -227,7 +247,7 @@ export default function ConversationListItem({ task, draggable = true }: Convers
 
             {/* Delete option */}
             <DropdownMenuItem
-              onClick={handleDelete}
+              onSelect={handleDeleteClick}
               className="text-destructive focus:text-destructive"
             >
               <Trash2 className="h-4 w-4 mr-2" />
@@ -269,6 +289,26 @@ export default function ConversationListItem({ task, draggable = true }: Convers
             </Button>
             <Button onClick={handleRename} disabled={!newName.trim()}>
               Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete confirmation dialog */}
+      <Dialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+        <DialogContent className="sm:max-w-[400px]">
+          <DialogHeader>
+            <DialogTitle>Delete Chat</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete this chat? This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowDeleteDialog(false)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={handleDeleteConfirm}>
+              Delete
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -10,6 +10,8 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import path from 'path';
 
+const isWindows = process.platform === 'win32';
+
 // Mock electron module before importing the module under test
 const mockApp = {
   isPackaged: false,
@@ -61,7 +63,8 @@ describe('OpenCode CLI Path Module', () => {
       it('should return nvm OpenCode path when available', async () => {
         // Arrange
         mockApp.isPackaged = false;
-        const nvmVersionsDir = '/Users/testuser/.nvm/versions/node';
+        const homeDir = process.env.HOME || '';
+        const nvmVersionsDir = path.join(homeDir, '.nvm', 'versions', 'node');
         const expectedPath = path.join(nvmVersionsDir, 'v20.10.0', 'bin', 'opencode');
 
         mockFs.existsSync.mockImplementation((p: string) => {
@@ -127,7 +130,8 @@ describe('OpenCode CLI Path Module', () => {
         // Arrange
         mockApp.isPackaged = false;
         const appPath = '/mock/app/path';
-        const bundledPath = path.join(appPath, 'node_modules', '.bin', 'opencode');
+        const binName = isWindows ? 'opencode.cmd' : 'opencode';
+        const bundledPath = path.join(appPath, 'node_modules', '.bin', binName);
 
         mockApp.getAppPath.mockReturnValue(appPath);
         mockFs.existsSync.mockImplementation((p: string) => {
@@ -187,8 +191,13 @@ describe('OpenCode CLI Path Module', () => {
         const result = getOpenCodeCliPath();
 
         // Assert
-        expect(result.command).toBe(expectedPath);
-        expect(result.args).toEqual([]);
+        if (isWindows) {
+          expect(result.command).toBe('node');
+          expect(result.args).toEqual([expectedPath]);
+        } else {
+          expect(result.command).toBe(expectedPath);
+          expect(result.args).toEqual([]);
+        }
       });
 
       it('should throw error when bundled CLI not found in packaged app', async () => {
@@ -211,7 +220,8 @@ describe('OpenCode CLI Path Module', () => {
       it('should return true when nvm OpenCode is available', async () => {
         // Arrange
         mockApp.isPackaged = false;
-        const nvmVersionsDir = '/Users/testuser/.nvm/versions/node';
+        const homeDir = process.env.HOME || '';
+        const nvmVersionsDir = path.join(homeDir, '.nvm', 'versions', 'node');
         const opencodePath = path.join(nvmVersionsDir, 'v20.10.0', 'bin', 'opencode');
 
         mockFs.existsSync.mockImplementation((p: string) => {
@@ -236,7 +246,8 @@ describe('OpenCode CLI Path Module', () => {
         // Arrange
         mockApp.isPackaged = false;
         const appPath = '/mock/app/path';
-        const bundledPath = path.join(appPath, 'node_modules', '.bin', 'opencode');
+        const binName = isWindows ? 'opencode.cmd' : 'opencode';
+        const bundledPath = path.join(appPath, 'node_modules', '.bin', binName);
 
         mockApp.getAppPath.mockReturnValue(appPath);
         mockFs.existsSync.mockImplementation((p: string) => {
@@ -387,7 +398,8 @@ describe('OpenCode CLI Path Module', () => {
         // Arrange
         mockApp.isPackaged = false;
         const appPath = '/mock/app/path';
-        const bundledPath = path.join(appPath, 'node_modules', '.bin', 'opencode');
+        const binName = isWindows ? 'opencode.cmd' : 'opencode';
+        const bundledPath = path.join(appPath, 'node_modules', '.bin', binName);
 
         mockApp.getAppPath.mockReturnValue(appPath);
         mockFs.existsSync.mockImplementation((p: string) => {
@@ -409,7 +421,8 @@ describe('OpenCode CLI Path Module', () => {
         // Arrange
         mockApp.isPackaged = false;
         const appPath = '/mock/app/path';
-        const bundledPath = path.join(appPath, 'node_modules', '.bin', 'opencode');
+        const binName = isWindows ? 'opencode.cmd' : 'opencode';
+        const bundledPath = path.join(appPath, 'node_modules', '.bin', binName);
 
         mockApp.getAppPath.mockReturnValue(appPath);
         mockFs.existsSync.mockImplementation((p: string) => {
@@ -431,7 +444,8 @@ describe('OpenCode CLI Path Module', () => {
         // Arrange
         mockApp.isPackaged = false;
         const appPath = '/mock/app/path';
-        const bundledPath = path.join(appPath, 'node_modules', '.bin', 'opencode');
+        const binName = isWindows ? 'opencode.cmd' : 'opencode';
+        const bundledPath = path.join(appPath, 'node_modules', '.bin', binName);
 
         mockApp.getAppPath.mockReturnValue(appPath);
         mockFs.existsSync.mockImplementation((p: string) => {
@@ -457,7 +471,8 @@ describe('OpenCode CLI Path Module', () => {
     it('should scan multiple nvm versions and return first found', async () => {
       // Arrange
       mockApp.isPackaged = false;
-      const nvmVersionsDir = '/Users/testuser/.nvm/versions/node';
+      const homeDir = process.env.HOME || '';
+      const nvmVersionsDir = path.join(homeDir, '.nvm', 'versions', 'node');
       const v18Path = path.join(nvmVersionsDir, 'v18.17.0', 'bin', 'opencode');
       const v20Path = path.join(nvmVersionsDir, 'v20.10.0', 'bin', 'opencode');
 

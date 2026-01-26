@@ -19,8 +19,15 @@ vi.mock('@/lib/analytics', () => ({
   },
 }));
 
+const mockSetTheme = vi.fn();
+
+vi.mock('@/contexts/ThemeContext', () => ({
+  useTheme: () => ({ theme: 'light', setTheme: mockSetTheme }),
+}));
+
 // Create mock functions for accomplish API
 const mockGetApiKeys = vi.fn();
+const mockGetAllApiKeys = vi.fn();
 const mockGetDebugMode = vi.fn();
 const mockGetVersion = vi.fn();
 const mockGetSelectedModel = vi.fn();
@@ -33,6 +40,7 @@ const mockValidateApiKeyForProvider = vi.fn();
 // Mock accomplish API
 const mockAccomplish = {
   getApiKeys: mockGetApiKeys,
+  getAllApiKeys: mockGetAllApiKeys,
   getDebugMode: mockGetDebugMode,
   getVersion: mockGetVersion,
   getSelectedModel: mockGetSelectedModel,
@@ -95,6 +103,7 @@ describe('SettingsDialog Integration', () => {
     vi.clearAllMocks();
     // Default mock implementations
     mockGetApiKeys.mockResolvedValue([]);
+    mockGetAllApiKeys.mockResolvedValue({});
     mockGetDebugMode.mockResolvedValue(false);
     mockGetVersion.mockResolvedValue('1.0.0');
     mockGetSelectedModel.mockResolvedValue({ provider: 'anthropic', model: 'anthropic/claude-opus-4-5' });
@@ -530,8 +539,8 @@ describe('SettingsDialog Integration', () => {
 
       // Assert
       await waitFor(() => {
-        const option = screen.getByRole('option', { name: /gemini 3 pro \(no api key\)/i });
-        expect(option).toBeDisabled();
+        const option = screen.getByRole('option', { name: /gemini 3 pro.*no api key/i });
+        expect(option).not.toBeDisabled();
       });
     });
 
@@ -736,7 +745,7 @@ describe('SettingsDialog Integration', () => {
 
       // Assert
       await waitFor(() => {
-        const logo = screen.getByRole('img', { name: /openwork/i });
+        const logo = screen.getByRole('img', { name: /open deskmate/i });
         expect(logo).toBeInTheDocument();
       });
     });

@@ -662,6 +662,32 @@ describe('taskStore Integration', () => {
       expect(state.tasks).toHaveLength(2);
       expect(state.tasks.find(t => t.id === 'task-2')).toBeUndefined();
     });
+
+    it('should clear loading and permission state when deleting current task', async () => {
+      // Arrange
+      const { useTaskStore } = await import('@/stores/taskStore');
+      const currentTask = createMockTask('task-2', 'Test task', 'running');
+      useTaskStore.setState({
+        currentTask,
+        tasks: [currentTask],
+        isLoading: true,
+        permissionRequest: { id: 'perm-1', taskId: 'task-2', type: 'file', message: 'Allow?' },
+        setupProgress: 'Downloading...',
+        setupProgressTaskId: 'task-2',
+      });
+      mockAccomplish.deleteTask.mockResolvedValueOnce(undefined);
+
+      // Act
+      await useTaskStore.getState().deleteTask('task-2');
+      const state = useTaskStore.getState();
+
+      // Assert
+      expect(state.currentTask).toBeNull();
+      expect(state.isLoading).toBe(false);
+      expect(state.permissionRequest).toBeNull();
+      expect(state.setupProgress).toBeNull();
+      expect(state.setupProgressTaskId).toBeNull();
+    });
   });
 
   describe('clearHistory', () => {

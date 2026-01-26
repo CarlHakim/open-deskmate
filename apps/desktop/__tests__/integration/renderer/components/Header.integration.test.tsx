@@ -34,7 +34,7 @@ describe('Header Integration', () => {
       );
 
       // Assert
-      const brandLink = screen.getByRole('link', { name: /openwork/i });
+      const brandLink = screen.getByRole('link', { name: /open deskmate/i });
       expect(brandLink).toBeInTheDocument();
       expect(brandLink).toHaveAttribute('href', '/');
     });
@@ -218,7 +218,7 @@ describe('Header Integration', () => {
       );
 
       // Assert
-      const brandLink = screen.getByRole('link', { name: /openwork/i });
+      const brandLink = screen.getByRole('link', { name: /open deskmate/i });
       expect(brandLink.className).toContain('no-drag');
     });
 
@@ -244,7 +244,7 @@ describe('Header Integration', () => {
       );
 
       // Assert
-      const brandLink = screen.getByRole('link', { name: /openwork/i });
+      const brandLink = screen.getByRole('link', { name: /open deskmate/i });
       const svg = brandLink.querySelector('svg');
       expect(svg).toBeInTheDocument();
     });

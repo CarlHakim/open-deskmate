@@ -116,8 +116,8 @@ describe('Sidebar Integration', () => {
         </MemoryRouter>
       );
 
-      // Assert - sidebar should be present (260px width)
-      const sidebar = document.querySelector('.w-\\[260px\\]');
+      // Assert - sidebar should be present (280px width)
+      const sidebar = document.querySelector('.w-\\[280px\\]');
       expect(sidebar).toBeInTheDocument();
     });
 
@@ -168,7 +168,7 @@ describe('Sidebar Integration', () => {
       );
 
       // Assert
-      const logo = screen.getByRole('img', { name: /openwork/i });
+      const logo = screen.getByRole('img', { name: /open deskmate/i });
       expect(logo).toBeInTheDocument();
     });
 
@@ -258,7 +258,7 @@ describe('Sidebar Integration', () => {
       );
 
       // Assert - Check for spinning loader icon
-      const taskItem = screen.getByText('Running task').closest('button');
+      const taskItem = screen.getByRole('button', { name: /running task/i });
       const spinner = taskItem?.querySelector('.animate-spin-ccw');
       expect(spinner).toBeInTheDocument();
     });
@@ -278,7 +278,7 @@ describe('Sidebar Integration', () => {
       );
 
       // Assert - Check for checkmark icon (CheckCircle2)
-      const taskItem = screen.getByText('Completed task').closest('button');
+      const taskItem = screen.getByRole('button', { name: /completed task/i });
       const checkIcon = taskItem?.querySelector('svg');
       expect(checkIcon).toBeInTheDocument();
     });
@@ -297,9 +297,9 @@ describe('Sidebar Integration', () => {
       );
 
       // Assert
-      const taskButton = screen.getByText('Clickable task').closest('button');
+      const taskButton = screen.getByRole('button', { name: /clickable task/i });
       expect(taskButton).toBeInTheDocument();
-      expect(taskButton?.tagName).toBe('BUTTON');
+      expect(taskButton.getAttribute('role')).toBe('button');
     });
 
     it('should navigate to execution page when conversation is clicked', async () => {
@@ -313,10 +313,8 @@ describe('Sidebar Integration', () => {
         </MemoryRouter>
       );
 
-      const taskButton = screen.getByText('Navigate task').closest('button');
-      if (taskButton) {
-        fireEvent.click(taskButton);
-      }
+      const taskButton = screen.getByRole('button', { name: /navigate task/i });
+      fireEvent.click(taskButton);
 
       // Assert - Check that the link navigates correctly
       // In real scenario, this would change the route
@@ -337,7 +335,7 @@ describe('Sidebar Integration', () => {
       );
 
       // Assert
-      const taskButton = screen.getByText('Active task').closest('button');
+      const taskButton = screen.getByRole('button', { name: /active task/i });
       expect(taskButton?.className).toContain('bg-accent');
     });
 
@@ -357,7 +355,7 @@ describe('Sidebar Integration', () => {
 
       // Assert - Second task should not be highlighted with the active class
       // The component uses 'bg-accent' class for active state, while hover state uses 'hover:bg-accent'
-      const secondTaskButton = screen.getByText('Second task').closest('button');
+      const secondTaskButton = screen.getByRole('button', { name: /second task/i });
       const classNames = (secondTaskButton?.className || '').split(' ');
       // Filter to find only exact 'bg-accent' class, not 'hover:bg-accent'
       const hasBgAccent = classNames.some(c => c === 'bg-accent');
@@ -481,8 +479,12 @@ describe('Sidebar Integration', () => {
       );
 
       // Assert - Check for border classes
-      const sidebar = document.querySelector('.w-\\[260px\\]');
-      expect(sidebar?.className).toContain('border-r');
+      const sidebar = document.querySelector('.w-\\[280px\\]');
+      expect(sidebar).toBeInTheDocument();
+      const topBorder = sidebar?.querySelector('.border-b');
+      const bottomBorder = sidebar?.querySelector('.border-t');
+      expect(topBorder).toBeInTheDocument();
+      expect(bottomBorder).toBeInTheDocument();
     });
 
     it('should render with correct height for full screen', () => {

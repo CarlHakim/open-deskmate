@@ -13,212 +13,118 @@ const MAX_BUFFER_SIZE = 10 * 1024 * 1024;
  * Parses NDJSON (newline-delimited JSON) stream from OpenCode CLI
  */
 export class StreamParser extends EventEmitter<StreamParserEvents> {
-  private buffer: string = '';
-  private pendingJson: string | null = null;
+  private currentJson: string = '';
+  private depth = 0;
+  private inString = false;
+  private escape = false;
+  private skippedCount = 0;
 
   /**
    * Feed raw data from stdout
    */
   feed(chunk: string): void {
-    this.buffer += chunk;
-
-    // Prevent memory exhaustion from unbounded buffer growth
-    if (this.buffer.length > MAX_BUFFER_SIZE) {
-      this.emit('error', new Error('Stream buffer size exceeded maximum limit'));
-      // Keep the last portion of the buffer to maintain parsing continuity
-      this.buffer = this.buffer.slice(-MAX_BUFFER_SIZE / 2);
-    }
-
-    this.parseBuffer();
+    const sanitized = this.sanitizeChunk(chunk);
+    this.consumeChunk(sanitized);
   }
 
-  /**
-   * Parse complete lines from the buffer
-   */
-  private parseBuffer(): void {
-    const lines = this.buffer.split('\n');
-
-    // Keep incomplete line in buffer
-    this.buffer = lines.pop() || '';
-
-    for (const line of lines) {
-      if (line.trim()) {
-        this.parseLine(line);
-      }
-    }
-
-    // If the buffer already contains complete JSON objects without a trailing newline,
-    // parse them now to avoid losing messages on fast shutdown.
-    if (!this.pendingJson) {
-      const trimmed = this.buffer.trim();
-      if (trimmed.startsWith('{')) {
-        const { objects, remainder } = this.extractJsonObjects(this.buffer);
-        if (objects.length > 0 && remainder !== this.buffer) {
-          for (const obj of objects) {
-            this.tryParseJson(obj);
-          }
-          this.buffer = remainder;
-        }
-      }
-    }
-  }
-
-  private sanitizeLine(line: string): string {
-    return line
+  private sanitizeChunk(chunk: string): string {
+    return chunk
       .replace(/\x1B\[[0-9;?]*[a-zA-Z]/g, '')
       .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
   }
 
   /**
-   * Check if a line is terminal UI decoration (not JSON)
-   * These are outputted by the CLI's interactive prompts
+   * Consume a sanitized chunk of data, extracting JSON objects as they complete.
    */
-  private isTerminalDecoration(line: string): boolean {
-    const trimmed = line.trim();
-    if (trimmed.includes('{')) {
-      return false;
-    }
-    // Box-drawing and UI characters used by the CLI's interactive prompts
-    const terminalChars = ['│', '┌', '┐', '└', '┘', '├', '┤', '┬', '┴', '┼', '─', '◆', '●', '○', '◇'];
-    // Check if line starts with a terminal decoration character
-    if (terminalChars.some(char => trimmed.startsWith(char))) {
-      return true;
-    }
-    // Also skip ANSI escape sequences and other control characters
-    if (/^[\x00-\x1F\x7F]/.test(trimmed) || /^\x1b\[/.test(trimmed)) {
-      return true;
-    }
-    return false;
-  }
+  private consumeChunk(chunk: string): void {
+    for (let i = 0; i < chunk.length; i += 1) {
+      const char = chunk[i];
 
-  /**
-   * Parse a single JSON line
-   */
-  private parseLine(line: string): void {
-    const sanitized = this.sanitizeLine(line);
-    const trimmed = sanitized.trim();
-
-    // Skip empty lines
-    if (!trimmed) return;
-
-    if (this.pendingJson) {
-      const combined = this.pendingJson + sanitized;
-      this.pendingJson = null;
-
-      const { objects, remainder } = this.extractJsonObjects(combined);
-      if (objects.length > 0) {
-        for (const obj of objects) {
-          this.tryParseJson(obj);
+      if (this.depth === 0) {
+        if (char === '{') {
+          this.depth = 1;
+          this.inString = false;
+          this.escape = false;
+          this.currentJson = '{';
+          this.skippedCount = 0;
+        } else {
+          this.skippedCount += 1;
+          if (this.skippedCount > MAX_BUFFER_SIZE) {
+            this.emit('error', new Error('Stream buffer size exceeded maximum limit'));
+            this.skippedCount = 0;
+          }
         }
-      }
-
-      if (remainder) {
-        this.pendingJson = remainder;
-        this.tryParsePendingJson();
-      } else if (objects.length === 0) {
-        // Still incomplete; keep buffering until we can parse.
-        this.pendingJson = combined;
-        this.tryParsePendingJson();
-      }
-
-      if (this.pendingJson && this.pendingJson.length > MAX_BUFFER_SIZE / 2) {
-        this.emit('error', new Error('Pending JSON buffer size exceeded limit'));
-        this.pendingJson = null;
-      }
-      return;
-    }
-
-    // Skip terminal UI decorations (interactive prompts, box-drawing chars)
-    if (this.isTerminalDecoration(trimmed)) {
-      return;
-    }
-
-    // Only attempt to parse lines that look like JSON (start with {)
-    let candidate = trimmed;
-    if (!candidate.startsWith('{')) {
-      const jsonStart = candidate.indexOf('{');
-      if (jsonStart !== -1) {
-        candidate = candidate.slice(jsonStart);
-      } else {
-        // Log non-JSON lines for debugging but don't emit errors
-        // These could be CLI status messages, etc.
-        console.log('[StreamParser] Skipping non-JSON line:', candidate.substring(0, 50));
-        return;
-      }
-    }
-
-    const { objects, remainder } = this.extractJsonObjects(candidate);
-    if (objects.length > 0) {
-      for (const obj of objects) {
-        this.tryParseJson(obj);
-      }
-    }
-
-    if (remainder) {
-      this.pendingJson = remainder;
-      this.tryParsePendingJson();
-    } else if (objects.length === 0 && !this.tryParseJson(trimmed)) {
-      this.pendingJson = trimmed;
-      this.tryParsePendingJson();
-    }
-  }
-
-  private tryParsePendingJson(): boolean {
-    if (!this.pendingJson) return false;
-    const candidate = this.pendingJson.trim();
-    if (!candidate.startsWith('{')) {
-      this.pendingJson = null;
-      return false;
-    }
-    if (this.tryParseJson(candidate)) {
-      this.pendingJson = null;
-      return true;
-    }
-    return false;
-  }
-
-  private extractJsonObjects(text: string): { objects: string[]; remainder: string } {
-    const objects: string[] = [];
-    let depth = 0;
-    let start = -1;
-    let inString = false;
-    let escape = false;
-
-    for (let i = 0; i < text.length; i += 1) {
-      const char = text[i];
-      if (escape) {
-        escape = false;
         continue;
       }
-      if (char === '\\' && inString) {
-        escape = true;
+
+      if (this.inString) {
+        if (this.escape) {
+          this.escape = false;
+          if (char === '\n' || char === '\r') {
+            continue;
+          }
+          this.currentJson += char;
+          continue;
+        }
+
+        if (char === '\\') {
+          this.escape = true;
+          this.currentJson += char;
+          continue;
+        }
+
+        if (char === '"') {
+          this.inString = false;
+          this.currentJson += char;
+          continue;
+        }
+
+        if (char === '\n' || char === '\r') {
+          // Drop raw line breaks inserted by PTY wrapping inside strings.
+          continue;
+        }
+
+        this.currentJson += char;
         continue;
       }
+
       if (char === '"') {
-        inString = !inString;
-        continue;
-      }
-      if (inString) continue;
-
-      if (char === '{') {
-        if (depth === 0) {
-          start = i;
-        }
-        depth += 1;
+        this.inString = true;
+        this.currentJson += char;
+      } else if (char === '{') {
+        this.depth += 1;
+        this.currentJson += char;
       } else if (char === '}') {
-        depth -= 1;
-        if (depth === 0 && start !== -1) {
-          objects.push(text.slice(start, i + 1));
-          start = -1;
+        this.depth -= 1;
+        this.currentJson += char;
+        if (this.depth === 0) {
+          this.finishJsonObject();
         }
+      } else {
+        this.currentJson += char;
+      }
+
+      if (this.currentJson.length > MAX_BUFFER_SIZE) {
+        this.emit('error', new Error('Stream buffer size exceeded maximum limit'));
+        this.resetState();
       }
     }
-
-    const remainder = start !== -1 ? text.slice(start) : '';
-    return { objects, remainder };
   }
 
-  private tryParseJson(text: string): boolean {
+  private finishJsonObject(): void {
+    const json = this.currentJson;
+    this.resetState();
+    this.tryParseJson(json, true);
+  }
+
+  private resetState(): void {
+    this.currentJson = '';
+    this.depth = 0;
+    this.inString = false;
+    this.escape = false;
+  }
+
+  private tryParseJson(text: string, emitError: boolean): { ok: boolean; error?: Error } {
     try {
       const message = JSON.parse(text) as OpenCodeMessage;
 
@@ -249,9 +155,13 @@ export class StreamParser extends EventEmitter<StreamParserEvents> {
       }
 
       this.emit('message', message);
-      return true;
+      return { ok: true };
     } catch (err) {
-      return false;
+      const error = err instanceof Error ? err : new Error(String(err));
+      if (emitError) {
+        this.emit('error', new Error(`Failed to parse JSON: ${error.message}`));
+      }
+      return { ok: false, error };
     }
   }
 
@@ -259,20 +169,21 @@ export class StreamParser extends EventEmitter<StreamParserEvents> {
    * Flush any remaining buffer content
    */
   flush(): void {
-    if (this.buffer.trim()) {
-      this.parseLine(this.buffer);
+    if (this.currentJson.trim()) {
+      const result = this.tryParseJson(this.currentJson, false);
+      if (!result.ok) {
+        this.tryParseJson(this.currentJson, true);
+      }
     }
-    if (this.pendingJson) {
-      this.tryParsePendingJson();
-    }
-    this.buffer = '';
+    this.resetState();
+    this.skippedCount = 0;
   }
 
   /**
    * Reset the parser
    */
   reset(): void {
-    this.buffer = '';
-    this.pendingJson = null;
+    this.resetState();
+    this.skippedCount = 0;
   }
 }

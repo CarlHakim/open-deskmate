@@ -32,6 +32,22 @@ export function getSkillsPath(): string {
   }
 }
 
+function resolveTsxCliForSkill(skillPath: string): string | null {
+  const candidates = [
+    path.join(skillPath, 'node_modules', 'tsx', 'dist', 'cli.cjs'),
+    path.join(skillPath, 'node_modules', 'tsx', 'dist', 'cli.mjs'),
+    path.join(skillPath, 'node_modules', 'tsx', 'dist', 'cli.js'),
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
 const ACCOMPLISH_SYSTEM_PROMPT_TEMPLATE = `<identity>
 You are Accomplish, a browser automation assistant.
 </identity>
@@ -447,7 +463,18 @@ export async function generateOpenCodeConfig(): Promise<string> {
   console.log('[OpenCode Config] Skills path:', skillsPath);
 
   // Build file-permission MCP server command
-  const filePermissionServerPath = path.join(skillsPath, 'file-permission', 'src', 'index.ts');
+  const filePermissionSkillDir = path.join(skillsPath, 'file-permission');
+  const filePermissionServerPath = path.join(filePermissionSkillDir, 'src', 'index.ts');
+  const filePermissionTsxCli = resolveTsxCliForSkill(filePermissionSkillDir);
+  const filePermissionCommand = filePermissionTsxCli
+    ? ['node', filePermissionTsxCli, filePermissionServerPath]
+    : ['npx', 'tsx', filePermissionServerPath];
+
+  if (filePermissionTsxCli) {
+    console.log('[OpenCode Config] Using bundled tsx for file-permission:', filePermissionTsxCli);
+  } else {
+    console.warn('[OpenCode Config] tsx CLI not found for file-permission; falling back to npx');
+  }
 
   // Enable providers - add ollama if configured
   const ollamaConfig = getOllamaConfig();
@@ -502,7 +529,7 @@ export async function generateOpenCodeConfig(): Promise<string> {
     mcp: {
       'file-permission': {
         type: 'local',
-        command: ['npx', 'tsx', filePermissionServerPath],
+        command: filePermissionCommand,
         enabled: true,
         environment: {
           PERMISSION_API_PORT: String(PERMISSION_API_PORT),
