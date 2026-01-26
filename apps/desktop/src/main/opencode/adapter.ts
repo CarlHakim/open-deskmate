@@ -676,7 +676,7 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
   private handleProcessExit(code: number | null): void {
     // Only emit complete/error if we haven't already received a result message
     if (!this.hasCompleted && !this.pendingComplete) {
-      if (this.wasInterrupted && code === 0) {
+      if (this.wasInterrupted) {
         // User interrupted the task - emit interrupted status so they can continue
         console.log('[OpenCode CLI] Task was interrupted by user');
         this.emit('complete', {

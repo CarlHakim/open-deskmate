@@ -17,8 +17,6 @@ import ReactMarkdown from 'react-markdown';
 import { StreamingText } from '../components/ui/streaming-text';
 import { isWaitingForUser } from '../lib/waiting-detection';
 import SavedPromptsDialog from '../components/layout/SavedPromptsDialog';
-import loadingSymbol from '/assets/loading-symbol.svg';
-
 // Debug log entry type
 interface DebugLogEntry {
   taskId: string;
@@ -28,13 +26,13 @@ interface DebugLogEntry {
   data?: unknown;
 }
 
-// Spinning Open Deskmate icon component
-const SpinningIcon = ({ className }: { className?: string }) => (
-  <img
-    src={loadingSymbol}
-    alt=""
-    className={cn('animate-spin-ccw', className)}
-  />
+// Typing dots indicator for thinking/processing states
+const TypingDots = ({ className }: { className?: string }) => (
+  <span className={cn('typing-dots', className)} aria-hidden="true">
+    <span />
+    <span />
+    <span />
+  </span>
 );
 
 // Tool name to human-readable progress mapping
@@ -340,7 +338,7 @@ export default function ExecutionPage() {
   if (!currentTask) {
     return (
       <div className="h-full flex items-center justify-center">
-        <SpinningIcon className="h-8 w-8" />
+        <TypingDots className="text-muted-foreground" />
       </div>
     );
   }
@@ -631,7 +629,7 @@ export default function ExecutionPage() {
                   className="flex items-center gap-2 text-muted-foreground py-2"
                   data-testid="execution-thinking-indicator"
                 >
-                  <SpinningIcon className="h-4 w-4" />
+                  <TypingDots />
                   <span className="text-sm">
                     {currentTool
                       ? ((currentToolInput as { description?: string })?.description || TOOL_PROGRESS_MAP[currentTool]?.label || currentTool)
@@ -1172,7 +1170,7 @@ const MessageBubble = memo(function MessageBubble({ message, shouldStream = fals
               {ToolIcon ? <ToolIcon className="h-4 w-4" /> : <Wrench className="h-4 w-4" />}
               <span>{TOOL_PROGRESS_MAP[toolName || '']?.label || toolName || 'Processing'}</span>
               {isLastMessage && isRunning && (
-                <SpinningIcon className="h-3.5 w-3.5 ml-1" />
+                <TypingDots />
               )}
             </div>
             {showToolOutput && (

@@ -386,6 +386,7 @@ describe('OpenCode Adapter Module', () => {
 
         // Act
         mockPtyInstance.simulateData(JSON.stringify(stepFinishMessage) + '\n');
+        await new Promise((resolve) => setTimeout(resolve, 0));
 
         // Assert
         expect(completeEvents.length).toBe(1);
@@ -619,7 +620,7 @@ describe('OpenCode Adapter Module', () => {
 
         // Act
         await adapter.interruptTask();
-        mockPtyInstance.simulateExit(0);
+        mockPtyInstance.simulateExit(1);
 
         // Assert
         expect(completeEvents.length).toBe(1);
@@ -649,6 +650,7 @@ describe('OpenCode Adapter Module', () => {
 
         // Act - then exit
         mockPtyInstance.simulateExit(0);
+        await new Promise((resolve) => setTimeout(resolve, 0));
 
         // Assert - should only have one complete event
         expect(completeEvents.length).toBe(1);

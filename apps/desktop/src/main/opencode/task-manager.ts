@@ -594,6 +594,8 @@ export class TaskManager {
       createdAt: new Date().toISOString(),
     };
 
+    callbacks.onProgress({ stage: 'setup', message: 'Preparing task...' });
+
     // Start browser setup and agent asynchronously
     // This allows the UI to navigate immediately while setup happens
     (async () => {

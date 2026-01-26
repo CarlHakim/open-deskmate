@@ -348,7 +348,7 @@ describe('Execution Page Integration', () => {
       renderWithRouter('task-123');
 
       // Assert
-      expect(screen.getByText('Reading files')).toBeInTheDocument();
+      expect(screen.getAllByText('Reading files').length).toBeGreaterThan(0);
     });
 
     it('should display multiple messages in order', () => {
@@ -1162,7 +1162,7 @@ describe('Execution Page Integration', () => {
       renderWithRouter('task-123');
 
       // Assert
-      expect(screen.getByText('Finding files')).toBeInTheDocument();
+      expect(screen.getAllByText('Finding files').length).toBeGreaterThan(0);
     });
 
     it('should display Grep tool with search label', () => {
@@ -1182,7 +1182,7 @@ describe('Execution Page Integration', () => {
       renderWithRouter('task-123');
 
       // Assert
-      expect(screen.getByText('Searching code')).toBeInTheDocument();
+      expect(screen.getAllByText('Searching code').length).toBeGreaterThan(0);
     });
 
     it('should display Write tool', () => {
@@ -1202,7 +1202,7 @@ describe('Execution Page Integration', () => {
       renderWithRouter('task-123');
 
       // Assert
-      expect(screen.getByText('Writing file')).toBeInTheDocument();
+      expect(screen.getAllByText('Writing file').length).toBeGreaterThan(0);
     });
 
     it('should display Edit tool', () => {
@@ -1222,7 +1222,7 @@ describe('Execution Page Integration', () => {
       renderWithRouter('task-123');
 
       // Assert
-      expect(screen.getByText('Editing file')).toBeInTheDocument();
+      expect(screen.getAllByText('Editing file').length).toBeGreaterThan(0);
     });
 
     it('should display Task agent tool', () => {
@@ -1242,7 +1242,7 @@ describe('Execution Page Integration', () => {
       renderWithRouter('task-123');
 
       // Assert
-      expect(screen.getByText('Running agent')).toBeInTheDocument();
+      expect(screen.getAllByText('Running agent').length).toBeGreaterThan(0);
     });
 
     it('should display dev_browser_execute tool', () => {
@@ -1262,7 +1262,7 @@ describe('Execution Page Integration', () => {
       renderWithRouter('task-123');
 
       // Assert
-      expect(screen.getByText('Executing browser action')).toBeInTheDocument();
+      expect(screen.getAllByText('Executing browser action').length).toBeGreaterThan(0);
     });
 
     it('should display unknown tool with fallback icon', () => {

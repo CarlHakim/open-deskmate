@@ -336,7 +336,7 @@ describe('TaskInputBar Integration', () => {
   });
 
   describe('loading state', () => {
-    it('should disable textarea when loading', () => {
+    it('should keep textarea enabled when loading', () => {
       // Arrange
       const onChange = vi.fn();
       const onSubmit = vi.fn();
@@ -353,7 +353,7 @@ describe('TaskInputBar Integration', () => {
 
       // Assert
       const textarea = screen.getByRole('textbox');
-      expect(textarea).toBeDisabled();
+      expect(textarea).not.toBeDisabled();
     });
 
     it('should disable submit button when loading', () => {
@@ -397,7 +397,7 @@ describe('TaskInputBar Integration', () => {
       expect(spinner).toBeInTheDocument();
     });
 
-    it('should have disabled textarea that prevents user input when loading', () => {
+    it('should still allow typing when loading', () => {
       // Arrange
       const onChange = vi.fn();
       const onSubmit = vi.fn();
@@ -411,11 +411,10 @@ describe('TaskInputBar Integration', () => {
         />
       );
 
-      // Assert - textarea is disabled, preventing real user interaction
-      // Note: In jsdom, keydown events still fire on disabled elements,
-      // but in a real browser, disabled elements don't receive keyboard input
+      // Assert
       const textarea = screen.getByRole('textbox');
-      expect(textarea).toBeDisabled();
+      fireEvent.change(textarea, { target: { value: 'Typing while loading' } });
+      expect(onChange).toHaveBeenCalledWith('Typing while loading');
     });
   });
 
@@ -479,7 +478,7 @@ describe('TaskInputBar Integration', () => {
 
       // Assert
       const textarea = screen.getByRole('textbox');
-      expect(textarea.className).toContain('text-[20px]');
+      expect(textarea.className).toContain('text-lg');
     });
 
     it('should apply default text size when large prop is false', () => {

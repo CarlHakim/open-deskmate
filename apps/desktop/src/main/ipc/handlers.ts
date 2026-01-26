@@ -104,6 +104,7 @@ async function fetchWithTimeout(
 
 // Message batching configuration
 const MESSAGE_BATCH_DELAY_MS = 50;
+const IGNORED_TASK_TTL_MS = 30_000;
 
 // Per-task message batching state
 interface MessageBatcher {
@@ -114,6 +115,18 @@ interface MessageBatcher {
 }
 
 const messageBatchers = new Map<string, MessageBatcher>();
+const ignoredTaskIds = new Set<string>();
+
+function markTaskIgnored(taskId: string): void {
+  ignoredTaskIds.add(taskId);
+  setTimeout(() => {
+    ignoredTaskIds.delete(taskId);
+  }, IGNORED_TASK_TTL_MS);
+}
+
+function isTaskIgnored(taskId: string): boolean {
+  return ignoredTaskIds.has(taskId);
+}
 
 function createMessageBatcher(
   taskId: string,
@@ -177,6 +190,18 @@ function flushAndCleanupBatcher(taskId: string): void {
   const batcher = messageBatchers.get(taskId);
   if (batcher) {
     batcher.flush();
+    messageBatchers.delete(taskId);
+  }
+}
+
+function dropAndCleanupBatcher(taskId: string): void {
+  const batcher = messageBatchers.get(taskId);
+  if (batcher) {
+    if (batcher.timeout) {
+      clearTimeout(batcher.timeout);
+    }
+    batcher.pendingMessages = [];
+    batcher.timeout = null;
     messageBatchers.delete(taskId);
   }
 }
@@ -321,6 +346,7 @@ export function registerIPCHandlers(): void {
     // Create task-scoped callbacks for the TaskManager
     const callbacks: TaskCallbacks = {
       onMessage: (message: OpenCodeMessage) => {
+        if (isTaskIgnored(taskId)) return;
         const taskMessage = toTaskMessage(message);
         if (!taskMessage) return;
 
@@ -329,6 +355,7 @@ export function registerIPCHandlers(): void {
       },
 
       onProgress: (progress: { stage: string; message?: string }) => {
+        if (isTaskIgnored(taskId)) return;
         forwardToRenderer('task:progress', {
           taskId,
           ...progress,
@@ -336,12 +363,14 @@ export function registerIPCHandlers(): void {
       },
 
       onPermissionRequest: (request: unknown) => {
+        if (isTaskIgnored(taskId)) return;
         // Flush pending messages before showing permission request
         flushAndCleanupBatcher(taskId);
         forwardToRenderer('permission:request', request);
       },
 
       onComplete: (result: TaskResult) => {
+        if (isTaskIgnored(taskId)) return;
         // Flush any pending messages before completing
         flushAndCleanupBatcher(taskId);
 
@@ -372,6 +401,7 @@ export function registerIPCHandlers(): void {
       },
 
       onError: (error: Error) => {
+        if (isTaskIgnored(taskId)) return;
         // Flush any pending messages before error
         flushAndCleanupBatcher(taskId);
 
@@ -386,6 +416,7 @@ export function registerIPCHandlers(): void {
       },
 
       onDebug: (log: { type: string; message: string; data?: unknown }) => {
+        if (isTaskIgnored(taskId)) return;
         if (getDebugMode()) {
           forwardToRenderer('debug:log', {
             taskId,
@@ -396,6 +427,7 @@ export function registerIPCHandlers(): void {
       },
 
       onStatusChange: (status: TaskStatus) => {
+        if (isTaskIgnored(taskId)) return;
         // Notify renderer of status change (e.g., queued -> running)
         forwardToRenderer('task:status-change', {
           taskId,
@@ -475,7 +507,21 @@ export function registerIPCHandlers(): void {
 
   // Task: Delete task from history
   handle('task:delete', async (_event: IpcMainInvokeEvent, taskId: string) => {
+    markTaskIgnored(taskId);
+    // Stop any queued or running task to prevent lingering events after deletion
+    if (taskManager.isTaskQueued(taskId)) {
+      taskManager.cancelQueuedTask(taskId);
+    }
+    // Drop any pending batched messages for this task
+    dropAndCleanupBatcher(taskId);
+    // Delete from history immediately so UI updates fast
     deleteTask(taskId);
+    // Cancel active task in background (don't block IPC response)
+    if (taskManager.hasActiveTask(taskId)) {
+      taskManager.cancelTask(taskId).catch((err) => {
+        console.warn(`[IPC] Background task cancellation failed for ${taskId}:`, err);
+      });
+    }
   });
 
   // Task: Clear all history
@@ -551,6 +597,7 @@ export function registerIPCHandlers(): void {
     // Create task-scoped callbacks for the TaskManager (with batching for performance)
     const callbacks: TaskCallbacks = {
       onMessage: (message: OpenCodeMessage) => {
+        if (isTaskIgnored(taskId)) return;
         const taskMessage = toTaskMessage(message);
         if (!taskMessage) return;
 
@@ -559,6 +606,7 @@ export function registerIPCHandlers(): void {
       },
 
       onProgress: (progress: { stage: string; message?: string }) => {
+        if (isTaskIgnored(taskId)) return;
         forwardToRenderer('task:progress', {
           taskId,
           ...progress,
@@ -566,12 +614,14 @@ export function registerIPCHandlers(): void {
       },
 
       onPermissionRequest: (request: unknown) => {
+        if (isTaskIgnored(taskId)) return;
         // Flush pending messages before showing permission request
         flushAndCleanupBatcher(taskId);
         forwardToRenderer('permission:request', request);
       },
 
       onComplete: (result: TaskResult) => {
+        if (isTaskIgnored(taskId)) return;
         // Flush any pending messages before completing
         flushAndCleanupBatcher(taskId);
 
@@ -602,6 +652,7 @@ export function registerIPCHandlers(): void {
       },
 
       onError: (error: Error) => {
+        if (isTaskIgnored(taskId)) return;
         // Flush any pending messages before error
         flushAndCleanupBatcher(taskId);
 
@@ -616,6 +667,7 @@ export function registerIPCHandlers(): void {
       },
 
       onDebug: (log: { type: string; message: string; data?: unknown }) => {
+        if (isTaskIgnored(taskId)) return;
         if (getDebugMode()) {
           forwardToRenderer('debug:log', {
             taskId,
@@ -626,6 +678,7 @@ export function registerIPCHandlers(): void {
       },
 
       onStatusChange: (status: TaskStatus) => {
+        if (isTaskIgnored(taskId)) return;
         // Notify renderer of status change (e.g., queued -> running)
         forwardToRenderer('task:status-change', {
           taskId,

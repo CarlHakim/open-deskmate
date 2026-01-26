@@ -13,7 +13,7 @@ import { Trash2, Sun, Moon, Monitor } from 'lucide-react';
 import { useTheme } from '@/contexts/ThemeContext';
 import type { ApiKeyConfig, SelectedModel } from '@accomplish/shared';
 import { DEFAULT_PROVIDERS } from '@accomplish/shared';
-import logoImage from '/assets/logo.png';
+import appIcon from '../../../../resources/icon.png';
 
 interface SettingsDialogProps {
   open: boolean;
@@ -40,6 +40,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
   const [error, setError] = useState<string | null>(null);
   const [savedKeys, setSavedKeys] = useState<ApiKeyConfig[]>([]);
   const [loadingKeys, setLoadingKeys] = useState(true);
+  const [apiKeyStatus, setApiKeyStatus] = useState<Record<string, { exists: boolean; prefix?: string }> | null>(null);
   const [debugMode, setDebugMode] = useState(false);
   const [loadingDebug, setLoadingDebug] = useState(true);
   const [appVersion, setAppVersion] = useState('');
@@ -103,6 +104,15 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
       }
     };
 
+    const fetchApiKeyStatus = async () => {
+      try {
+        const status = await accomplish.getAllApiKeys();
+        setApiKeyStatus(status);
+      } catch (err) {
+        console.error('Failed to fetch API key status:', err);
+      }
+    };
+
     const fetchOllamaConfig = async () => {
       try {
         const config = await accomplish.getOllamaConfig();
@@ -126,6 +136,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
     fetchDebugSetting();
     fetchVersion();
     fetchSelectedModel();
+    fetchApiKeyStatus();
     fetchOllamaConfig();
   }, [open]);
 
@@ -199,6 +210,10 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
         const filtered = prev.filter((k) => k.provider !== savedKey.provider);
         return [...filtered, savedKey];
       });
+      setApiKeyStatus((prev) => ({
+        ...(prev || {}),
+        [savedKey.provider]: { exists: true, prefix: savedKey.keyPrefix },
+      }));
       onApiKeySaved?.();
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to save API key.';
@@ -214,6 +229,10 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
     try {
       await accomplish.removeApiKey(id);
       setSavedKeys((prev) => prev.filter((k) => k.id !== id));
+      setApiKeyStatus((prev) => ({
+        ...(prev || {}),
+        [providerName]: { exists: false },
+      }));
       setStatusMessage(`${providerConfig?.name || providerName} API key removed.`);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to remove API key.';
@@ -337,14 +356,15 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
                     >
                       <option value="" disabled>Select a model...</option>
                       {DEFAULT_PROVIDERS.filter((p) => p.requiresApiKey).map((provider) => {
-                        const hasApiKey = savedKeys.some((k) => k.provider === provider.id);
+                        const hasApiKey =
+                          apiKeyStatus?.[provider.id]?.exists ||
+                          savedKeys.some((k) => k.provider === provider.id);
                         return (
                           <optgroup key={provider.id} label={provider.name}>
                             {provider.models.map((model) => (
                               <option
                                 key={model.fullId}
                                 value={model.fullId}
-                                disabled={!hasApiKey}
                               >
                                 {model.displayName}{!hasApiKey ? ' (No API key)' : ''}
                               </option>
@@ -357,7 +377,10 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
                   {modelStatusMessage && (
                     <p className="mt-3 text-sm text-success">{modelStatusMessage}</p>
                   )}
-                  {selectedModel && selectedModel.provider !== 'ollama' && !savedKeys.some((k) => k.provider === selectedModel.provider) && (
+                  {selectedModel && selectedModel.provider !== 'ollama' && !(
+                    apiKeyStatus?.[selectedModel.provider]?.exists ||
+                    savedKeys.some((k) => k.provider === selectedModel.provider)
+                  ) && (
                     <p className="mt-3 text-sm text-warning">
                       No API key configured for {DEFAULT_PROVIDERS.find((p) => p.id === selectedModel.provider)?.name}. Add one below.
                     </p>
@@ -705,7 +728,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
             <div className="rounded-lg border border-border bg-card p-5">
               <div className="flex items-center gap-4">
                 <img
-                  src={logoImage}
+                  src={appIcon}
                   alt="Open Deskmate"
                   className="h-12 w-12 rounded-xl"
                 />
@@ -716,9 +739,6 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
               </div>
               <p className="mt-4 text-sm text-muted-foreground leading-relaxed">
               Open Deskmate is a local computer-use AI agent for your Windows PC that reads your files, creates documents, and automates repetitive knowledge work—all open-source with your AI models of choice.
-              </p>
-              <p className="mt-3 text-sm text-muted-foreground">
-              Any questions or feedback? <a href="mailto:openwork-support@accomplish.ai" className="text-primary hover:underline">Click here to contact us</a>.
               </p>
             </div>
           </section>

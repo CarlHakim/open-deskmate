@@ -94,6 +94,9 @@
   "build": {
     "appId": "ai.accomplish.desktop",
     "productName": "OpenDeskmate",
+    "extraMetadata": {
+      "name": "opendeskmate"
+    },
 
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
 
@@ -146,6 +149,8 @@
           "!**/tmp/**",
           "!**/.git/**",
           "!**/.browser-data/**",
+          "!**/node_modules/@accomplish/desktop",
+          "!**/node_modules/@accomplish/desktop/**",
           "!**/bun.lock",
           "!**/*.test.ts",
           "!**/vitest.config.ts"
@@ -168,11 +173,13 @@
     },
     "win": {
       "icon": "resources/icon.ico",
-      "target": ["nsis"]
+      "target": ["nsis", "portable"]
     },
 
     "nsis": {
-      "artifactName": "OpenDeskmate-${version}-win-x64-installer.${ext}"
+      "artifactName": "OpenDeskmate-${version}-win-x64-installer.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
     },
     "portable": {
       "artifactName": "OpenDeskmate-${version}-win-x64-portable.${ext}"

@@ -697,6 +697,50 @@ describe('IPC Handlers Integration', () => {
       // Assert
       const { deleteTask } = await import('@main/store/taskHistory');
       expect(deleteTask).toHaveBeenCalledWith(taskId);
+      expect(mockTaskManager.cancelTask).not.toHaveBeenCalled();
+      expect(mockTaskManager.cancelQueuedTask).not.toHaveBeenCalled();
+    });
+
+    it('task:delete should cancel active task before removing history', async () => {
+      // Arrange
+      const taskId = 'task_active_delete';
+      mockTasks.push({
+        id: taskId,
+        prompt: 'Active task',
+        status: 'running',
+        messages: [],
+        createdAt: new Date().toISOString(),
+      });
+      mockTaskManager.hasActiveTask.mockReturnValue(true);
+
+      // Act
+      await invokeHandler('task:delete', taskId);
+
+      // Assert
+      expect(mockTaskManager.cancelTask).toHaveBeenCalledWith(taskId);
+      const { deleteTask } = await import('@main/store/taskHistory');
+      expect(deleteTask).toHaveBeenCalledWith(taskId);
+    });
+
+    it('task:delete should cancel queued task before removing history', async () => {
+      // Arrange
+      const taskId = 'task_queued_delete';
+      mockTasks.push({
+        id: taskId,
+        prompt: 'Queued task',
+        status: 'queued',
+        messages: [],
+        createdAt: new Date().toISOString(),
+      });
+      mockTaskManager.isTaskQueued.mockReturnValue(true);
+
+      // Act
+      await invokeHandler('task:delete', taskId);
+
+      // Assert
+      expect(mockTaskManager.cancelQueuedTask).toHaveBeenCalledWith(taskId);
+      const { deleteTask } = await import('@main/store/taskHistory');
+      expect(deleteTask).toHaveBeenCalledWith(taskId);
     });
 
     it('task:clear-history should clear all tasks', async () => {

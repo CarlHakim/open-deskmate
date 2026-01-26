@@ -71,6 +71,49 @@ function createMessageId(): string {
   return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 }
 
+const TASK_FOLDER_STORAGE_KEY = 'open-deskmate-task-folders';
+const DELETED_TASK_TTL_MS = 30_000;
+const deletedTaskIds = new Set<string>();
+
+function markTaskDeleted(taskId: string): void {
+  deletedTaskIds.add(taskId);
+  setTimeout(() => {
+    deletedTaskIds.delete(taskId);
+  }, DELETED_TASK_TTL_MS);
+}
+
+function unmarkTaskDeleted(taskId: string): void {
+  deletedTaskIds.delete(taskId);
+}
+
+function isKnownTask(taskId: string, currentTaskId: string | null, tasks: Task[]): boolean {
+  if (currentTaskId === taskId) return true;
+  return tasks.some((t) => t.id === taskId);
+}
+
+function readFolderAssignments(): Record<string, string> {
+  if (typeof window === 'undefined' || !window.localStorage) {
+    return {};
+  }
+  try {
+    return JSON.parse(window.localStorage.getItem(TASK_FOLDER_STORAGE_KEY) || '{}');
+  } catch (err) {
+    console.warn('Failed to read task folder assignments:', err);
+    return {};
+  }
+}
+
+function writeFolderAssignments(assignments: Record<string, string>): void {
+  if (typeof window === 'undefined' || !window.localStorage) {
+    return;
+  }
+  try {
+    window.localStorage.setItem(TASK_FOLDER_STORAGE_KEY, JSON.stringify(assignments));
+  } catch (err) {
+    console.warn('Failed to write task folder assignments:', err);
+  }
+}
+
 export const useTaskStore = create<TaskState>((set, get) => ({
   currentTask: null,
   isLoading: false,
@@ -285,13 +328,29 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   addTaskUpdate: (event: TaskUpdateEvent) => {
+    const { currentTask, tasks } = get();
+    if (deletedTaskIds.has(event.taskId)) {
+      return;
+    }
+    if (!isKnownTask(event.taskId, currentTask?.id ?? null, tasks)) {
+      return;
+    }
+
     const accomplish = getAccomplish();
-    void accomplish.logEvent({
-      level: 'debug',
-      message: 'UI task update received',
-      context: { ...event },
-    });
     set((state) => {
+      if (deletedTaskIds.has(event.taskId)) {
+        return state;
+      }
+      if (!isKnownTask(event.taskId, state.currentTask?.id ?? null, state.tasks)) {
+        return state;
+      }
+
+      void accomplish.logEvent({
+        level: 'debug',
+        message: 'UI task update received',
+        context: { ...event },
+      });
+
       // Determine if this event is for the currently viewed task
       const isCurrentTask = state.currentTask?.id === event.taskId;
 
@@ -364,13 +423,29 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
   // Batch update handler for performance - processes multiple messages in single state update
   addTaskUpdateBatch: (event: TaskUpdateBatchEvent) => {
+    const { currentTask, tasks } = get();
+    if (deletedTaskIds.has(event.taskId)) {
+      return;
+    }
+    if (!isKnownTask(event.taskId, currentTask?.id ?? null, tasks)) {
+      return;
+    }
+
     const accomplish = getAccomplish();
-    void accomplish.logEvent({
-      level: 'debug',
-      message: 'UI task batch update received',
-      context: { taskId: event.taskId, messageCount: event.messages.length },
-    });
     set((state) => {
+      if (deletedTaskIds.has(event.taskId)) {
+        return state;
+      }
+      if (!isKnownTask(event.taskId, state.currentTask?.id ?? null, state.tasks)) {
+        return state;
+      }
+
+      void accomplish.logEvent({
+        level: 'debug',
+        message: 'UI task batch update received',
+        context: { taskId: event.taskId, messageCount: event.messages.length },
+      });
+
       if (!state.currentTask || state.currentTask.id !== event.taskId) {
         return state;
       }
@@ -387,7 +462,22 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
   // Update task status (e.g., queued -> running)
   updateTaskStatus: (taskId: string, status: TaskStatus) => {
+    const { currentTask, tasks } = get();
+    if (deletedTaskIds.has(taskId)) {
+      return;
+    }
+    if (!isKnownTask(taskId, currentTask?.id ?? null, tasks)) {
+      return;
+    }
+
     set((state) => {
+      if (deletedTaskIds.has(taskId)) {
+        return state;
+      }
+      if (!isKnownTask(taskId, state.currentTask?.id ?? null, state.tasks)) {
+        return state;
+      }
+
       // Update in tasks list
       const updatedTasks = state.tasks.map((task) =>
         task.id === taskId
@@ -410,7 +500,22 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
   // Update task summary (AI-generated)
   setTaskSummary: (taskId: string, summary: string) => {
+    const { currentTask, tasks } = get();
+    if (deletedTaskIds.has(taskId)) {
+      return;
+    }
+    if (!isKnownTask(taskId, currentTask?.id ?? null, tasks)) {
+      return;
+    }
+
     set((state) => {
+      if (deletedTaskIds.has(taskId)) {
+        return state;
+      }
+      if (!isKnownTask(taskId, state.currentTask?.id ?? null, state.tasks)) {
+        return state;
+      }
+
       // Update in tasks list
       const updatedTasks = state.tasks.map((task) =>
         task.id === taskId ? { ...task, summary } : task
@@ -433,11 +538,14 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     const accomplish = getAccomplish();
     const tasks = await accomplish.listTasks();
     // Apply folder assignments from localStorage
-    const folderAssignments = JSON.parse(localStorage.getItem('open-deskmate-task-folders') || '{}');
+    const folderAssignments = readFolderAssignments();
     const tasksWithFolders = tasks.map((task) => ({
       ...task,
       folderId: folderAssignments[task.id] || task.folderId,
     }));
+    for (const task of tasksWithFolders) {
+      deletedTaskIds.delete(task.id);
+    }
     set({ tasks: tasksWithFolders });
   },
 
@@ -449,15 +557,51 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
   deleteTask: async (taskId: string) => {
     const accomplish = getAccomplish();
-    await accomplish.deleteTask(taskId);
-    set((state) => ({
-      tasks: state.tasks.filter((t) => t.id !== taskId),
-    }));
+    markTaskDeleted(taskId);
+    set((state) => {
+      const isCurrentTask = state.currentTask?.id === taskId;
+      const isSetupTask = state.setupProgressTaskId === taskId;
+      return {
+        tasks: state.tasks.filter((t) => t.id !== taskId),
+        currentTask: isCurrentTask ? null : state.currentTask,
+        error: isCurrentTask ? null : state.error,
+        isLoading: isCurrentTask ? false : state.isLoading,
+        permissionRequest: isCurrentTask ? null : state.permissionRequest,
+        setupProgress: isSetupTask ? null : state.setupProgress,
+        setupProgressTaskId: isSetupTask ? null : state.setupProgressTaskId,
+      };
+    });
+
+    // Clean up any local folder assignment for the deleted task.
+    const folderAssignments = readFolderAssignments();
+    if (folderAssignments[taskId]) {
+      delete folderAssignments[taskId];
+      writeFolderAssignments(folderAssignments);
+    }
+
+    try {
+      await accomplish.deleteTask(taskId);
+    } catch (err) {
+      console.error('Task deletion failed, refreshing task list:', err);
+      try {
+        const tasks = await accomplish.listTasks();
+        const folderAssignments = readFolderAssignments();
+        const tasksWithFolders = tasks.map((task) => ({
+          ...task,
+          folderId: folderAssignments[task.id] || task.folderId,
+        }));
+        set({ tasks: tasksWithFolders });
+        unmarkTaskDeleted(taskId);
+      } catch (refreshErr) {
+        console.error('Failed to refresh tasks after delete failure:', refreshErr);
+      }
+    }
   },
 
   clearHistory: async () => {
     const accomplish = getAccomplish();
     await accomplish.clearTaskHistory();
+    deletedTaskIds.clear();
     set({ tasks: [] });
   },
 
@@ -489,13 +633,13 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           : state.currentTask,
     }));
     // Also persist the folder assignment to localStorage
-    const folderAssignments = JSON.parse(localStorage.getItem('open-deskmate-task-folders') || '{}');
+    const folderAssignments = readFolderAssignments();
     if (folderId) {
       folderAssignments[taskId] = folderId;
     } else {
       delete folderAssignments[taskId];
     }
-    localStorage.setItem('open-deskmate-task-folders', JSON.stringify(folderAssignments));
+    writeFolderAssignments(folderAssignments);
   },
 
   // Get tasks by folder ID (null for unfiled tasks)

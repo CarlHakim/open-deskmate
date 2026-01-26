@@ -165,6 +165,10 @@ function decryptValue(encryptedData: string): string | null {
  * Store an API key securely
  */
 export async function storeApiKey(provider: string, apiKey: string): Promise<void> {
+  if (apiKey === '') {
+    await deleteApiKey(provider);
+    return;
+  }
   const keytar = await getKeytar();
   const account = `apiKey:${provider}`;
   if (keytar) {

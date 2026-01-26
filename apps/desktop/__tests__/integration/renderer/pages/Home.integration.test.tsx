@@ -153,7 +153,7 @@ describe('Home Page Integration', () => {
       );
 
       // Assert
-      const textarea = screen.getByPlaceholderText(/describe a task and let ai handle the rest/i);
+      const textarea = screen.getByPlaceholderText(/type your task here/i);
       expect(textarea).toBeInTheDocument();
     });
 
@@ -166,7 +166,7 @@ describe('Home Page Integration', () => {
       );
 
       // Assert
-      const submitButton = screen.getByTitle('Submit');
+      const submitButton = screen.getByTitle(/submit/i);
       expect(submitButton).toBeInTheDocument();
     });
 
@@ -221,7 +221,7 @@ describe('Home Page Integration', () => {
       );
 
       // Act
-      const textarea = screen.getByPlaceholderText(/describe a task/i);
+      const textarea = screen.getByPlaceholderText(/type your task here/i);
       fireEvent.change(textarea, { target: { value: 'Check my calendar' } });
 
       // Assert
@@ -237,10 +237,10 @@ describe('Home Page Integration', () => {
       );
 
       // Act
-      const textarea = screen.getByPlaceholderText(/describe a task/i);
+      const textarea = screen.getByPlaceholderText(/type your task here/i);
       fireEvent.change(textarea, { target: { value: 'Submit this task' } });
 
-      const submitButton = screen.getByTitle('Submit');
+      const submitButton = screen.getByTitle(/submit/i);
       fireEvent.click(submitButton);
 
       // Assert
@@ -260,10 +260,10 @@ describe('Home Page Integration', () => {
       );
 
       // Act
-      const textarea = screen.getByPlaceholderText(/describe a task/i);
+      const textarea = screen.getByPlaceholderText(/type your task here/i);
       fireEvent.change(textarea, { target: { value: 'Submit without key' } });
 
-      const submitButton = screen.getByTitle('Submit');
+      const submitButton = screen.getByTitle(/submit/i);
       fireEvent.click(submitButton);
 
       // Assert
@@ -285,10 +285,10 @@ describe('Home Page Integration', () => {
       );
 
       // Act
-      const textarea = screen.getByPlaceholderText(/describe a task/i);
+      const textarea = screen.getByPlaceholderText(/type your task here/i);
       fireEvent.change(textarea, { target: { value: 'My task' } });
 
-      const submitButton = screen.getByTitle('Submit');
+      const submitButton = screen.getByTitle(/submit/i);
       fireEvent.click(submitButton);
 
       // Assert
@@ -306,7 +306,7 @@ describe('Home Page Integration', () => {
       );
 
       // Act
-      const submitButton = screen.getByTitle('Submit');
+      const submitButton = screen.getByTitle(/submit/i);
       fireEvent.click(submitButton);
 
       // Assert
@@ -325,10 +325,10 @@ describe('Home Page Integration', () => {
       );
 
       // Act
-      const textarea = screen.getByPlaceholderText(/describe a task/i);
+      const textarea = screen.getByPlaceholderText(/type your task here/i);
       fireEvent.change(textarea, { target: { value: '   ' } });
 
-      const submitButton = screen.getByTitle('Submit');
+      const submitButton = screen.getByTitle(/submit/i);
       fireEvent.click(submitButton);
 
       // Assert
@@ -351,10 +351,10 @@ describe('Home Page Integration', () => {
       );
 
       // Act - Submit to open settings
-      const textarea = screen.getByPlaceholderText(/describe a task/i);
+      const textarea = screen.getByPlaceholderText(/type your task here/i);
       fireEvent.change(textarea, { target: { value: 'My task' } });
 
-      const submitButton = screen.getByTitle('Submit');
+      const submitButton = screen.getByTitle(/submit/i);
       fireEvent.click(submitButton);
 
       // Wait for dialog
@@ -386,7 +386,7 @@ describe('Home Page Integration', () => {
       );
 
       // Assert
-      const textarea = screen.getByPlaceholderText(/describe a task/i);
+      const textarea = screen.getByPlaceholderText(/type your task here/i);
       expect(textarea).toBeDisabled();
     });
 
@@ -402,7 +402,7 @@ describe('Home Page Integration', () => {
       );
 
       // Assert
-      const submitButton = screen.getByTitle('Submit');
+      const submitButton = screen.getByTitle(/submit/i);
       expect(submitButton).toBeDisabled();
     });
 
@@ -417,7 +417,7 @@ describe('Home Page Integration', () => {
       );
 
       // The textarea is disabled, so we can't really type, but test submit
-      const submitButton = screen.getByTitle('Submit');
+      const submitButton = screen.getByTitle(/submit/i);
       fireEvent.click(submitButton);
 
       // Assert
@@ -446,7 +446,7 @@ describe('Home Page Integration', () => {
 
       // Assert - The textarea should now contain text related to the example
       await waitFor(() => {
-        const textarea = screen.getByPlaceholderText(/describe a task/i) as HTMLTextAreaElement;
+      const textarea = screen.getByPlaceholderText(/type your task here/i) as HTMLTextAreaElement;
         expect(textarea.value.length).toBeGreaterThan(0);
         expect(textarea.value.toLowerCase()).toContain('calendar');
       });
@@ -524,10 +524,10 @@ describe('Home Page Integration', () => {
       );
 
       // Act - Open settings via submit
-      const textarea = screen.getByPlaceholderText(/describe a task/i);
+      const textarea = screen.getByPlaceholderText(/type your task here/i);
       fireEvent.change(textarea, { target: { value: 'My task' } });
 
-      const submitButton = screen.getByTitle('Submit');
+      const submitButton = screen.getByTitle(/submit/i);
       fireEvent.click(submitButton);
 
       await waitFor(() => {

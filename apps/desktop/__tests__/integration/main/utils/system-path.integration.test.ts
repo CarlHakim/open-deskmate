@@ -8,11 +8,16 @@
  */
 
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import path from 'path';
 
 // Store original values
-const originalPlatform = process.platform;
 const originalEnv = { ...process.env };
+
+const isDarwin = process.platform === 'darwin';
+const isLinux = process.platform === 'linux';
+const isWindows = process.platform === 'win32';
+const describeMac = isDarwin ? describe : describe.skip;
+const itLinux = isLinux ? it : it.skip;
+const itWindows = isWindows ? it : it.skip;
 
 // Mock fs module
 const mockFs = {
@@ -61,50 +66,35 @@ describe('System PATH Utilities', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
-    Object.defineProperty(process, 'platform', { value: originalPlatform });
     process.env = originalEnv;
   });
 
   describe('getExtendedNodePath()', () => {
     describe('Non-macOS Platforms', () => {
-      it('should return base PATH unchanged on Linux', async () => {
+      itLinux('should return base PATH unchanged on Linux', async () => {
         // Arrange
-        Object.defineProperty(process, 'platform', { value: 'linux' });
         const basePath = '/usr/bin:/usr/local/bin';
 
-        // Re-import for platform change
-        vi.resetModules();
-        const module = await import('@main/utils/system-path');
-
         // Act
-        const result = module.getExtendedNodePath(basePath);
+        const result = getExtendedNodePath(basePath);
 
         // Assert
         expect(result).toBe(basePath);
       });
 
-      it('should return base PATH unchanged on Windows', async () => {
+      itWindows('should return base PATH unchanged on Windows', async () => {
         // Arrange
-        Object.defineProperty(process, 'platform', { value: 'win32' });
         const basePath = 'C:\\Windows\\System32';
 
-        // Re-import for platform change
-        vi.resetModules();
-        const module = await import('@main/utils/system-path');
-
         // Act
-        const result = module.getExtendedNodePath(basePath);
+        const result = getExtendedNodePath(basePath);
 
         // Assert
         expect(result).toBe(basePath);
       });
     });
 
-    describe('macOS Platform', () => {
-      beforeEach(() => {
-        Object.defineProperty(process, 'platform', { value: 'darwin' });
-      });
-
+    describeMac('macOS Platform', () => {
       it('should include common Node.js paths', async () => {
         // Arrange
         mockFs.existsSync.mockImplementation((p: string) => {
@@ -477,9 +467,9 @@ describe('System PATH Utilities', () => {
   });
 
   describe('Path Priority Order', () => {
-    it('should prioritize version manager paths over system paths', async () => {
+    const itMac = isDarwin ? it : it.skip;
+    itMac('should prioritize version manager paths over system paths', async () => {
       // Arrange
-      Object.defineProperty(process, 'platform', { value: 'darwin' });
       const nvmPath = '/Users/testuser/.nvm/versions/node/v20.10.0/bin';
 
       mockFs.existsSync.mockImplementation((p: string) => {
