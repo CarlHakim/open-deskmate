@@ -9,6 +9,7 @@ import type {
   TaskMessage,
 } from '@accomplish/shared';
 import { getAccomplish } from '../lib/accomplish';
+import { useAgentStore } from './agentStore';
 
 // Batch update event type for performance optimization
 interface TaskUpdateBatchEvent {
@@ -48,7 +49,7 @@ interface TaskState {
   // Actions
   startTask: (config: TaskConfig) => Promise<Task | null>;
   setSetupProgress: (taskId: string | null, message: string | null) => void;
-  sendFollowUp: (message: string) => Promise<void>;
+  sendFollowUp: (message: string, attachedFiles?: string[]) => Promise<void>;
   cancelTask: () => Promise<void>;
   interruptTask: () => Promise<void>;
   setPermissionRequest: (request: PermissionRequest | null) => void;
@@ -57,6 +58,7 @@ interface TaskState {
   addTaskUpdateBatch: (event: TaskUpdateBatchEvent) => void;
   updateTaskStatus: (taskId: string, status: TaskStatus) => void;
   setTaskSummary: (taskId: string, summary: string) => void;
+  insertTask: (task: Task) => void;
   loadTasks: () => Promise<void>;
   loadTaskById: (taskId: string) => Promise<void>;
   deleteTask: (taskId: string) => Promise<void>;
@@ -71,9 +73,11 @@ function createMessageId(): string {
   return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 }
 
-const TASK_FOLDER_STORAGE_KEY = 'open-deskmate-task-folders';
 const DELETED_TASK_TTL_MS = 30_000;
 const deletedTaskIds = new Set<string>();
+
+// Cache for folder assignments (synced with main process via IPC)
+let folderAssignmentsCache: Record<string, string> = {};
 
 function markTaskDeleted(taskId: string): void {
   deletedTaskIds.add(taskId);
@@ -91,26 +95,41 @@ function isKnownTask(taskId: string, currentTaskId: string | null, tasks: Task[]
   return tasks.some((t) => t.id === taskId);
 }
 
+// Read folder assignments from cache (sync, returns cached data)
 function readFolderAssignments(): Record<string, string> {
-  if (typeof window === 'undefined' || !window.localStorage) {
+  return folderAssignmentsCache;
+}
+
+// Load folder assignments from main process via IPC
+async function loadFolderAssignmentsFromIPC(): Promise<Record<string, string>> {
+  if (typeof window === 'undefined' || !window.accomplish) {
     return {};
   }
   try {
-    return JSON.parse(window.localStorage.getItem(TASK_FOLDER_STORAGE_KEY) || '{}');
+    const assignments = await window.accomplish.getTaskFolderAssignments();
+    folderAssignmentsCache = assignments || {};
+    return folderAssignmentsCache;
   } catch (err) {
-    console.warn('Failed to read task folder assignments:', err);
+    console.warn('Failed to load task folder assignments via IPC:', err);
     return {};
   }
 }
 
-function writeFolderAssignments(assignments: Record<string, string>): void {
-  if (typeof window === 'undefined' || !window.localStorage) {
+// Assign task to folder via IPC (async)
+async function assignTaskToFolderIPC(taskId: string, folderId: string | null): Promise<void> {
+  if (typeof window === 'undefined' || !window.accomplish) {
     return;
   }
   try {
-    window.localStorage.setItem(TASK_FOLDER_STORAGE_KEY, JSON.stringify(assignments));
+    await window.accomplish.assignTaskToFolder(taskId, folderId);
+    // Update cache
+    if (folderId) {
+      folderAssignmentsCache[taskId] = folderId;
+    } else {
+      delete folderAssignmentsCache[taskId];
+    }
   } catch (err) {
-    console.warn('Failed to write task folder assignments:', err);
+    console.warn('Failed to assign task to folder via IPC:', err);
   }
 }
 
@@ -143,29 +162,38 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
   startTask: async (config: TaskConfig) => {
     const accomplish = getAccomplish();
+    const agentId = config.agentId ?? useAgentStore.getState().activeAgentId;
+    const finalConfig = { ...config, agentId };
     set({ isLoading: true, error: null });
     try {
       void accomplish.logEvent({
         level: 'info',
         message: 'UI start task',
-        context: { prompt: config.prompt, taskId: config.taskId },
+        context: { prompt: config.prompt, taskId: config.taskId, agentId },
       });
-      const task = await accomplish.startTask(config);
+      const task = await accomplish.startTask(finalConfig);
+      const existingCurrent = get().currentTask;
+      const mergedMessages = existingCurrent?.id === task.id
+        ? [...existingCurrent.messages, ...task.messages]
+        : task.messages;
+      const nextTask = existingCurrent?.id === task.id
+        ? { ...task, messages: mergedMessages }
+        : task;
       // Task might be 'running' or 'queued' depending on if another task is running
       // Also add to tasks list so sidebar updates immediately
       const currentTasks = get().tasks;
       set({
-        currentTask: task,
-        tasks: [task, ...currentTasks.filter((t) => t.id !== task.id)],
+        currentTask: nextTask,
+        tasks: [nextTask, ...currentTasks.filter((t) => t.id !== nextTask.id)],
         // Keep loading state if queued (waiting for queue)
-        isLoading: task.status === 'queued',
+        isLoading: nextTask.status === 'queued',
       });
       void accomplish.logEvent({
         level: 'info',
-        message: task.status === 'queued' ? 'UI task queued' : 'UI task started',
-        context: { taskId: task.id, status: task.status },
+        message: nextTask.status === 'queued' ? 'UI task queued' : 'UI task started',
+        context: { taskId: nextTask.id, status: nextTask.status },
       });
-      return task;
+      return nextTask;
     } catch (err) {
       set({
         error: err instanceof Error ? err.message : 'Failed to start task',
@@ -180,7 +208,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }
   },
 
-  sendFollowUp: async (message: string) => {
+  sendFollowUp: async (message: string, attachedFiles?: string[]) => {
     const accomplish = getAccomplish();
     const { currentTask, startTask } = get();
     if (!currentTask) {
@@ -192,7 +220,10 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       return;
     }
 
-    const sessionId = currentTask.result?.sessionId || currentTask.sessionId;
+    const rawSessionId = currentTask.result?.sessionId || currentTask.sessionId;
+    const sessionId = typeof rawSessionId === 'string' && rawSessionId.startsWith('ses')
+      ? rawSessionId
+      : null;
 
     // If no session but task was interrupted, start a fresh task with the new message
     if (!sessionId && currentTask.status === 'interrupted') {
@@ -201,7 +232,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         message: 'UI follow-up: starting fresh task (no session from interrupted task)',
         context: { taskId: currentTask.id },
       });
-      await startTask({ prompt: message });
+      await startTask({ prompt: message, attachedFiles, privacyMode: currentTask.privacyMode ?? 'normal' });
       return;
     }
 
@@ -246,7 +277,13 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         message: 'UI follow-up sent',
         context: { taskId: currentTask.id, message },
       });
-      const task = await accomplish.resumeSession(sessionId, message, currentTask.id);
+      const task = await accomplish.resumeSession(
+        sessionId,
+        message,
+        currentTask.id,
+        attachedFiles,
+        currentTask.privacyMode ?? 'normal'
+      );
 
       // Update status based on response (could be 'running' or 'queued')
       set((state) => ({
@@ -301,14 +338,22 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   interruptTask: async () => {
     const accomplish = getAccomplish();
     const { currentTask } = get();
-    if (currentTask && currentTask.status === 'running') {
+    if (currentTask && (currentTask.status === 'running' || currentTask.status === 'queued')) {
       void accomplish.logEvent({
         level: 'info',
         message: 'UI interrupt task',
         context: { taskId: currentTask.id },
       });
       await accomplish.interruptTask(currentTask.id);
-      // Note: Don't change task status - task is still running, just interrupted
+      set((state) => ({
+        currentTask: state.currentTask
+          ? { ...state.currentTask, status: 'interrupted', completedAt: new Date().toISOString() }
+          : null,
+        isLoading: false,
+        tasks: state.tasks.map((t) =>
+          t.id === currentTask.id ? { ...t, status: 'interrupted' as TaskStatus, completedAt: new Date().toISOString() } : t
+        ),
+      }));
     }
   },
 
@@ -534,11 +579,24 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     });
   },
 
+  insertTask: (task: Task) => {
+    set((state) => {
+      const filtered = state.tasks.filter((t) => t.id !== task.id);
+      return {
+        tasks: [task, ...filtered],
+      };
+    });
+  },
+
   loadTasks: async () => {
     const accomplish = getAccomplish();
-    const tasks = await accomplish.listTasks();
-    // Apply folder assignments from localStorage
-    const folderAssignments = readFolderAssignments();
+    const agentId = useAgentStore.getState().activeAgentId;
+    // Load tasks and folder assignments in parallel
+    const [tasks, folderAssignments] = await Promise.all([
+      accomplish.listTasks(agentId),
+      loadFolderAssignmentsFromIPC(),
+    ]);
+    // Apply folder assignments from main process
     const tasksWithFolders = tasks.map((task) => ({
       ...task,
       folderId: folderAssignments[task.id] || task.folderId,
@@ -551,7 +609,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
   loadTaskById: async (taskId: string) => {
     const accomplish = getAccomplish();
-    const task = await accomplish.getTask(taskId);
+    const agentId = useAgentStore.getState().activeAgentId;
+    const task = await accomplish.getTask(taskId, agentId);
     set({ currentTask: task, error: task ? null : 'Task not found' });
   },
 
@@ -572,11 +631,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       };
     });
 
-    // Clean up any local folder assignment for the deleted task.
-    const folderAssignments = readFolderAssignments();
-    if (folderAssignments[taskId]) {
-      delete folderAssignments[taskId];
-      writeFolderAssignments(folderAssignments);
+    // Clean up any folder assignment for the deleted task via IPC
+    if (folderAssignmentsCache[taskId]) {
+      assignTaskToFolderIPC(taskId, null);
     }
 
     try {
@@ -584,7 +641,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     } catch (err) {
       console.error('Task deletion failed, refreshing task list:', err);
       try {
-        const tasks = await accomplish.listTasks();
+        const agentId = useAgentStore.getState().activeAgentId;
+        const tasks = await accomplish.listTasks(agentId);
         const folderAssignments = readFolderAssignments();
         const tasksWithFolders = tasks.map((task) => ({
           ...task,
@@ -600,7 +658,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
   clearHistory: async () => {
     const accomplish = getAccomplish();
-    await accomplish.clearTaskHistory();
+    const agentId = useAgentStore.getState().activeAgentId;
+    await accomplish.clearTaskHistory(agentId);
     deletedTaskIds.clear();
     set({ tasks: [] });
   },
@@ -632,14 +691,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           ? { ...state.currentTask, folderId: folderId ?? undefined }
           : state.currentTask,
     }));
-    // Also persist the folder assignment to localStorage
-    const folderAssignments = readFolderAssignments();
-    if (folderId) {
-      folderAssignments[taskId] = folderId;
-    } else {
-      delete folderAssignments[taskId];
-    }
-    writeFolderAssignments(folderAssignments);
+    // Persist the folder assignment via IPC to main process
+    assignTaskToFolderIPC(taskId, folderId);
   },
 
   // Get tasks by folder ID (null for unfiled tasks)

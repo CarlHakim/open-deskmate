@@ -10,10 +10,12 @@ import { app } from 'electron';
 import { OpenCodeAdapter, isOpenCodeCliInstalled, OpenCodeCliNotFoundError } from './adapter';
 import { getSkillsPath } from './config-generator';
 import { getNpxPath, getBundledNodePaths, getNpmPath, getNodePath } from '../utils/bundled-node';
+import { getBrowserProfile } from '../store/appSettings';
 import { spawn, spawnSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import { detectTaskNeedsBrowser } from '../services/task-intent';
 import type {
   TaskConfig,
   Task,
@@ -22,6 +24,35 @@ import type {
   OpenCodeMessage,
   PermissionRequest,
 } from '@accomplish/shared';
+
+let devBrowserChildPid: number | null = null;
+
+function killProcessTree(pid: number): void {
+  if (!Number.isFinite(pid) || pid <= 0) return;
+  try {
+    if (process.platform === 'win32') {
+      // Kill node + any spawned Chromium processes.
+      spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+      return;
+    }
+    // On POSIX, try to kill the entire process group first (spawned with detached: true).
+    try {
+      process.kill(-pid, 'SIGTERM');
+    } catch {
+      process.kill(pid, 'SIGTERM');
+    }
+  } catch (err) {
+    console.warn('[TaskManager] Failed to kill process tree:', pid, err);
+  }
+}
+
+export function stopDevBrowserServer(): void {
+  if (devBrowserChildPid) {
+    console.log('[TaskManager] Stopping dev-browser server (pid:', devBrowserChildPid, ')');
+    killProcessTree(devBrowserChildPid);
+    devBrowserChildPid = null;
+  }
+}
 
 /**
  * Check if system Chrome is installed
@@ -154,6 +185,7 @@ async function installPlaywrightChromium(
       cwd: devBrowserDir,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: spawnEnv,
+      windowsHide: true,
     });
 
     child.stdout?.on('data', (data: Buffer) => {
@@ -263,6 +295,7 @@ async function ensureDevBrowserServer(
       console.warn('[TaskManager] Bundled Node.js not found. Falling back to system Node.');
     }
     spawnEnv.DEV_BROWSER_USE_SYSTEM_CHROME = preferSystemChrome ? 'true' : 'false';
+    spawnEnv.DEV_BROWSER_PROFILE = getBrowserProfile();
 
     if (process.platform === 'win32') {
       const nodeModulesDir = path.join(devBrowserDir, 'node_modules');
@@ -274,6 +307,7 @@ async function ensureDevBrowserServer(
           env: spawnEnv,
           shell: true,
           stdio: 'inherit',
+          windowsHide: true,
         });
         if (installResult.status !== 0) {
           console.warn('[TaskManager] dev-browser npm install failed; server may not start.');
@@ -296,7 +330,9 @@ async function ensureDevBrowserServer(
         stdio: ['ignore', logFd, logFd],
         cwd: devBrowserDir,
         env: spawnEnv,
+        windowsHide: true,
       });
+      devBrowserChildPid = child.pid ?? null;
       fs.closeSync(logFd);
 
       // Track if child exits early (before server is ready)
@@ -331,8 +367,10 @@ async function ensureDevBrowserServer(
         stdio: ['ignore', logFd, logFd],
         cwd: devBrowserDir,
         env: spawnEnv,
+        windowsHide: true,
       });
       fs.closeSync(logFd);
+      devBrowserChildPid = child.pid ?? null;
       child.on('error', (error) => {
         console.error('[TaskManager] Failed to spawn dev-browser server:', error);
       });
@@ -405,6 +443,7 @@ export interface TaskCallbacks {
 interface ManagedTask {
   taskId: string;
   adapter: OpenCodeAdapter;
+  config: TaskConfig;
   callbacks: TaskCallbacks;
   cleanup: () => void;
   createdAt: Date;
@@ -500,6 +539,7 @@ export class TaskManager {
     return {
       id: taskId,
       prompt: config.prompt,
+      agentId: config.agentId,
       status: 'queued',
       messages: [],
       createdAt: new Date().toISOString(),
@@ -577,6 +617,7 @@ export class TaskManager {
     const managedTask: ManagedTask = {
       taskId,
       adapter,
+      config,
       callbacks,
       cleanup,
       createdAt: new Date(),
@@ -589,6 +630,7 @@ export class TaskManager {
     const task: Task = {
       id: taskId,
       prompt: config.prompt,
+      agentId: config.agentId,
       status: 'running',
       messages: [],
       createdAt: new Date().toISOString(),
@@ -600,8 +642,13 @@ export class TaskManager {
     // This allows the UI to navigate immediately while setup happens
     (async () => {
       try {
-        // Ensure browser is available (may download Playwright if needed)
-        await ensureDevBrowserServer(callbacks.onProgress);
+        // Ensure browser stack only when the task actually needs web automation.
+        const needsBrowser = detectTaskNeedsBrowser(config);
+        if (needsBrowser) {
+          await ensureDevBrowserServer(callbacks.onProgress);
+        } else {
+          callbacks.onProgress({ stage: 'setup', message: 'Skipping browser startup (not needed for this task).' });
+        }
 
         // Now start the agent
         await adapter.startTask({ ...config, taskId });
@@ -772,6 +819,18 @@ export class TaskManager {
   }
 
   /**
+   * Get task config for an active/queued task
+   */
+  getTaskConfig(taskId: string): TaskConfig | null {
+    const active = this.activeTasks.get(taskId);
+    if (active) {
+      return active.config;
+    }
+    const queued = this.taskQueue.find((entry) => entry.taskId === taskId);
+    return queued?.config ?? null;
+  }
+
+  /**
    * Get the currently running task ID (not queued)
    * Returns the first active task if multiple are running
    */
@@ -838,4 +897,5 @@ export function disposeTaskManager(): void {
     taskManagerInstance.dispose();
     taskManagerInstance = null;
   }
+  stopDevBrowserServer();
 }

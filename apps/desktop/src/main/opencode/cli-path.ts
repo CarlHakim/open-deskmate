@@ -94,6 +94,25 @@ export function getOpenCodeCliPath(): { command: string; args: string[] } {
       }
     }
 
+    // Windows dev: prefer the native opencode.exe shipped via pnpm optional deps.
+    // This avoids opencode.cmd (cmd.exe shim) and is the most reliable way to get NDJSON output.
+    if (process.platform === 'win32') {
+      const winExe = findDevWindowsOpenCodeExe();
+      if (winExe) {
+        console.log('[CLI Path] Using Windows bundled OpenCode exe (dev):', winExe);
+        return { command: winExe, args: [] };
+      }
+
+      // Fallback (dev): run the JS entrypoint with Node directly instead of opencode.cmd.
+      // Some environments may not have the optional exe installed.
+      const jsEntrypoint = path.join(app.getAppPath(), 'node_modules', 'opencode-ai', 'bin', 'opencode');
+      if (fs.existsSync(jsEntrypoint)) {
+        const nodePath = getNodePath();
+        console.warn('[CLI Path] Windows opencode.exe not found; falling back to node + JS entrypoint:', jsEntrypoint);
+        return { command: nodePath, args: [jsEntrypoint] };
+      }
+    }
+
     // Try bundled CLI in node_modules
     // Use app.getAppPath() instead of process.cwd() as cwd is unpredictable in Electron IPC handlers
     const binName = process.platform === 'win32' ? 'opencode.cmd' : 'opencode';
@@ -165,6 +184,13 @@ export function isOpenCodeBundled(): boolean {
 
       for (const opencodePath of globalOpenCodePaths) {
         if (fs.existsSync(opencodePath)) {
+          return true;
+        }
+      }
+
+      if (process.platform === 'win32') {
+        const winExe = findDevWindowsOpenCodeExe();
+        if (winExe) {
           return true;
         }
       }
@@ -269,4 +295,64 @@ function findBundledWindowsOpenCodeExe(): string | null {
   }
 
   return candidates.length > 0 ? candidates[0] : null;
+}
+
+function findDevWindowsOpenCodeExe(): string | null {
+  function findRepoRootWithPnpm(startDir: string): string | null {
+    let dir = startDir;
+    for (let i = 0; i < 10; i += 1) {
+      const pnpmDir = path.join(dir, 'node_modules', '.pnpm');
+      if (fs.existsSync(pnpmDir)) return dir;
+      const next = path.dirname(dir);
+      if (!next || next === dir) break;
+      dir = next;
+    }
+    return null;
+  }
+
+  // In pnpm workspaces the optional opencode-windows-* packages typically live under
+  // <repoRoot>/node_modules/.pnpm/..., not as a top-level node_modules entry.
+  // In Electron dev, app.getAppPath() can vary (sometimes points at dist folders),
+  // so we search upwards from a few plausible anchors.
+  const anchors = [
+    app.getAppPath(),
+    process.cwd(),
+  ];
+
+  let repoRoot: string | null = null;
+  for (const anchor of anchors) {
+    repoRoot = findRepoRootWithPnpm(anchor);
+    if (repoRoot) break;
+  }
+  if (!repoRoot) return null;
+
+  const pnpmDir = path.join(repoRoot, 'node_modules', '.pnpm');
+
+  const arch = process.arch;
+  const preferred = `opencode-windows-${arch}@`;
+  const baseline = `opencode-windows-${arch}-baseline@`;
+
+  let entries: string[] = [];
+  try {
+    entries = fs.readdirSync(pnpmDir);
+  } catch {
+    return null;
+  }
+
+  const preferredDirs = entries.filter((name) => name.startsWith(preferred));
+  const baselineDirs = entries.filter((name) => name.startsWith(baseline));
+
+  const candidates: Array<{ dir: string; pkg: string }> = [
+    ...preferredDirs.map((dir) => ({ dir, pkg: `opencode-windows-${arch}` })),
+    ...baselineDirs.map((dir) => ({ dir, pkg: `opencode-windows-${arch}-baseline` })),
+  ];
+
+  for (const c of candidates) {
+    const exePath = path.join(pnpmDir, c.dir, 'node_modules', c.pkg, 'bin', 'opencode.exe');
+    if (fs.existsSync(exePath)) {
+      return exePath;
+    }
+  }
+
+  return null;
 }

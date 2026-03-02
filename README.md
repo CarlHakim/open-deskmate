@@ -1,15 +1,27 @@
+<p align="center">
+  <img src="./open_deskmate_thumbnail-no_background.png" alt="OpenDeskmate logo" width="220" />
+</p>
+
 # OpenDeskmate
 
-An open-source desktop AI assistant for Windows forked from the Openwork for Mac github project. Run AI locally with your own API keys - no subscriptions, no cloud dependency.
+An open-source local-first AI agent platform for Windows forked from the Openwork for Mac project. Run AI with your own provider keys, manage multi-agent workflows, and integrate messaging + app connectors without a subscription lock-in.
 
 ---
 
 ## Features
 
-- **Runs locally** - Your files stay on your machine
-- **Bring your own AI** - Use OpenAI, Anthropic, Google, xAI, or Ollama (free/local)
-- **Open source** - MIT licensed, fully transparent
-- **Takes action** - File management, document creation, custom automations
+- **Runs locally** - Your files and secrets stay on your machine by default.
+- **Bring your own AI** - OpenAI, Anthropic, Google, xAI, Ollama, plus custom OpenAI-compatible providers/models.
+- **Multi-agent workspaces** - Per-agent role name, avatar, workspace defaults, and model/provider override with global fallback.
+- **Active Automation Mode per agent** - Enable agentic loop behavior with configurable heartbeat schedules.
+- **Session-key gateway + dynamic routing** - Route traffic from connectors into the right agent/account binding at runtime.
+- **Messaging Connector Extensions** - Multi-instance connector support (for example multiple Telegram/Discord bots), access policies, ID allowlists, and runtime health/testing.
+- **App Connector Extensions** - Connectors for Notion, Trello, Obsidian, GitHub, Slack, Dropbox, Canva, OneDrive, Supabase, Google apps, Figma, Miro, Outlook, and more.
+- **OAuth + local/public callback modes** - Supports desktop callback, loopback callback, and public HTTPS callback workflows.
+- **User Skills + agent-generated skills** - Create/import/edit/configure skills, private-by-default sharing, versioning, rollback, and test flows.
+- **Desktop + WebChat parity** - Saved prompts, add files, incognito mode, work-in-folder, voice wake/talk mode, model badge, context estimate badge/details, and message copy helpers.
+- **In-app Help system** - Markdown-driven help pages with sidebar navigation, search, syntax highlighting, asset/link support, and live reload from a user-editable folder.
+- **Open source** - MIT licensed and fully transparent.
 
 ---
 
@@ -88,6 +100,70 @@ pnpm dev:clean
 | `pnpm -F @accomplish/desktop build:unpack` | Build unpacked (for testing) |
 | `pnpm lint` | TypeScript checks |
 | `pnpm -F @accomplish/desktop test:e2e` | Run E2E tests |
+
+---
+
+## Integrations
+
+### Messaging Connector Extensions
+
+Current catalog includes:
+
+- Discord
+- Telegram
+- BlueBubbles
+- Google Chat
+- iMessage
+- LINE
+- Matrix
+- Mattermost
+- Microsoft Teams
+- Nextcloud Talk
+- Nostr
+- Signal
+- Slack
+- Tlon
+- WhatsApp
+- Zalo OA
+- Zalo User
+
+Notes:
+
+- You can create multiple connector instances per connector type.
+- Some connectors require bridge/public webhook setup; runtime labels and badges in Settings explain requirements.
+
+### App Connector Extensions
+
+Current catalog includes:
+
+- Notion
+- Trello
+- Obsidian
+- GitHub
+- Slack
+- Dropbox
+- Canva
+- OneDrive
+- Supabase
+- Google Slides
+- Google Tasks
+- Google Sheets
+- Google Docs
+- Google Drive
+- Google Photos
+- Google Maps
+- YouTube
+- Figma
+- Miro
+- Gmail
+- Email Triggers
+- Google Calendar
+- Microsoft Outlook
+
+Notes:
+
+- OAuth credentials/tokens are stored securely.
+- Connector instances can be routed per agent.
 
 ---
 

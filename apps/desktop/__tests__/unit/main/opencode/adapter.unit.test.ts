@@ -20,6 +20,7 @@
 
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
+import type { BufferEncoding } from 'buffer';
 import type {
   OpenCodeStepStartMessage,
   OpenCodeTextMessage,
@@ -100,10 +101,43 @@ vi.mock('node-pty', () => ({
   spawn: mockPtySpawn,
 }));
 
-// Mock child_process for execSync
+class MockChildProcStream extends EventEmitter {
+  emitData(text: string, encoding: BufferEncoding = 'utf-8') {
+    // adapter listens for Buffer chunks
+    this.emit('data', Buffer.from(text, encoding));
+  }
+}
+
+class MockChildProc extends EventEmitter {
+  pid = 23456;
+  stdout = new MockChildProcStream();
+  stderr = new MockChildProcStream();
+  stdin = { write: vi.fn() };
+  kill = vi.fn();
+}
+
+const mockChildProc = new MockChildProc();
+const mockSpawn = vi.fn(() => mockChildProc);
+
+// Mock child_process for execSync + spawn
 vi.mock('child_process', () => ({
   execSync: vi.fn(() => '/usr/local/bin/opencode'),
+  spawn: mockSpawn,
 }));
+
+const isWin = process.platform === 'win32';
+function emitCliData(text: string, stream: 'stdout' | 'stderr' = 'stdout') {
+  // The adapter now prefers PTY on Windows as well (ConPTY) to avoid the OpenCode
+  // exe hanging when spawned without a console.
+  void stream;
+  void isWin;
+  mockPtyInstance.simulateData(text);
+}
+
+function emitCliExit(exitCode: number) {
+  void isWin;
+  mockPtyInstance.simulateExit(exitCode);
+}
 
 // Mock secure storage
 vi.mock('@main/store/secureStorage', () => ({
@@ -154,6 +188,13 @@ describe('OpenCode Adapter Module', () => {
     Object.assign(mockPtyInstance, new MockPty());
     mockPtyInstance.killed = false;
     mockPtyInstance.removeAllListeners();
+
+    // Reset mock child process streams/listeners for Windows no-PTY execution
+    mockChildProc.removeAllListeners();
+    mockChildProc.stdout.removeAllListeners();
+    mockChildProc.stderr.removeAllListeners();
+    mockChildProc.stdin.write.mockClear();
+    mockChildProc.kill.mockClear();
 
     // Re-import module to get fresh state
     const module = await import('@main/opencode/adapter');
@@ -267,7 +308,7 @@ describe('OpenCode Adapter Module', () => {
         };
 
         // Act
-        mockPtyInstance.simulateData(JSON.stringify(textMessage) + '\n');
+        emitCliData(JSON.stringify(textMessage) + '\n');
 
         // Assert
         expect(messages.length).toBe(1);
@@ -293,7 +334,7 @@ describe('OpenCode Adapter Module', () => {
         };
 
         // Act
-        mockPtyInstance.simulateData(JSON.stringify(stepStartMessage) + '\n');
+        emitCliData(JSON.stringify(stepStartMessage) + '\n');
 
         // Assert
         expect(progressEvents.length).toBe(1);
@@ -321,7 +362,7 @@ describe('OpenCode Adapter Module', () => {
         };
 
         // Act
-        mockPtyInstance.simulateData(JSON.stringify(toolCallMessage) + '\n');
+        emitCliData(JSON.stringify(toolCallMessage) + '\n');
 
         // Assert
         expect(toolEvents.length).toBe(1);
@@ -356,7 +397,7 @@ describe('OpenCode Adapter Module', () => {
         };
 
         // Act
-        mockPtyInstance.simulateData(JSON.stringify(toolUseMessage) + '\n');
+        emitCliData(JSON.stringify(toolUseMessage) + '\n');
 
         // Assert
         expect(toolUseEvents.length).toBe(1);
@@ -385,7 +426,7 @@ describe('OpenCode Adapter Module', () => {
         };
 
         // Act
-        mockPtyInstance.simulateData(JSON.stringify(stepFinishMessage) + '\n');
+        emitCliData(JSON.stringify(stepFinishMessage) + '\n');
         await new Promise((resolve) => setTimeout(resolve, 0));
 
         // Assert
@@ -413,7 +454,7 @@ describe('OpenCode Adapter Module', () => {
         };
 
         // Act
-        mockPtyInstance.simulateData(JSON.stringify(stepFinishMessage) + '\n');
+        emitCliData(JSON.stringify(stepFinishMessage) + '\n');
 
         // Assert
         expect(completeEvents.length).toBe(0);
@@ -433,7 +474,7 @@ describe('OpenCode Adapter Module', () => {
         };
 
         // Act
-        mockPtyInstance.simulateData(JSON.stringify(errorMessage) + '\n');
+        emitCliData(JSON.stringify(errorMessage) + '\n');
 
         // Assert
         expect(completeEvents.length).toBe(1);
@@ -472,7 +513,7 @@ describe('OpenCode Adapter Module', () => {
         };
 
         // Act
-        mockPtyInstance.simulateData(JSON.stringify(toolCallMessage) + '\n');
+        emitCliData(JSON.stringify(toolCallMessage) + '\n');
 
         // Assert
         expect(permissionRequests.length).toBe(1);
@@ -501,7 +542,7 @@ describe('OpenCode Adapter Module', () => {
         };
 
         // Act
-        mockPtyInstance.simulateData(
+        emitCliData(
           JSON.stringify(message1) + '\n' + JSON.stringify(message2) + '\n'
         );
 
@@ -525,8 +566,8 @@ describe('OpenCode Adapter Module', () => {
         const splitPoint = Math.floor(jsonStr.length / 2);
 
         // Act - send message in two parts
-        mockPtyInstance.simulateData(jsonStr.substring(0, splitPoint));
-        mockPtyInstance.simulateData(jsonStr.substring(splitPoint) + '\n');
+        emitCliData(jsonStr.substring(0, splitPoint));
+        emitCliData(jsonStr.substring(splitPoint) + '\n');
 
         // Assert
         expect(messages.length).toBe(1);
@@ -548,8 +589,8 @@ describe('OpenCode Adapter Module', () => {
         };
 
         // Act - send non-JSON followed by valid JSON
-        mockPtyInstance.simulateData('Shell banner: Welcome to zsh\n');
-        mockPtyInstance.simulateData(JSON.stringify(validMessage) + '\n');
+        emitCliData('Shell banner: Welcome to zsh\n');
+        emitCliData(JSON.stringify(validMessage) + '\n');
 
         // Assert
         expect(messages.length).toBe(1);
@@ -570,7 +611,7 @@ describe('OpenCode Adapter Module', () => {
 
         // Act - send JSON with ANSI codes
         const ansiWrapped = '\x1B[32m' + JSON.stringify(validMessage) + '\x1B[0m\n';
-        mockPtyInstance.simulateData(ansiWrapped);
+        emitCliData(ansiWrapped);
 
         // Assert
         expect(messages.length).toBe(1);
@@ -587,7 +628,7 @@ describe('OpenCode Adapter Module', () => {
         await adapter.startTask({ prompt: 'Test' });
 
         // Act
-        mockPtyInstance.simulateExit(0);
+        emitCliExit(0);
 
         // Assert
         expect(completeEvents.length).toBe(1);
@@ -603,7 +644,7 @@ describe('OpenCode Adapter Module', () => {
         await adapter.startTask({ prompt: 'Test' });
 
         // Act
-        mockPtyInstance.simulateExit(1);
+        emitCliExit(1);
 
         // Assert
         expect(errorEvents.length).toBe(1);
@@ -620,7 +661,7 @@ describe('OpenCode Adapter Module', () => {
 
         // Act
         await adapter.interruptTask();
-        mockPtyInstance.simulateExit(1);
+        emitCliExit(1);
 
         // Assert
         expect(completeEvents.length).toBe(1);
@@ -646,10 +687,10 @@ describe('OpenCode Adapter Module', () => {
             reason: 'stop',
           },
         };
-        mockPtyInstance.simulateData(JSON.stringify(stepFinish) + '\n');
+        emitCliData(JSON.stringify(stepFinish) + '\n');
 
         // Act - then exit
-        mockPtyInstance.simulateExit(0);
+        emitCliExit(0);
         await new Promise((resolve) => setTimeout(resolve, 0));
 
         // Assert - should only have one complete event
@@ -782,7 +823,7 @@ describe('OpenCode Adapter Module', () => {
         };
 
         // Act
-        mockPtyInstance.simulateData(JSON.stringify(stepStart) + '\n');
+        emitCliData(JSON.stringify(stepStart) + '\n');
 
         // Assert
         expect(adapter.getSessionId()).toBe('session-abc-123');

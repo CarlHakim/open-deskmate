@@ -66,20 +66,26 @@ export function StreamingText({
       const charsToAdd = Math.floor(elapsed * charsPerMs);
 
       if (charsToAdd > 0) {
+        let reachedEnd = false;
         setDisplayedLength((prev) => {
           const next = Math.min(prev + charsToAdd, textRef.current.length);
           if (next >= textRef.current.length) {
-            setIsStreaming(false);
-            onComplete?.();
+            reachedEnd = true;
           }
           return next;
         });
         lastTimeRef.current = timestamp;
+
+        // Side effects outside the state updater to avoid
+        // "Cannot update a component while rendering" warnings
+        if (reachedEnd) {
+          setIsStreaming(false);
+          onComplete?.();
+          return;
+        }
       }
 
-      if (displayedLength < textRef.current.length) {
-        rafRef.current = requestAnimationFrame(animate);
-      }
+      rafRef.current = requestAnimationFrame(animate);
     };
 
     rafRef.current = requestAnimationFrame(animate);
@@ -89,7 +95,7 @@ export function StreamingText({
         cancelAnimationFrame(rafRef.current);
       }
     };
-  }, [isStreaming, isComplete, speed, onComplete, displayedLength]);
+  }, [isStreaming, isComplete, speed, onComplete]);
 
   const displayedText = text.slice(0, displayedLength);
 

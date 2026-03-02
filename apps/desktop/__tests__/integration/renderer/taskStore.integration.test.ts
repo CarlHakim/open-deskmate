@@ -6,6 +6,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { Task, TaskConfig, TaskStatus, TaskMessage, TaskResult } from '@accomplish/shared';
+import { createMockAccomplish } from '../../test-utils/mock-accomplish';
 
 // Helper to create a mock task
 function createMockTask(id: string, prompt: string = 'Test task', status: TaskStatus = 'pending'): Task {
@@ -33,20 +34,21 @@ function createMockMessage(
 }
 
 // Mock accomplish API
-const mockAccomplish = {
+const mockAccomplish = createMockAccomplish({
   startTask: vi.fn(),
   cancelTask: vi.fn(),
   interruptTask: vi.fn(),
   resumeSession: vi.fn(),
   respondToPermission: vi.fn(),
   listTasks: vi.fn(),
+  getTaskFolderAssignments: vi.fn().mockResolvedValue({}),
   getTask: vi.fn(),
   deleteTask: vi.fn(),
   clearTaskHistory: vi.fn(),
   logEvent: vi.fn().mockResolvedValue(undefined),
   getSelectedModel: vi.fn().mockResolvedValue({ provider: 'anthropic', id: 'claude-3-opus' }),
   getOllamaConfig: vi.fn().mockResolvedValue(null),
-};
+});
 
 // Mock the accomplish module
 vi.mock('@/lib/accomplish', () => ({
@@ -61,6 +63,7 @@ vi.stubGlobal('window', {
   accomplish: {
     onTaskProgress: mockOnTaskProgress,
     onTaskUpdate: mockOnTaskUpdate,
+    getTaskFolderAssignments: vi.fn().mockResolvedValue({}),
   },
 });
 
@@ -171,7 +174,7 @@ describe('taskStore Integration', () => {
       const state = useTaskStore.getState();
 
       // Assert
-      expect(mockAccomplish.startTask).toHaveBeenCalledWith(config);
+      expect(mockAccomplish.startTask).toHaveBeenCalledWith(expect.objectContaining(config));
       expect(result).toEqual(mockTask);
       expect(state.currentTask).toEqual(mockTask);
       expect(state.isLoading).toBe(false);
@@ -320,7 +323,13 @@ describe('taskStore Integration', () => {
       const state = useTaskStore.getState();
 
       // Assert
-      expect(mockAccomplish.resumeSession).toHaveBeenCalledWith('session-abc', 'Continue please', 'task-123');
+      expect(mockAccomplish.resumeSession).toHaveBeenCalledWith(
+        'session-abc',
+        'Continue please',
+        'task-123',
+        undefined,
+        'normal'
+      );
       expect(state.currentTask?.status).toBe('running');
     });
 
@@ -329,7 +338,7 @@ describe('taskStore Integration', () => {
       const { useTaskStore } = await import('@/stores/taskStore');
       const taskWithResultSession: Task = {
         ...createMockTask('task-123', 'Test', 'completed'),
-        result: { status: 'success', sessionId: 'result-session-xyz' },
+        result: { status: 'success', sessionId: 'ses_result-session-xyz' },
       };
       const resumedTask = createMockTask('task-123', 'Test', 'running');
       mockAccomplish.resumeSession.mockResolvedValueOnce(resumedTask);
@@ -340,7 +349,13 @@ describe('taskStore Integration', () => {
       await useTaskStore.getState().sendFollowUp('More work');
 
       // Assert
-      expect(mockAccomplish.resumeSession).toHaveBeenCalledWith('result-session-xyz', 'More work', 'task-123');
+      expect(mockAccomplish.resumeSession).toHaveBeenCalledWith(
+        'ses_result-session-xyz',
+        'More work',
+        'task-123',
+        undefined,
+        'normal'
+      );
     });
 
     it('should add user message optimistically', async () => {
@@ -445,7 +460,7 @@ describe('taskStore Integration', () => {
       expect(mockAccomplish.interruptTask).not.toHaveBeenCalled();
     });
 
-    it('should not change task status', async () => {
+    it('should set task status to interrupted', async () => {
       // Arrange
       const { useTaskStore } = await import('@/stores/taskStore');
       const runningTask = createMockTask('task-123', 'Test', 'running');
@@ -456,8 +471,8 @@ describe('taskStore Integration', () => {
       await useTaskStore.getState().interruptTask();
       const state = useTaskStore.getState();
 
-      // Assert - status should remain 'running' (interrupt is handled by event)
-      expect(state.currentTask?.status).toBe('running');
+      // Assert
+      expect(state.currentTask?.status).toBe('interrupted');
     });
   });
 
@@ -621,7 +636,7 @@ describe('taskStore Integration', () => {
       const state = useTaskStore.getState();
 
       // Assert
-      expect(mockAccomplish.getTask).toHaveBeenCalledWith('task-123');
+      expect(mockAccomplish.getTask).toHaveBeenCalledWith('task-123', 'main');
       expect(state.currentTask).toEqual(mockTask);
       expect(state.error).toBeNull();
     });

@@ -39,6 +39,14 @@ async function getKeytar(): Promise<typeof import('keytar') | null> {
   if (_keytarModule !== undefined) {
     return _keytarModule;
   }
+
+  // Unit/integration tests should never touch the real OS keychain.
+  // Force the encrypted file-store fallback for determinism.
+  if (process.env.VITEST || process.env.NODE_ENV === 'test') {
+    _keytarModule = null;
+    return null;
+  }
+
   try {
     const module = await import('keytar');
     const resolved = (module as unknown as { default?: typeof import('keytar') }).default || module;
@@ -245,6 +253,700 @@ export async function deleteApiKey(provider: string): Promise<boolean> {
   return removed;
 }
 
+const DISCORD_TOKEN_ACCOUNT = 'discord:botToken';
+const TELEGRAM_TOKEN_ACCOUNT = 'telegram:botToken';
+const VOICEWAKE_ACCESS_KEY_ACCOUNT = 'voicewake:accessKey';
+const GATEWAY_TOKEN_ACCOUNT = 'gateway:token';
+const GATEWAY_PASSWORD_ACCOUNT = 'gateway:password';
+const GATEWAY_CONNECTOR_SECRET_ACCOUNT_PREFIX = 'gateway-connector';
+const APP_CONNECTOR_SECRET_ACCOUNT_PREFIX = 'app-connector';
+const APP_CONNECTOR_OAUTH_CLIENT_SECRET_ACCOUNT_PREFIX = 'app-connector-oauth-client';
+
+/**
+ * Store Discord bot token securely.
+ */
+export async function storeDiscordToken(token: string): Promise<void> {
+  if (token === '') {
+    await deleteDiscordToken();
+    return;
+  }
+  const keytar = await getKeytar();
+  if (keytar) {
+    await keytar.setPassword(KEYCHAIN_SERVICE, DISCORD_TOKEN_ACCOUNT, token);
+    const store = getSecureStore();
+    const values = store.get('values');
+    if (values[DISCORD_TOKEN_ACCOUNT]) {
+      delete values[DISCORD_TOKEN_ACCOUNT];
+      store.set('values', values);
+    }
+    return;
+  }
+
+  const store = getSecureStore();
+  const encrypted = encryptValue(token);
+  const values = store.get('values');
+  values[DISCORD_TOKEN_ACCOUNT] = encrypted;
+  store.set('values', values);
+}
+
+/**
+ * Retrieve Discord bot token.
+ */
+export async function getDiscordToken(): Promise<string | null> {
+  const keytar = await getKeytar();
+  if (keytar) {
+    const stored = await keytar.getPassword(KEYCHAIN_SERVICE, DISCORD_TOKEN_ACCOUNT);
+    if (stored) {
+      return stored;
+    }
+  }
+
+  const store = getSecureStore();
+  const values = store.get('values');
+  const encrypted = values[DISCORD_TOKEN_ACCOUNT];
+  if (!encrypted) {
+    return null;
+  }
+  const decrypted = decryptValue(encrypted);
+  if (decrypted && keytar) {
+    try {
+      await keytar.setPassword(KEYCHAIN_SERVICE, DISCORD_TOKEN_ACCOUNT, decrypted);
+      delete values[DISCORD_TOKEN_ACCOUNT];
+      store.set('values', values);
+    } catch {
+      // Ignore migration failures
+    }
+  }
+  return decrypted;
+}
+
+/**
+ * Delete Discord bot token.
+ */
+export async function deleteDiscordToken(): Promise<boolean> {
+  const keytar = await getKeytar();
+  let removed = false;
+
+  if (keytar) {
+    removed = await keytar.deletePassword(KEYCHAIN_SERVICE, DISCORD_TOKEN_ACCOUNT);
+  }
+
+  const store = getSecureStore();
+  const values = store.get('values');
+  if (DISCORD_TOKEN_ACCOUNT in values) {
+    delete values[DISCORD_TOKEN_ACCOUNT];
+    store.set('values', values);
+    removed = true;
+  }
+
+  return removed;
+}
+
+/**
+ * Store Telegram bot token securely.
+ */
+export async function storeTelegramToken(token: string): Promise<void> {
+  if (token === '') {
+    await deleteTelegramToken();
+    return;
+  }
+  const keytar = await getKeytar();
+  if (keytar) {
+    await keytar.setPassword(KEYCHAIN_SERVICE, TELEGRAM_TOKEN_ACCOUNT, token);
+    const store = getSecureStore();
+    const values = store.get('values');
+    if (values[TELEGRAM_TOKEN_ACCOUNT]) {
+      delete values[TELEGRAM_TOKEN_ACCOUNT];
+      store.set('values', values);
+    }
+    return;
+  }
+
+  const store = getSecureStore();
+  const encrypted = encryptValue(token);
+  const values = store.get('values');
+  values[TELEGRAM_TOKEN_ACCOUNT] = encrypted;
+  store.set('values', values);
+}
+
+/**
+ * Retrieve Telegram bot token.
+ */
+export async function getTelegramToken(): Promise<string | null> {
+  const keytar = await getKeytar();
+  if (keytar) {
+    const stored = await keytar.getPassword(KEYCHAIN_SERVICE, TELEGRAM_TOKEN_ACCOUNT);
+    if (stored) {
+      return stored;
+    }
+  }
+
+  const store = getSecureStore();
+  const values = store.get('values');
+  const encrypted = values[TELEGRAM_TOKEN_ACCOUNT];
+  if (!encrypted) {
+    return null;
+  }
+  const decrypted = decryptValue(encrypted);
+  if (decrypted && keytar) {
+    try {
+      await keytar.setPassword(KEYCHAIN_SERVICE, TELEGRAM_TOKEN_ACCOUNT, decrypted);
+      delete values[TELEGRAM_TOKEN_ACCOUNT];
+      store.set('values', values);
+    } catch {
+      // Ignore migration failures
+    }
+  }
+  return decrypted;
+}
+
+/**
+ * Delete Telegram bot token.
+ */
+export async function deleteTelegramToken(): Promise<boolean> {
+  const keytar = await getKeytar();
+  let removed = false;
+
+  if (keytar) {
+    removed = await keytar.deletePassword(KEYCHAIN_SERVICE, TELEGRAM_TOKEN_ACCOUNT);
+  }
+
+  const store = getSecureStore();
+  const values = store.get('values');
+  if (TELEGRAM_TOKEN_ACCOUNT in values) {
+    delete values[TELEGRAM_TOKEN_ACCOUNT];
+    store.set('values', values);
+    removed = true;
+  }
+
+  return removed;
+}
+
+/**
+ * Store voice wake access key securely.
+ */
+export async function storeVoiceWakeAccessKey(accessKey: string): Promise<void> {
+  if (accessKey === '') {
+    await deleteVoiceWakeAccessKey();
+    return;
+  }
+  const keytar = await getKeytar();
+  if (keytar) {
+    await keytar.setPassword(KEYCHAIN_SERVICE, VOICEWAKE_ACCESS_KEY_ACCOUNT, accessKey);
+    const store = getSecureStore();
+    const values = store.get('values');
+    if (values[VOICEWAKE_ACCESS_KEY_ACCOUNT]) {
+      delete values[VOICEWAKE_ACCESS_KEY_ACCOUNT];
+      store.set('values', values);
+    }
+    return;
+  }
+
+  const store = getSecureStore();
+  const encrypted = encryptValue(accessKey);
+  const values = store.get('values');
+  values[VOICEWAKE_ACCESS_KEY_ACCOUNT] = encrypted;
+  store.set('values', values);
+}
+
+/**
+ * Retrieve voice wake access key.
+ */
+export async function getVoiceWakeAccessKey(): Promise<string | null> {
+  const keytar = await getKeytar();
+  if (keytar) {
+    const stored = await keytar.getPassword(KEYCHAIN_SERVICE, VOICEWAKE_ACCESS_KEY_ACCOUNT);
+    if (stored) {
+      return stored;
+    }
+  }
+
+  const store = getSecureStore();
+  const values = store.get('values');
+  const encrypted = values[VOICEWAKE_ACCESS_KEY_ACCOUNT];
+  if (!encrypted) {
+    return null;
+  }
+  const decrypted = decryptValue(encrypted);
+  if (decrypted && keytar) {
+    try {
+      await keytar.setPassword(KEYCHAIN_SERVICE, VOICEWAKE_ACCESS_KEY_ACCOUNT, decrypted);
+      delete values[VOICEWAKE_ACCESS_KEY_ACCOUNT];
+      store.set('values', values);
+    } catch {
+      // Ignore migration failures
+    }
+  }
+  return decrypted;
+}
+
+/**
+ * Delete voice wake access key.
+ */
+export async function deleteVoiceWakeAccessKey(): Promise<boolean> {
+  const keytar = await getKeytar();
+  let removed = false;
+
+  if (keytar) {
+    removed = await keytar.deletePassword(KEYCHAIN_SERVICE, VOICEWAKE_ACCESS_KEY_ACCOUNT);
+  }
+
+  const store = getSecureStore();
+  const values = store.get('values');
+  if (VOICEWAKE_ACCESS_KEY_ACCOUNT in values) {
+    delete values[VOICEWAKE_ACCESS_KEY_ACCOUNT];
+    store.set('values', values);
+    removed = true;
+  }
+
+  return removed;
+}
+
+/**
+ * Store gateway access token securely.
+ */
+export async function storeGatewayToken(token: string): Promise<void> {
+  if (token === '') {
+    await deleteGatewayToken();
+    return;
+  }
+  const keytar = await getKeytar();
+  if (keytar) {
+    await keytar.setPassword(KEYCHAIN_SERVICE, GATEWAY_TOKEN_ACCOUNT, token);
+    const store = getSecureStore();
+    const values = store.get('values');
+    if (values[GATEWAY_TOKEN_ACCOUNT]) {
+      delete values[GATEWAY_TOKEN_ACCOUNT];
+      store.set('values', values);
+    }
+    return;
+  }
+
+  const store = getSecureStore();
+  const encrypted = encryptValue(token);
+  const values = store.get('values');
+  values[GATEWAY_TOKEN_ACCOUNT] = encrypted;
+  store.set('values', values);
+}
+
+/**
+ * Retrieve gateway access token.
+ */
+export async function getGatewayToken(): Promise<string | null> {
+  const keytar = await getKeytar();
+  if (keytar) {
+    const stored = await keytar.getPassword(KEYCHAIN_SERVICE, GATEWAY_TOKEN_ACCOUNT);
+    if (stored) {
+      return stored;
+    }
+  }
+
+  const store = getSecureStore();
+  const values = store.get('values');
+  const encrypted = values[GATEWAY_TOKEN_ACCOUNT];
+  if (!encrypted) {
+    return null;
+  }
+  const decrypted = decryptValue(encrypted);
+  if (decrypted && keytar) {
+    try {
+      await keytar.setPassword(KEYCHAIN_SERVICE, GATEWAY_TOKEN_ACCOUNT, decrypted);
+      delete values[GATEWAY_TOKEN_ACCOUNT];
+      store.set('values', values);
+    } catch {
+      // Ignore migration failures
+    }
+  }
+  return decrypted;
+}
+
+/**
+ * Delete gateway access token.
+ */
+export async function deleteGatewayToken(): Promise<boolean> {
+  const keytar = await getKeytar();
+  let removed = false;
+
+  if (keytar) {
+    removed = await keytar.deletePassword(KEYCHAIN_SERVICE, GATEWAY_TOKEN_ACCOUNT);
+  }
+
+  const store = getSecureStore();
+  const values = store.get('values');
+  if (GATEWAY_TOKEN_ACCOUNT in values) {
+    delete values[GATEWAY_TOKEN_ACCOUNT];
+    store.set('values', values);
+    removed = true;
+  }
+
+  return removed;
+}
+
+/**
+ * Store gateway password securely.
+ */
+export async function storeGatewayPassword(password: string): Promise<void> {
+  if (password === '') {
+    await deleteGatewayPassword();
+    return;
+  }
+  const keytar = await getKeytar();
+  if (keytar) {
+    await keytar.setPassword(KEYCHAIN_SERVICE, GATEWAY_PASSWORD_ACCOUNT, password);
+    const store = getSecureStore();
+    const values = store.get('values');
+    if (values[GATEWAY_PASSWORD_ACCOUNT]) {
+      delete values[GATEWAY_PASSWORD_ACCOUNT];
+      store.set('values', values);
+    }
+    return;
+  }
+
+  const store = getSecureStore();
+  const encrypted = encryptValue(password);
+  const values = store.get('values');
+  values[GATEWAY_PASSWORD_ACCOUNT] = encrypted;
+  store.set('values', values);
+}
+
+/**
+ * Retrieve gateway password.
+ */
+export async function getGatewayPassword(): Promise<string | null> {
+  const keytar = await getKeytar();
+  if (keytar) {
+    const stored = await keytar.getPassword(KEYCHAIN_SERVICE, GATEWAY_PASSWORD_ACCOUNT);
+    if (stored) {
+      return stored;
+    }
+  }
+
+  const store = getSecureStore();
+  const values = store.get('values');
+  const encrypted = values[GATEWAY_PASSWORD_ACCOUNT];
+  if (!encrypted) {
+    return null;
+  }
+  const decrypted = decryptValue(encrypted);
+  if (decrypted && keytar) {
+    try {
+      await keytar.setPassword(KEYCHAIN_SERVICE, GATEWAY_PASSWORD_ACCOUNT, decrypted);
+      delete values[GATEWAY_PASSWORD_ACCOUNT];
+      store.set('values', values);
+    } catch {
+      // Ignore migration failures
+    }
+  }
+  return decrypted;
+}
+
+/**
+ * Delete gateway password.
+ */
+export async function deleteGatewayPassword(): Promise<boolean> {
+  const keytar = await getKeytar();
+  let removed = false;
+
+  if (keytar) {
+    removed = await keytar.deletePassword(KEYCHAIN_SERVICE, GATEWAY_PASSWORD_ACCOUNT);
+  }
+
+  const store = getSecureStore();
+  const values = store.get('values');
+  if (GATEWAY_PASSWORD_ACCOUNT in values) {
+    delete values[GATEWAY_PASSWORD_ACCOUNT];
+    store.set('values', values);
+    removed = true;
+  }
+
+  return removed;
+}
+
+function getGatewayConnectorSecretAccount(connectorId: string): string {
+  return `${GATEWAY_CONNECTOR_SECRET_ACCOUNT_PREFIX}:${connectorId}:secret`;
+}
+
+/**
+ * Store gateway connector shared secret securely.
+ */
+export async function storeGatewayConnectorSecret(connectorId: string, secret: string): Promise<void> {
+  const account = getGatewayConnectorSecretAccount(connectorId);
+  if (secret === '') {
+    await deleteGatewayConnectorSecret(connectorId);
+    return;
+  }
+  const keytar = await getKeytar();
+  if (keytar) {
+    await keytar.setPassword(KEYCHAIN_SERVICE, account, secret);
+    const store = getSecureStore();
+    const values = store.get('values');
+    if (values[account]) {
+      delete values[account];
+      store.set('values', values);
+    }
+    return;
+  }
+
+  const store = getSecureStore();
+  const encrypted = encryptValue(secret);
+  const values = store.get('values');
+  values[account] = encrypted;
+  store.set('values', values);
+}
+
+/**
+ * Retrieve gateway connector shared secret.
+ */
+export async function getGatewayConnectorSecret(connectorId: string): Promise<string | null> {
+  const account = getGatewayConnectorSecretAccount(connectorId);
+  const keytar = await getKeytar();
+  if (keytar) {
+    const stored = await keytar.getPassword(KEYCHAIN_SERVICE, account);
+    if (stored) {
+      return stored;
+    }
+  }
+
+  const store = getSecureStore();
+  const values = store.get('values');
+  const encrypted = values[account];
+  if (!encrypted) {
+    return null;
+  }
+  const decrypted = decryptValue(encrypted);
+  if (decrypted && keytar) {
+    try {
+      await keytar.setPassword(KEYCHAIN_SERVICE, account, decrypted);
+      delete values[account];
+      store.set('values', values);
+    } catch {
+      // Ignore migration failures
+    }
+  }
+  return decrypted;
+}
+
+/**
+ * Delete gateway connector shared secret.
+ */
+export async function deleteGatewayConnectorSecret(connectorId: string): Promise<boolean> {
+  const account = getGatewayConnectorSecretAccount(connectorId);
+  const keytar = await getKeytar();
+  let removed = false;
+
+  if (keytar) {
+    removed = await keytar.deletePassword(KEYCHAIN_SERVICE, account);
+  }
+
+  const store = getSecureStore();
+  const values = store.get('values');
+  if (account in values) {
+    delete values[account];
+    store.set('values', values);
+    removed = true;
+  }
+
+  return removed;
+}
+
+/**
+ * Check whether a gateway connector secret exists.
+ */
+export async function hasGatewayConnectorSecret(connectorId: string): Promise<boolean> {
+  const value = await getGatewayConnectorSecret(connectorId);
+  return Boolean(value && value.trim().length > 0);
+}
+
+function getAppConnectorSecretAccount(connectorId: string): string {
+  return `${APP_CONNECTOR_SECRET_ACCOUNT_PREFIX}:${connectorId}:secret`;
+}
+
+/**
+ * Store app connector secret securely.
+ */
+export async function storeAppConnectorSecret(connectorId: string, secret: string): Promise<void> {
+  const account = getAppConnectorSecretAccount(connectorId);
+  if (secret === '') {
+    await deleteAppConnectorSecret(connectorId);
+    return;
+  }
+  const keytar = await getKeytar();
+  if (keytar) {
+    await keytar.setPassword(KEYCHAIN_SERVICE, account, secret);
+    const store = getSecureStore();
+    const values = store.get('values');
+    if (values[account]) {
+      delete values[account];
+      store.set('values', values);
+    }
+    return;
+  }
+
+  const store = getSecureStore();
+  const encrypted = encryptValue(secret);
+  const values = store.get('values');
+  values[account] = encrypted;
+  store.set('values', values);
+}
+
+/**
+ * Retrieve app connector secret.
+ */
+export async function getAppConnectorSecret(connectorId: string): Promise<string | null> {
+  const account = getAppConnectorSecretAccount(connectorId);
+  const keytar = await getKeytar();
+  if (keytar) {
+    const stored = await keytar.getPassword(KEYCHAIN_SERVICE, account);
+    if (stored) {
+      return stored;
+    }
+  }
+
+  const store = getSecureStore();
+  const values = store.get('values');
+  const encrypted = values[account];
+  if (!encrypted) {
+    return null;
+  }
+  const decrypted = decryptValue(encrypted);
+  if (decrypted && keytar) {
+    try {
+      await keytar.setPassword(KEYCHAIN_SERVICE, account, decrypted);
+      delete values[account];
+      store.set('values', values);
+    } catch {
+      // Ignore migration failures
+    }
+  }
+  return decrypted;
+}
+
+/**
+ * Delete app connector secret.
+ */
+export async function deleteAppConnectorSecret(connectorId: string): Promise<boolean> {
+  const account = getAppConnectorSecretAccount(connectorId);
+  const keytar = await getKeytar();
+  let removed = false;
+
+  if (keytar) {
+    removed = await keytar.deletePassword(KEYCHAIN_SERVICE, account);
+  }
+
+  const store = getSecureStore();
+  const values = store.get('values');
+  if (account in values) {
+    delete values[account];
+    store.set('values', values);
+    removed = true;
+  }
+
+  return removed;
+}
+
+/**
+ * Check whether an app connector secret exists.
+ */
+export async function hasAppConnectorSecret(connectorId: string): Promise<boolean> {
+  const value = await getAppConnectorSecret(connectorId);
+  return Boolean(value && value.trim().length > 0);
+}
+
+function getAppConnectorOAuthClientSecretAccount(connectorId: string): string {
+  return `${APP_CONNECTOR_OAUTH_CLIENT_SECRET_ACCOUNT_PREFIX}:${connectorId}:client-secret`;
+}
+
+/**
+ * Store app connector OAuth client secret securely.
+ */
+export async function storeAppConnectorOAuthClientSecret(connectorId: string, clientSecret: string): Promise<void> {
+  const account = getAppConnectorOAuthClientSecretAccount(connectorId);
+  if (clientSecret === '') {
+    await deleteAppConnectorOAuthClientSecret(connectorId);
+    return;
+  }
+  const keytar = await getKeytar();
+  if (keytar) {
+    await keytar.setPassword(KEYCHAIN_SERVICE, account, clientSecret);
+    const store = getSecureStore();
+    const values = store.get('values');
+    if (values[account]) {
+      delete values[account];
+      store.set('values', values);
+    }
+    return;
+  }
+
+  const store = getSecureStore();
+  const encrypted = encryptValue(clientSecret);
+  const values = store.get('values');
+  values[account] = encrypted;
+  store.set('values', values);
+}
+
+/**
+ * Retrieve app connector OAuth client secret.
+ */
+export async function getAppConnectorOAuthClientSecret(connectorId: string): Promise<string | null> {
+  const account = getAppConnectorOAuthClientSecretAccount(connectorId);
+  const keytar = await getKeytar();
+  if (keytar) {
+    const stored = await keytar.getPassword(KEYCHAIN_SERVICE, account);
+    if (stored) {
+      return stored;
+    }
+  }
+
+  const store = getSecureStore();
+  const values = store.get('values');
+  const encrypted = values[account];
+  if (!encrypted) {
+    return null;
+  }
+  const decrypted = decryptValue(encrypted);
+  if (decrypted && keytar) {
+    try {
+      await keytar.setPassword(KEYCHAIN_SERVICE, account, decrypted);
+      delete values[account];
+      store.set('values', values);
+    } catch {
+      // Ignore migration failures
+    }
+  }
+  return decrypted;
+}
+
+/**
+ * Delete app connector OAuth client secret.
+ */
+export async function deleteAppConnectorOAuthClientSecret(connectorId: string): Promise<boolean> {
+  const account = getAppConnectorOAuthClientSecretAccount(connectorId);
+  const keytar = await getKeytar();
+  let removed = false;
+
+  if (keytar) {
+    removed = await keytar.deletePassword(KEYCHAIN_SERVICE, account);
+  }
+
+  const store = getSecureStore();
+  const values = store.get('values');
+  if (account in values) {
+    delete values[account];
+    store.set('values', values);
+    removed = true;
+  }
+
+  return removed;
+}
+
+/**
+ * Check whether an app connector OAuth client secret exists.
+ */
+export async function hasAppConnectorOAuthClientSecret(connectorId: string): Promise<boolean> {
+  const value = await getAppConnectorOAuthClientSecret(connectorId);
+  return Boolean(value && value.trim().length > 0);
+}
+
 /**
  * Supported API key providers
  */
@@ -269,8 +971,12 @@ export async function getAllApiKeys(): Promise<Record<ApiKeyProvider, string | n
  * Check if any API key is stored
  */
 export async function hasAnyApiKey(): Promise<boolean> {
-  const keys = await getAllApiKeys();
-  return Object.values(keys).some((k) => k !== null);
+  const credentials = await listStoredCredentials();
+  return credentials.some((credential) => {
+    if (!credential.account.startsWith('apiKey:')) return false;
+    const key = credential.password || '';
+    return key.trim().length > 0;
+  });
 }
 
 /**

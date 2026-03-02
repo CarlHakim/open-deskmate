@@ -66,6 +66,8 @@ if (rebuildResult.status !== 0) {
 
 let devBrowserResult = { status: 0, error: null };
 let filePermissionResult = { status: 0, error: null };
+let canvasResult = { status: 0, error: null };
+let memoryToolsResult = { status: 0, error: null };
 
 if (!shouldSkipSkills) {
   console.log('[postinstall] Installing skills dependencies...');
@@ -78,6 +80,27 @@ if (!shouldSkipSkills) {
     shell: isWin,
     timeout: installTimeoutMs,
   });
+
+  canvasResult = runOrHandle('npm', ['--prefix', 'skills/canvas', 'install', '--no-fund', '--no-audit'], {
+    shell: isWin,
+    timeout: installTimeoutMs,
+  });
+
+  memoryToolsResult = runOrHandle('npm', ['--prefix', 'skills/memory-tools', 'install', '--no-fund', '--no-audit'], {
+    shell: isWin,
+    timeout: installTimeoutMs,
+  });
+
+  if (memoryToolsResult.status === 0) {
+    const verifyResult = runOrHandle('node', ['skills/memory-tools/scripts/verify-fts5.cjs'], {
+      shell: isWin,
+      timeout: installTimeoutMs,
+    });
+    if (verifyResult.status !== 0) {
+      console.warn('[postinstall] memory-tools FTS5 verification failed.');
+      if (!isWin) process.exit(1);
+    }
+  }
 } else {
   if (isWin) {
     console.warn('[postinstall] Skipping skills install on Windows. Set SKIP_SKILLS_INSTALL=0 to force.');
@@ -85,7 +108,7 @@ if (!shouldSkipSkills) {
 }
 
 if (!isWin) {
-  if (devBrowserResult.status !== 0 || filePermissionResult.status !== 0) {
+  if (devBrowserResult.status !== 0 || filePermissionResult.status !== 0 || canvasResult.status !== 0 || memoryToolsResult.status !== 0) {
     process.exit(1);
   }
 } else {
@@ -100,6 +123,18 @@ if (!isWin) {
       console.warn('[postinstall] file-permission install timed out; continuing.');
     }
     console.warn('[postinstall] file-permission install failed on Windows; continuing.');
+  }
+  if (canvasResult.status !== 0) {
+    if (canvasResult.error?.code === 'ETIMEDOUT') {
+      console.warn('[postinstall] canvas install timed out; continuing.');
+    }
+    console.warn('[postinstall] canvas install failed on Windows; continuing.');
+  }
+  if (memoryToolsResult.status !== 0) {
+    if (memoryToolsResult.error?.code === 'ETIMEDOUT') {
+      console.warn('[postinstall] memory-tools install timed out; continuing.');
+    }
+    console.warn('[postinstall] memory-tools install failed on Windows; continuing.');
   }
   process.exit(0);
 }

@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useSavedPromptsStore, SavedPrompt } from '../../stores/savedPromptsStore';
-import { Plus, Pencil, Trash2, Save, X, FileText, Search } from 'lucide-react';
+import { X, FileText, Search } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { springs } from '@/lib/animations';
 
@@ -29,12 +29,9 @@ export default function SavedPromptsDialog({
   mode = 'manage',
 }: SavedPromptsDialogProps) {
   const { prompts, loadPrompts, savePrompt, updatePrompt, deletePrompt } = useSavedPromptsStore();
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editTitle, setEditTitle] = useState('');
-  const [editContent, setEditContent] = useState('');
-  const [isCreating, setIsCreating] = useState(false);
-  const [newTitle, setNewTitle] = useState('');
-  const [newContent, setNewContent] = useState('');
+  const [activePromptId, setActivePromptId] = useState<string | null>(null);
+  const [manageTitle, setManageTitle] = useState('');
+  const [manageContent, setManageContent] = useState('');
 
   // Select mode state
   const [searchQuery, setSearchQuery] = useState('');
@@ -48,9 +45,21 @@ export default function SavedPromptsDialog({
         setSearchQuery('');
         setSelectedIndex(0);
         setTimeout(() => searchInputRef.current?.focus(), 100);
+      } else {
+        setActivePromptId(null);
+        setManageTitle('');
+        setManageContent('');
       }
     }
   }, [open, loadPrompts, mode]);
+
+  useEffect(() => {
+    if (!open) return;
+    const timer = window.setInterval(() => {
+      loadPrompts();
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [open, loadPrompts]);
 
   // Filter prompts by search query
   const filteredPrompts = useMemo(() => {
@@ -111,55 +120,40 @@ export default function SavedPromptsDialog({
     [mode, filteredPrompts.length, selectedIndex, handleSelectByIndex, onOpenChange]
   );
 
-  const handleStartEdit = (prompt: SavedPrompt) => {
-    setEditingId(prompt.id);
-    setEditTitle(prompt.title);
-    setEditContent(prompt.content);
-    setIsCreating(false);
+  const handleManageSelectPrompt = (prompt: SavedPrompt) => {
+    setActivePromptId(prompt.id);
+    setManageTitle(prompt.title);
+    setManageContent(prompt.content);
   };
 
-  const handleSaveEdit = () => {
-    if (editingId && editTitle.trim() && editContent.trim()) {
-      updatePrompt(editingId, editTitle, editContent);
-      setEditingId(null);
-      setEditTitle('');
-      setEditContent('');
+  const handleManageNew = () => {
+    setActivePromptId(null);
+    setManageTitle('');
+    setManageContent('');
+  };
+
+  const handleManageSave = () => {
+    const content = manageContent.trim();
+    if (!content) return;
+    const title = manageTitle.trim() || content.slice(0, 64);
+    if (activePromptId) {
+      updatePrompt(activePromptId, title, content);
+      return;
+    }
+    const created = savePrompt(title, content);
+    if (created && created.id) {
+      setActivePromptId(created.id);
+      setManageTitle(created.title);
+      setManageContent(created.content);
     }
   };
 
-  const handleCancelEdit = () => {
-    setEditingId(null);
-    setEditTitle('');
-    setEditContent('');
-  };
-
-  const handleStartCreate = () => {
-    setIsCreating(true);
-    setNewTitle('');
-    setNewContent('');
-    setEditingId(null);
-  };
-
-  const handleSaveNew = () => {
-    if (newTitle.trim() && newContent.trim()) {
-      savePrompt(newTitle, newContent);
-      setIsCreating(false);
-      setNewTitle('');
-      setNewContent('');
-    }
-  };
-
-  const handleCancelCreate = () => {
-    setIsCreating(false);
-    setNewTitle('');
-    setNewContent('');
-  };
-
-  const handleDelete = (id: string) => {
-    deletePrompt(id);
-    if (editingId === id) {
-      setEditingId(null);
-    }
+  const handleManageDelete = () => {
+    if (!activePromptId) return;
+    deletePrompt(activePromptId);
+    setActivePromptId(null);
+    setManageTitle('');
+    setManageContent('');
   };
 
   const handleSelect = (prompt: SavedPrompt) => {
@@ -282,147 +276,77 @@ export default function SavedPromptsDialog({
   // Manage mode - standard dialog
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col">
+      <DialogContent className="max-w-[900px] max-h-[80vh] flex flex-col">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <FileText className="h-5 w-5" />
             Manage Saved Prompts
           </DialogTitle>
         </DialogHeader>
-
-        <div className="flex-1 flex flex-col gap-4 min-h-0">
-          {/* Create new prompt button */}
-          {!isCreating && (
-            <Button
-              variant="outline"
-              onClick={handleStartCreate}
-              className="w-full justify-start gap-2"
-            >
-              <Plus className="h-4 w-4" />
-              Create New Prompt
-            </Button>
-          )}
-
-          {/* Create new prompt form */}
-          {isCreating && (
-            <div className="border rounded-lg p-4 space-y-3 bg-muted/30">
-              <Input
-                placeholder="Prompt title..."
-                value={newTitle}
-                onChange={(e) => setNewTitle(e.target.value)}
-                autoFocus
-              />
-              <textarea
-                placeholder="Prompt content..."
-                value={newContent}
-                onChange={(e) => setNewContent(e.target.value)}
-                className="w-full min-h-[100px] p-3 rounded-md border border-input bg-background text-sm resize-none focus:outline-none focus:ring-2 focus:ring-ring"
-              />
-              <div className="flex gap-2 justify-end">
-                <Button variant="ghost" size="sm" onClick={handleCancelCreate}>
-                  <X className="h-4 w-4 mr-1" />
-                  Cancel
-                </Button>
-                <Button
-                  size="sm"
-                  onClick={handleSaveNew}
-                  disabled={!newTitle.trim() || !newContent.trim()}
-                >
-                  <Save className="h-4 w-4 mr-1" />
-                  Save
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {/* Prompts list */}
-          <ScrollArea className="flex-1 min-h-0">
-            <div className="space-y-2 pr-4">
-              {prompts.length === 0 && !isCreating && (
-                <div className="text-center py-8 text-muted-foreground">
-                  <FileText className="h-12 w-12 mx-auto mb-3 opacity-50" />
-                  <p>No saved prompts yet.</p>
-                  <p className="text-sm mt-1">Click "Create New Prompt" to add one.</p>
+        <p className="text-sm text-muted-foreground">Create, edit, and delete reusable prompts.</p>
+        <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 md:grid-cols-2">
+          <ScrollArea className="min-h-[220px] rounded-lg border border-border bg-background p-2">
+            <div className="space-y-1">
+              {prompts.length === 0 ? (
+                <div className="px-3 py-6 text-center text-sm text-muted-foreground">
+                  No saved prompts yet.
                 </div>
+              ) : (
+                prompts.map((prompt) => (
+                  <button
+                    key={prompt.id}
+                    type="button"
+                    onClick={() => handleManageSelectPrompt(prompt)}
+                    className={cn(
+                      'w-full rounded-md px-3 py-2 text-left transition-colors',
+                      activePromptId === prompt.id ? 'bg-primary/10' : 'hover:bg-accent'
+                    )}
+                  >
+                    <div className="truncate text-sm font-semibold text-foreground">{prompt.title}</div>
+                    <div className="line-clamp-2 text-xs text-muted-foreground">{prompt.content}</div>
+                  </button>
+                ))
               )}
-
-              {prompts.map((prompt) => (
-                <div
-                  key={prompt.id}
-                  className="border rounded-lg p-4 transition-colors"
-                >
-                  {editingId === prompt.id ? (
-                    // Edit mode
-                    <div className="space-y-3">
-                      <Input
-                        placeholder="Prompt title..."
-                        value={editTitle}
-                        onChange={(e) => setEditTitle(e.target.value)}
-                        autoFocus
-                      />
-                      <textarea
-                        placeholder="Prompt content..."
-                        value={editContent}
-                        onChange={(e) => setEditContent(e.target.value)}
-                        className="w-full min-h-[100px] p-3 rounded-md border border-input bg-background text-sm resize-none focus:outline-none focus:ring-2 focus:ring-ring"
-                      />
-                      <div className="flex gap-2 justify-end">
-                        <Button variant="ghost" size="sm" onClick={handleCancelEdit}>
-                          <X className="h-4 w-4 mr-1" />
-                          Cancel
-                        </Button>
-                        <Button
-                          size="sm"
-                          onClick={handleSaveEdit}
-                          disabled={!editTitle.trim() || !editContent.trim()}
-                        >
-                          <Save className="h-4 w-4 mr-1" />
-                          Save
-                        </Button>
-                      </div>
-                    </div>
-                  ) : (
-                    // View mode
-                    <div>
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex-1 min-w-0">
-                          <h4 className="font-medium text-foreground truncate">
-                            {prompt.title}
-                          </h4>
-                          <p className="text-sm text-muted-foreground line-clamp-2 mt-1">
-                            {prompt.content}
-                          </p>
-                        </div>
-                        <div className="flex gap-1 shrink-0">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8"
-                            onClick={() => handleStartEdit(prompt)}
-                            title="Edit prompt"
-                          >
-                            <Pencil className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 text-destructive hover:text-destructive"
-                            onClick={() => handleDelete(prompt.id)}
-                            title="Delete prompt"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      </div>
-                      <p className="text-xs text-muted-foreground mt-2">
-                        {new Date(prompt.updatedAt).toLocaleDateString()}
-                      </p>
-                    </div>
-                  )}
-                </div>
-              ))}
             </div>
           </ScrollArea>
+
+          <div className="flex min-h-[220px] flex-col rounded-lg border border-border bg-card p-3">
+            <Input
+              value={manageTitle}
+              onChange={(e) => setManageTitle(e.target.value)}
+              placeholder="Prompt title"
+              maxLength={120}
+            />
+            <textarea
+              value={manageContent}
+              onChange={(e) => setManageContent(e.target.value)}
+              placeholder="Prompt content"
+              className="mt-2 min-h-[160px] w-full flex-1 resize-y rounded-md border border-input bg-background p-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button type="button" variant="outline" onClick={handleManageNew}>
+                New
+              </Button>
+              <Button
+                type="button"
+                onClick={handleManageSave}
+                disabled={!manageContent.trim()}
+              >
+                Save
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleManageDelete}
+                disabled={!activePromptId}
+              >
+                Delete
+              </Button>
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+                Close
+              </Button>
+            </div>
+          </div>
         </div>
       </DialogContent>
     </Dialog>

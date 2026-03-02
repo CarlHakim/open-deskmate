@@ -9,6 +9,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import type { Task, TaskStatus } from '@accomplish/shared';
+import { createMockAccomplish } from '../../../test-utils/mock-accomplish';
 
 // Mock analytics to prevent tracking calls
 vi.mock('@/lib/analytics', () => ({
@@ -42,14 +43,14 @@ function createMockTask(
 }
 
 // Mock accomplish API
-const mockAccomplish = {
+const mockAccomplish = createMockAccomplish({
   hasAnyApiKey: mockHasAnyApiKey,
   getSelectedModel: vi.fn().mockResolvedValue({ provider: 'anthropic', id: 'claude-3-opus' }),
   getOllamaConfig: vi.fn().mockResolvedValue(null),
   onTaskUpdate: mockOnTaskUpdate.mockReturnValue(() => {}),
   onPermissionRequest: mockOnPermissionRequest.mockReturnValue(() => {}),
   logEvent: mockLogEvent.mockResolvedValue(undefined),
-};
+});
 
 // Mock the accomplish module
 vi.mock('@/lib/accomplish', () => ({
@@ -374,7 +375,7 @@ describe('Home Page Integration', () => {
   });
 
   describe('loading state', () => {
-    it('should disable input when loading', () => {
+    it('should keep input enabled when loading (but prevent submit)', () => {
       // Arrange
       mockStoreState.isLoading = true;
 
@@ -387,7 +388,7 @@ describe('Home Page Integration', () => {
 
       // Assert
       const textarea = screen.getByPlaceholderText(/type your task here/i);
-      expect(textarea).toBeDisabled();
+      expect(textarea).toBeEnabled();
     });
 
     it('should disable submit button when loading', () => {
@@ -416,7 +417,6 @@ describe('Home Page Integration', () => {
         </MemoryRouter>
       );
 
-      // The textarea is disabled, so we can't really type, but test submit
       const submitButton = screen.getByTitle(/submit/i);
       fireEvent.click(submitButton);
 

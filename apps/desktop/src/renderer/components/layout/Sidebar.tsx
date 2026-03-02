@@ -5,16 +5,18 @@ import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useTaskStore } from '@/stores/taskStore';
 import { useFolderStore } from '@/stores/folderStore';
+import { useAgentStore } from '@/stores/agentStore';
 import { getAccomplish } from '@/lib/accomplish';
 import { analytics } from '@/lib/analytics';
 import { staggerContainer } from '@/lib/animations';
+import type { Task } from '@accomplish/shared';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import ConversationListItem from './ConversationListItem';
 import FolderItem from './FolderItem';
 import CreateFolderDialog from './CreateFolderDialog';
 import SettingsDialog from './SettingsDialog';
-import { Settings, MessageSquarePlus, Search, FolderPlus, MoreHorizontal, GripVertical, ChevronRight } from 'lucide-react';
+import { Settings, MessageSquarePlus, Search, FolderPlus, MoreHorizontal, GripVertical, ChevronRight, ChevronDown, User, Check, CircleHelp, Sun, Moon, Monitor } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -33,6 +35,8 @@ import {
   PopoverTrigger,
 } from '@/components/ui/popover';
 import { getIconByName } from './ProjectIconPicker';
+import { AgentAvatarIcon } from './AgentAvatarPicker';
+import { useTheme } from '@/contexts/ThemeContext';
 import logoImage from '/assets/open-deskmate-logo.png';
 
 export default function Sidebar() {
@@ -46,8 +50,11 @@ export default function Sidebar() {
   const [reorderTargetId, setReorderTargetId] = useState<string | null>(null);
 
   const MAX_VISIBLE_PROJECTS = 5;
-  const { tasks, loadTasks, updateTaskStatus, addTaskUpdate, openLauncher, setTaskFolder } = useTaskStore();
+  const { tasks, loadTasks, updateTaskStatus, addTaskUpdate, insertTask, openLauncher, setTaskFolder } = useTaskStore();
   const { folders, loadFolders, toggleFolderExpanded, reorderFolders } = useFolderStore();
+  const { agents, activeAgentId, defaultAgentId, loadAgents, setActiveAgent } = useAgentStore();
+  const { theme, setTheme } = useTheme();
+  const activeAgent = agents.find((agent) => agent.id === activeAgentId);
 
   // Folder drag state
   const [draggedFolderId, setDraggedFolderId] = useState<string | null>(null);
@@ -55,16 +62,23 @@ export default function Sidebar() {
   const accomplish = getAccomplish();
 
   useEffect(() => {
+    void loadAgents();
+  }, [loadAgents]);
+
+  useEffect(() => {
     loadTasks();
+  }, [loadTasks, activeAgentId]);
+
+  useEffect(() => {
     loadFolders();
-  }, [loadTasks, loadFolders]);
+  }, [loadFolders, activeAgentId]);
 
   // Get tasks organized by folder
   const unfiledTasks = tasks.filter((task) => !task.folderId);
   const getTasksForFolder = (folderId: string) =>
     tasks.filter((task) => task.folderId === folderId);
 
-  // Sort folders by order
+  // Sort folders by order (already filtered by agent from backend)
   const sortedFolders = [...folders].sort((a, b) => a.order - b.order);
 
   // Handle drop on unfiled area
@@ -126,11 +140,16 @@ export default function Sidebar() {
       addTaskUpdate(event);
     });
 
+    const unsubscribeTaskCreated = accomplish.onTaskCreated?.((task) => {
+      insertTask(task as Task);
+    });
+
     return () => {
       unsubscribeStatusChange?.();
       unsubscribeTaskUpdate();
+      unsubscribeTaskCreated?.();
     };
-  }, [updateTaskStatus, addTaskUpdate, accomplish]);
+  }, [updateTaskStatus, addTaskUpdate, insertTask, accomplish]);
 
   const handleNewConversation = () => {
     analytics.trackNewTask();
@@ -176,10 +195,79 @@ export default function Sidebar() {
   };
 
   const getFolderById = (id: string) => folders.find((f) => f.id === id);
+  const ThemeIcon = theme === 'light' ? Sun : theme === 'dark' ? Moon : Monitor;
 
   return (
     <>
       <div className="flex h-screen w-[280px] flex-col sidebar-modern pt-4">
+        {/* Agent switcher */}
+        <div className="px-4 pb-2">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="w-full flex items-center gap-2 rounded-xl border border-border/60 bg-card/80 px-3 py-2 text-sm text-foreground hover:bg-accent/60 transition-all"
+                title="Switch agent"
+              >
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg" style={{ backgroundColor: activeAgent?.avatarColor ? `${activeAgent.avatarColor}15` : 'hsl(var(--primary) / 0.1)' }}>
+                  <AgentAvatarIcon avatar={activeAgent?.avatar} color={activeAgent?.avatarColor || 'hsl(var(--primary))'} className="h-7 w-7" />
+                </div>
+                <div className="flex-1 min-w-0 text-left">
+                  <div className="font-medium truncate">{activeAgent?.name || 'Agent'}</div>
+                  <div className="text-xs text-muted-foreground truncate">
+                    {activeAgent?.roleName || activeAgent?.id || activeAgentId || 'main'}
+                  </div>
+                </div>
+                <ChevronDown className="h-4 w-4 text-muted-foreground" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-60">
+              <div className="px-2 py-1 text-xs font-medium text-muted-foreground/80 uppercase tracking-wider">
+                Agents
+              </div>
+              {agents.map((agent) => {
+                const isActive = agent.id === activeAgentId;
+                const isDefault = agent.id === defaultAgentId;
+                return (
+                  <DropdownMenuItem
+                    key={agent.id}
+                    onClick={() => {
+                      if (!isActive) {
+                        void setActiveAgent(agent.id);
+                      }
+                    }}
+                    className="flex items-center justify-between gap-2"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="inline-flex h-4 w-4 items-center justify-center">
+                        {isActive ? <Check className="h-4 w-4" /> : null}
+                      </span>
+                      <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-md" style={{ backgroundColor: agent.avatarColor ? `${agent.avatarColor}15` : 'hsl(var(--muted))' }}>
+                        <AgentAvatarIcon avatar={agent.avatar} color={agent.avatarColor || 'hsl(var(--muted-foreground))'} className="h-6 w-6" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-sm truncate">{agent.name}</div>
+                        <div className="text-xs text-muted-foreground truncate">{agent.roleName || agent.id}</div>
+                      </div>
+                    </div>
+                    {isDefault && (
+                      <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+                        Default
+                      </span>
+                    )}
+                  </DropdownMenuItem>
+                );
+              })}
+              <DropdownMenuItem
+                onClick={() => setShowSettings(true)}
+                className="flex items-center gap-2"
+              >
+                <Settings className="h-3.5 w-3.5" />
+                Manage agents
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
         {/* Action Buttons */}
         <div className="px-4 py-4 border-b border-border/50 flex gap-2">
           <Button
@@ -392,20 +480,75 @@ export default function Sidebar() {
             />
           </div>
 
-          {/* Settings Button - Bottom Right */}
-          <Button
-            data-testid="sidebar-settings-button"
-            variant="ghost"
-            size="icon"
-            onClick={() => {
-              analytics.trackOpenSettings();
-              setShowSettings(true);
-            }}
-            title="Settings"
-            className="rounded-xl hover:bg-accent/80 transition-smooth"
-          >
-            <Settings className="h-4 w-4" />
-          </Button>
+          {/* Help + Theme + Settings Buttons - Bottom Right */}
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => navigate('/help')}
+              title="Help"
+              className="rounded-xl hover:bg-accent/80 transition-smooth"
+            >
+              <CircleHelp className="h-4 w-4" />
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  title={`Theme: ${theme}`}
+                  className="rounded-xl hover:bg-accent/80 transition-smooth"
+                >
+                  <ThemeIcon className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-40">
+                <DropdownMenuItem
+                  onClick={() => setTheme('light')}
+                  className="flex items-center justify-between gap-2"
+                >
+                  <span className="flex items-center gap-2">
+                    <Sun className="h-3.5 w-3.5" />
+                    Light
+                  </span>
+                  {theme === 'light' && <Check className="h-3.5 w-3.5" />}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => setTheme('dark')}
+                  className="flex items-center justify-between gap-2"
+                >
+                  <span className="flex items-center gap-2">
+                    <Moon className="h-3.5 w-3.5" />
+                    Dark
+                  </span>
+                  {theme === 'dark' && <Check className="h-3.5 w-3.5" />}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => setTheme('system')}
+                  className="flex items-center justify-between gap-2"
+                >
+                  <span className="flex items-center gap-2">
+                    <Monitor className="h-3.5 w-3.5" />
+                    System
+                  </span>
+                  {theme === 'system' && <Check className="h-3.5 w-3.5" />}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <Button
+              data-testid="sidebar-settings-button"
+              variant="ghost"
+              size="icon"
+              onClick={() => {
+                analytics.trackOpenSettings();
+                setShowSettings(true);
+              }}
+              title="Settings"
+              className="rounded-xl hover:bg-accent/80 transition-smooth"
+            >
+              <Settings className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
       </div>
 

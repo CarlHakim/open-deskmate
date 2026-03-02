@@ -9,6 +9,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import type { Task, TaskStatus, TaskMessage, PermissionRequest } from '@accomplish/shared';
+import { createMockAccomplish } from '../../../test-utils/mock-accomplish';
 
 // Create mock functions
 const mockLoadTaskById = vi.fn();
@@ -56,7 +57,7 @@ function createMockMessage(
 }
 
 // Mock accomplish API
-const mockAccomplish = {
+const mockAccomplish = createMockAccomplish({
   onTaskUpdate: mockOnTaskUpdate.mockReturnValue(() => {}),
   onTaskUpdateBatch: mockOnTaskUpdateBatch.mockReturnValue(() => {}),
   onPermissionRequest: mockOnPermissionRequest.mockReturnValue(() => {}),
@@ -66,7 +67,7 @@ const mockAccomplish = {
   getSelectedModel: vi.fn().mockResolvedValue({ provider: 'anthropic', id: 'claude-3-opus' }),
   getOllamaConfig: vi.fn().mockResolvedValue(null),
   getDebugMode: vi.fn().mockResolvedValue(false),
-};
+});
 
 // Mock the accomplish module
 vi.mock('@/lib/accomplish', () => ({
@@ -196,8 +197,8 @@ describe('Execution Page Integration', () => {
       renderWithRouter('task-123');
 
       // Assert
-      const spinner = document.querySelector('.animate-spin-ccw');
-      expect(spinner).toBeInTheDocument();
+      const dots = document.querySelector('.typing-dots');
+      expect(dots).toBeInTheDocument();
     });
 
     it('should display task prompt in header', () => {
@@ -613,7 +614,8 @@ describe('Execution Page Integration', () => {
       renderWithRouter('task-123');
 
       // Assert
-      expect(screen.getByRole('button', { name: /start new task/i })).toBeInTheDocument();
+      expect(screen.getByPlaceholderText(/start a new task/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /^start$/i })).toBeInTheDocument();
     });
 
     it('should call sendFollowUp when follow-up is submitted', async () => {
@@ -633,7 +635,7 @@ describe('Execution Page Integration', () => {
 
       // Assert
       await waitFor(() => {
-        expect(mockSendFollowUp).toHaveBeenCalledWith('Continue with the next step');
+        expect(mockSendFollowUp).toHaveBeenCalledWith('Continue with the next step', undefined);
       });
     });
 
@@ -652,7 +654,7 @@ describe('Execution Page Integration', () => {
 
       // Assert
       await waitFor(() => {
-        expect(mockSendFollowUp).toHaveBeenCalledWith('Do more work');
+        expect(mockSendFollowUp).toHaveBeenCalledWith('Do more work', undefined);
       });
     });
 
@@ -1016,7 +1018,7 @@ describe('Execution Page Integration', () => {
   });
 
   describe('task complete states', () => {
-    it('should navigate home when clicking Start New Task for failed task without session', async () => {
+    it('should show Start controls for failed task without session', async () => {
       // Arrange
       mockStoreState.currentTask = createMockTask('task-123', 'Failed', 'failed');
 
@@ -1024,16 +1026,8 @@ describe('Execution Page Integration', () => {
       renderWithRouter('task-123');
 
       // Assert
-      const startNewButton = screen.getByRole('button', { name: /start new task/i });
-      expect(startNewButton).toBeInTheDocument();
-
-      // Click the button - it should navigate to home
-      fireEvent.click(startNewButton);
-
-      // Verify navigation happened by checking for Home Page text
-      await waitFor(() => {
-        expect(screen.getByText('Home Page')).toBeInTheDocument();
-      });
+      expect(screen.getByPlaceholderText(/start a new task/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /^start$/i })).toBeInTheDocument();
     });
 
     it('should show follow-up input for interrupted task', () => {
@@ -1044,19 +1038,19 @@ describe('Execution Page Integration', () => {
       renderWithRouter('task-123');
 
       // Assert - canFollowUp is true for interrupted status
-      // Look for the retry placeholder text
-      expect(screen.getByPlaceholderText(/send a new instruction to retry/i)).toBeInTheDocument();
+      // Without a session id, we can only start a new task.
+      expect(screen.getByPlaceholderText(/start a new task/i)).toBeInTheDocument();
     });
 
     it('should show task cancelled message for cancelled task', () => {
       // Arrange
-      mockStoreState.currentTask = createMockTask('task-123', 'Cancelled', 'cancelled');
+      mockStoreState.currentTask = createMockTask('task-123', 'My task', 'cancelled');
 
       // Act
       renderWithRouter('task-123');
 
       // Assert
-      expect(screen.getByText(/task cancelled/i)).toBeInTheDocument();
+      expect(screen.getByText('Cancelled')).toBeInTheDocument();
     });
 
     it('should show Continue button for interrupted task with session and messages', () => {
@@ -1297,9 +1291,9 @@ describe('Execution Page Integration', () => {
       // Act
       renderWithRouter('task-123');
 
-      // Assert - for interrupted, follow-up input is shown even without session
-      // The placeholder says "Send a new instruction to retry..."
-      const input = screen.getByPlaceholderText(/send a new instruction to retry/i);
+      // Assert - for interrupted, follow-up input is shown even without session.
+      // Without a session id, we can only start a new task.
+      const input = screen.getByPlaceholderText(/start a new task/i);
       expect(input).toBeInTheDocument();
     });
 

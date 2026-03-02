@@ -2,7 +2,8 @@
  * Provider and model configuration types for multi-provider support
  */
 
-export type ProviderType = 'anthropic' | 'openai' | 'google' | 'xai' | 'ollama' | 'custom';
+export type BuiltinProviderType = 'anthropic' | 'openai' | 'google' | 'xai' | 'ollama' | 'custom';
+export type ProviderType = BuiltinProviderType | (string & {});
 
 export interface ProviderConfig {
   id: ProviderType;
@@ -95,7 +96,9 @@ export const DEFAULT_PROVIDERS: ProviderConfig[] = [
         displayName: 'GPT 5 Codex',
         provider: 'openai',
         fullId: 'openai/gpt-5-codex',
-        contextWindow: 1000000,
+        // OpenDeskmate's context-window indicator assumes this value matches the real provider limit.
+        // Keep conservative defaults to avoid overestimating room and sending over-limit payloads.
+        contextWindow: 128000,
         supportsVision: true,
       },
     ],
@@ -111,7 +114,8 @@ export const DEFAULT_PROVIDERS: ProviderConfig[] = [
         displayName: 'Gemini 3 Pro',
         provider: 'google',
         fullId: 'google/gemini-3-pro-preview',
-        contextWindow: 2000000,
+        // Conservative default unless verified for a specific model.
+        contextWindow: 128000,
         supportsVision: true,
       },
       {
@@ -119,7 +123,8 @@ export const DEFAULT_PROVIDERS: ProviderConfig[] = [
         displayName: 'Gemini 3 Flash',
         provider: 'google',
         fullId: 'google/gemini-3-flash-preview',
-        contextWindow: 1000000,
+        // Conservative default unless verified for a specific model.
+        contextWindow: 128000,
         supportsVision: true,
       },
     ],

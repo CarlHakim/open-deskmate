@@ -17,6 +17,8 @@ export interface TaskConfig {
   prompt: string;
   /** Optional task ID to correlate events */
   taskId?: string;
+  /** Optional agent identifier */
+  agentId?: string;
   /** Working directory for Claude Code operations */
   workingDirectory?: string;
   /** List of allowed tools */
@@ -27,11 +29,21 @@ export interface TaskConfig {
   outputSchema?: object;
   /** Session ID for resuming */
   sessionId?: string;
+  /** File paths attached by the user (text files are inlined, binary files referenced by path) */
+  attachedFiles?: string[];
+  /** Hint: task likely needs browser automation tooling */
+  requiresBrowser?: boolean;
+  /** Runtime speed preference for OpenCode model routing */
+  speedMode?: 'fast' | 'balanced' | 'deep';
+  /** Per-session/task privacy mode */
+  privacyMode?: 'normal' | 'incognito';
 }
 
 export interface Task {
   id: string;
   prompt: string;
+  /** Agent identifier for this task */
+  agentId?: string;
   /** AI-generated short summary of the task (displayed in history) */
   summary?: string;
   status: TaskStatus;
@@ -43,6 +55,8 @@ export interface Task {
   result?: TaskResult;
   /** Optional folder ID for organizing tasks */
   folderId?: string;
+  /** Per-session/task privacy mode */
+  privacyMode?: 'normal' | 'incognito';
 }
 
 export interface TaskAttachment {

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { isRunningInElectron, getAccomplish } from './lib/accomplish';
 import { springs, variants } from './lib/animations';
@@ -10,19 +10,24 @@ import { analytics } from './lib/analytics';
 // Pages
 import HomePage from './pages/Home';
 import ExecutionPage from './pages/Execution';
+import OnboardingPage from './pages/Onboarding';
+import HelpPage from './pages/Help';
 
 // Components
 import Sidebar from './components/layout/Sidebar';
 import { TaskLauncher } from './components/TaskLauncher';
 import { useTaskStore } from './stores/taskStore';
 import { Loader2, AlertTriangle } from 'lucide-react';
+import { GlobalUsageBanner } from './components/usage/GlobalUsageBanner';
 
 type AppStatus = 'loading' | 'ready' | 'error';
 
 export default function App() {
   const [status, setStatus] = useState<AppStatus>('loading');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [onboardingComplete, setOnboardingComplete] = useState<boolean | null>(null);
   const location = useLocation();
+  const navigate = useNavigate();
 
   // Get launcher actions
   const { openLauncher } = useTaskStore();
@@ -56,12 +61,13 @@ export default function App() {
 
       try {
         const accomplish = getAccomplish();
-        // Mark onboarding as complete (no welcome screen needed)
-        await accomplish.setOnboardingComplete(true);
+        const complete = await accomplish.getOnboardingComplete();
+        setOnboardingComplete(complete);
         setStatus('ready');
       } catch (error) {
         console.error('Failed to initialize app:', error);
         // Still allow app to run even if setting fails
+        setOnboardingComplete(true);
         setStatus('ready');
       }
     };
@@ -69,8 +75,25 @@ export default function App() {
     checkStatus();
   }, []);
 
+  useEffect(() => {
+    if (!isRunningInElectron()) return;
+    const accomplish = getAccomplish();
+    const unsubscribe = accomplish.onHelpNavigate?.((payload) => {
+      const docId = typeof payload?.docId === 'string' ? payload.docId.trim() : '';
+      const query = typeof payload?.query === 'string' ? payload.query.trim() : '';
+      const path = docId
+        ? `/help/${encodeURIComponent(docId)}`
+        : '/help';
+      const search = query ? `?q=${encodeURIComponent(query)}` : '';
+      navigate(`${path}${search}`);
+    });
+    return () => {
+      unsubscribe?.();
+    };
+  }, [navigate]);
+
   // Loading state
-  if (status === 'loading') {
+  if (status === 'loading' || onboardingComplete === null) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background">
         <Loader2 className="h-8 w-8 animate-spin text-primary" />
@@ -95,48 +118,88 @@ export default function App() {
     );
   }
 
+  // Onboarding - render wizard without main app chrome
+  if (!onboardingComplete) {
+    return <OnboardingPage onComplete={() => setOnboardingComplete(true)} />;
+  }
+
   // Ready - render the app with sidebar
   return (
     <div className="flex h-screen overflow-hidden bg-background">
       {/* Invisible drag region for window dragging (macOS hiddenInset titlebar) */}
       <div className="drag-region fixed top-0 left-0 right-0 h-10 z-50 pointer-events-none" />
       <Sidebar />
-      <main className="flex-1 overflow-hidden">
-        <AnimatePresence mode="wait">
-          <Routes location={location} key={location.pathname}>
-            <Route
-              path="/"
-              element={
-                <motion.div
-                  className="h-full"
-                  initial="initial"
-                  animate="animate"
-                  exit="exit"
-                  variants={variants.fadeUp}
-                  transition={springs.gentle}
-                >
-                  <HomePage />
-                </motion.div>
-              }
-            />
-            <Route
-              path="/execution/:id"
-              element={
-                <motion.div
-                  className="h-full"
-                  initial="initial"
-                  animate="animate"
-                  exit="exit"
-                  variants={variants.fadeUp}
-                  transition={springs.gentle}
-                >
-                  <ExecutionPage />
-                </motion.div>
-              }
-            />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </AnimatePresence>
+      <main className="flex-1 overflow-hidden flex flex-col">
+        <div className="shrink-0">
+          <GlobalUsageBanner />
+        </div>
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <AnimatePresence mode="wait">
+            <Routes location={location} key={location.pathname}>
+              <Route
+                path="/"
+                element={
+                  <motion.div
+                    className="h-full"
+                    initial="initial"
+                    animate="animate"
+                    exit="exit"
+                    variants={variants.fadeUp}
+                    transition={springs.gentle}
+                  >
+                    <HomePage />
+                  </motion.div>
+                }
+              />
+              <Route
+                path="/execution/:id"
+                element={
+                  <motion.div
+                    className="h-full"
+                    initial="initial"
+                    animate="animate"
+                    exit="exit"
+                    variants={variants.fadeUp}
+                    transition={springs.gentle}
+                  >
+                    <ExecutionPage />
+                  </motion.div>
+                }
+              />
+              <Route
+                path="/help"
+                element={
+                  <motion.div
+                    className="h-full"
+                    initial="initial"
+                    animate="animate"
+                    exit="exit"
+                    variants={variants.fadeUp}
+                    transition={springs.gentle}
+                  >
+                    <HelpPage />
+                  </motion.div>
+                }
+              />
+              <Route
+                path="/help/:docId"
+                element={
+                  <motion.div
+                    className="h-full"
+                    initial="initial"
+                    animate="animate"
+                    exit="exit"
+                    variants={variants.fadeUp}
+                    transition={springs.gentle}
+                  >
+                    <HelpPage />
+                  </motion.div>
+                }
+              />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </AnimatePresence>
+        </div>
       </main>
       <TaskLauncher />
     </div>

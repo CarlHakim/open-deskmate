@@ -316,7 +316,7 @@ async function executeInterruptedScenario(
 /**
  * Create a mock Task object for immediate return from task:start handler.
  */
-export function createMockTask(taskId: string, prompt: string): Task {
+export function createMockTask(taskId: string, prompt: string, agentId?: string): Task {
   const initialMessage: TaskMessage = {
     id: createMessageId(),
     type: 'user',
@@ -327,6 +327,7 @@ export function createMockTask(taskId: string, prompt: string): Task {
   return {
     id: taskId,
     prompt,
+    agentId,
     status: 'running',
     messages: [initialMessage],
     createdAt: new Date().toISOString(),

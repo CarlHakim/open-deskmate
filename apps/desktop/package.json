@@ -1,19 +1,19 @@
 {
   "name": "@accomplish/desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Accomplish Desktop App",
+  "description": "Open Deskmate Desktop App",
   "main": "dist-electron/main/index.js",
   "scripts": {
     "postinstall": "node scripts/postinstall.cjs",
     "dev": "node scripts/patch-electron-name.cjs && rimraf dist-electron && vite",
     "dev:clean": "CLEAN_START=1 vite",
-    "build": "tsc && vite build && npm --prefix skills/dev-browser install --omit=dev && npm --prefix skills/file-permission install --omit=dev",
-    "build:win": "pnpm download:nodejs && tsc && vite build && npm --prefix skills/dev-browser install --omit=dev && npm --prefix skills/file-permission install --omit=dev && node scripts/package.cjs --win --publish never",
-    "build:win:portable": "pnpm download:nodejs && tsc && vite build && npm --prefix skills/dev-browser install --omit=dev && npm --prefix skills/file-permission install --omit=dev && node scripts/package.cjs --win portable --publish never",
-    "build:electron": "tsc && vite build && node scripts/package.cjs",
-    "build:unpack": "pnpm download:nodejs && tsc && vite build && npm --prefix skills/dev-browser install --omit=dev && npm --prefix skills/file-permission install --omit=dev && node scripts/package.cjs --dir",
+    "build": "pnpm download:nodejs && tsc && vite build && npm --prefix skills/dev-browser install --omit=dev && npm --prefix skills/file-permission install --omit=dev && npm --prefix skills/canvas install --omit=dev && npm --prefix skills/node-tools install --omit=dev && rimraf skills/memory-tools/node_modules && node scripts/run-bundled-npm.cjs --prefix skills/memory-tools install --omit=dev && node scripts/run-bundled-node.cjs skills/memory-tools/scripts/verify-fts5.cjs",
+    "build:win": "pnpm download:nodejs && tsc && vite build && npm --prefix skills/dev-browser install --omit=dev && npm --prefix skills/file-permission install --omit=dev && npm --prefix skills/canvas install --omit=dev && npm --prefix skills/node-tools install --omit=dev && rimraf skills/memory-tools/node_modules && node scripts/run-bundled-npm.cjs --prefix skills/memory-tools install --omit=dev && node scripts/run-bundled-node.cjs skills/memory-tools/scripts/verify-fts5.cjs && node scripts/package.cjs --win --publish never",
+    "build:win:portable": "pnpm download:nodejs && tsc && vite build && npm --prefix skills/dev-browser install --omit=dev && npm --prefix skills/file-permission install --omit=dev && npm --prefix skills/canvas install --omit=dev && npm --prefix skills/node-tools install --omit=dev && rimraf skills/memory-tools/node_modules && node scripts/run-bundled-npm.cjs --prefix skills/memory-tools install --omit=dev && node scripts/run-bundled-node.cjs skills/memory-tools/scripts/verify-fts5.cjs && node scripts/package.cjs --win portable --publish never",
+    "build:electron": "pnpm download:nodejs && tsc && vite build && npm --prefix skills/dev-browser install --omit=dev && npm --prefix skills/file-permission install --omit=dev && npm --prefix skills/canvas install --omit=dev && npm --prefix skills/node-tools install --omit=dev && rimraf skills/memory-tools/node_modules && node scripts/run-bundled-npm.cjs --prefix skills/memory-tools install --omit=dev && node scripts/run-bundled-node.cjs skills/memory-tools/scripts/verify-fts5.cjs && node scripts/package.cjs",
+    "build:unpack": "pnpm download:nodejs && tsc && vite build && npm --prefix skills/dev-browser install --omit=dev && npm --prefix skills/file-permission install --omit=dev && npm --prefix skills/canvas install --omit=dev && npm --prefix skills/node-tools install --omit=dev && rimraf skills/memory-tools/node_modules && node scripts/run-bundled-npm.cjs --prefix skills/memory-tools install --omit=dev && node scripts/run-bundled-node.cjs skills/memory-tools/scripts/verify-fts5.cjs && node scripts/package.cjs --dir",
     "opencode:smoke": "node scripts/opencode-smoke.cjs",
     "package": "pnpm build && node scripts/package.cjs --mac --publish never",
     "package:mac": "pnpm build && node scripts/package.cjs --mac --publish never",
@@ -38,6 +38,8 @@
   },
   "dependencies": {
     "@accomplish/shared": "workspace:*",
+    "@picovoice/porcupine-node": "^3.0.6",
+    "@picovoice/pvrecorder-node": "^1.2.8",
     "@radix-ui/react-avatar": "^1.1.2",
     "@radix-ui/react-dialog": "^1.1.4",
     "@radix-ui/react-dropdown-menu": "^2.1.4",
@@ -49,18 +51,31 @@
     "@radix-ui/react-tooltip": "^1.1.6",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "croner": "^8.0.0",
+    "discord.js": "^14.25.1",
     "dotenv": "^17.2.3",
     "electron-store": "^8.2.0",
     "framer-motion": "^12.26.2",
+    "grammy": "^1.22.4",
     "keytar": "^7.9.0",
+    "lamejs": "^1.2.1",
     "lucide-react": "^0.454.0",
+    "mammoth": "^1.11.0",
     "node-pty": "^1.1.0",
     "opencode-ai": "1.1.16",
+    "pdf-parse": "^2.4.5",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "react-icons": "^5.5.0",
     "react-markdown": "^9.0.1",
     "react-router-dom": "^7.1.1",
+    "react-syntax-highlighter": "^15.6.1",
+    "rehype-raw": "^7.0.0",
+    "rehype-sanitize": "^6.0.0",
+    "rehype-slug": "^6.0.0",
+    "remark-gfm": "^4.0.1",
     "tailwind-merge": "^3.3.1",
+    "ws": "^8.18.0",
     "zod": "^3.24.1",
     "zustand": "^5.0.2"
   },
@@ -74,6 +89,8 @@
     "@types/node": "^22.10.2",
     "@types/react": "^19.0.2",
     "@types/react-dom": "^19.0.2",
+    "@types/react-syntax-highlighter": "^15.5.13",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^4.3.4",
     "@vitest/coverage-v8": "^4.0.17",
     "autoprefixer": "^10.4.20",
@@ -81,15 +98,15 @@
     "electron-builder": "^25.1.8",
     "happy-dom": "^20.1.0",
     "jsdom": "^27.4.0",
-    "postcss": "^8.4.49",
     "png-to-ico": "^2.1.1",
+    "postcss": "^8.4.49",
+    "rimraf": "^6.0.1",
     "tailwindcss": "^3.4.17",
     "tailwindcss-animate": "^1.0.7",
     "typescript": "^5.7.2",
     "vite": "^6.0.6",
     "vite-plugin-electron": "^0.28.8",
-    "vitest": "^4.0.17",
-    "rimraf": "^6.0.1"
+    "vitest": "^4.0.17"
   },
   "build": {
     "appId": "ai.accomplish.desktop",
@@ -97,9 +114,7 @@
     "extraMetadata": {
       "name": "opendeskmate"
     },
-
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
-
     "compression": "normal",
     "directories": {
       "output": "release",
@@ -117,6 +132,18 @@
       "node_modules/json-schema-typed/**",
       "node_modules/atomically/**",
       "node_modules/debounce-fn/**",
+      "node_modules/discord.js/**",
+      "node_modules/@discordjs/**",
+      "node_modules/@sapphire/**",
+      "node_modules/discord-api-types/**",
+      "node_modules/@picovoice/**",
+      "node_modules/grammy/**",
+      "node_modules/fast-deep-equal/**",
+      "node_modules/lodash.snakecase/**",
+      "node_modules/magic-bytes.js/**",
+      "node_modules/tslib/**",
+      "node_modules/undici/**",
+      "node_modules/ws/**",
       "!node_modules/@accomplish/**",
       "!node_modules/opencode-darwin-*/**",
       "!node_modules/opencode-linux-*/**",
@@ -132,6 +159,8 @@
       "node_modules/node-pty/package.json",
       "node_modules/keytar/build/**/*.node",
       "node_modules/keytar/package.json",
+      "node_modules/@picovoice/porcupine-node/**/*",
+      "node_modules/@picovoice/pvrecorder-node/**/*",
       "dist-electron/main/mcp/*.js"
     ],
     "afterPack": "./scripts/after-pack.cjs",
@@ -139,6 +168,14 @@
       {
         "from": "resources/icon.png",
         "to": "icon.png"
+      },
+      {
+        "from": "resources/help-defaults",
+        "to": "help-defaults"
+      },
+      {
+        "from": "src/main/canvas-host/a2ui",
+        "to": "canvas-host/a2ui"
       },
       {
         "from": "skills",
@@ -149,6 +186,10 @@
           "!**/tmp/**",
           "!**/.git/**",
           "!**/.browser-data/**",
+          "!**/node_modules/accomplish",
+          "!**/node_modules/accomplish/**",
+          "!**/node_modules/@accomplish",
+          "!**/node_modules/@accomplish/**",
           "!**/node_modules/@accomplish/desktop",
           "!**/node_modules/@accomplish/desktop/**",
           "!**/bun.lock",
@@ -169,13 +210,18 @@
       "entitlements": "resources/entitlements.mac.plist",
       "entitlementsInherit": "resources/entitlements.mac.plist",
       "icon": "resources/icon.png",
-      "target": ["dmg", "zip"]
+      "target": [
+        "dmg",
+        "zip"
+      ]
     },
     "win": {
       "icon": "resources/icon.ico",
-      "target": ["nsis", "portable"]
+      "target": [
+        "nsis",
+        "portable"
+      ]
     },
-
     "nsis": {
       "artifactName": "OpenDeskmate-${version}-win-x64-installer.${ext}",
       "oneClick": false,
@@ -184,11 +230,18 @@
     "portable": {
       "artifactName": "OpenDeskmate-${version}-win-x64-portable.${ext}"
     },
-
     "dmg": {
       "contents": [
-        { "x": 130, "y": 220 },
-        { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
       ]
     }
   }

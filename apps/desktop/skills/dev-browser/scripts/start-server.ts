@@ -23,7 +23,8 @@ function getDataDir(): string {
 
 const dataDir = getDataDir();
 const tmpDir = join(dataDir, "tmp");
-const profileDir = join(dataDir, "profiles");
+const profileName = process.env.DEV_BROWSER_PROFILE || "default";
+const profileDir = join(dataDir, "profiles", profileName);
 const playwrightBrowsersDir = join(dataDir, "playwright-browsers");
 
 // Rebrowser runtime patches are unstable on Windows; disable to avoid context crashes.

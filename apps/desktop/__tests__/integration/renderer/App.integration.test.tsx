@@ -17,6 +17,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { createMockAccomplish } from '../../test-utils/mock-accomplish';
 
 // Create mock functions for accomplish API
 const mockSetOnboardingComplete = vi.fn();
@@ -27,8 +28,9 @@ const mockOnTaskUpdate = vi.fn();
 const mockGetTask = vi.fn();
 
 // Mock accomplish API
-const mockAccomplish = {
+const mockAccomplish = createMockAccomplish({
   setOnboardingComplete: mockSetOnboardingComplete,
+  getOnboardingComplete: vi.fn().mockResolvedValue(true),
   logEvent: mockLogEvent.mockResolvedValue(undefined),
   listTasks: mockListTasks.mockResolvedValue([]),
   onTaskStatusChange: mockOnTaskStatusChange.mockReturnValue(() => {}),
@@ -36,7 +38,7 @@ const mockAccomplish = {
   getTask: mockGetTask.mockResolvedValue(null),
   getSelectedModel: vi.fn().mockResolvedValue({ provider: 'anthropic', id: 'claude-3-opus' }),
   getOllamaConfig: vi.fn().mockResolvedValue(null),
-};
+});
 
 // Mock the accomplish module - always return true for isRunningInElectron for most tests
 vi.mock('@/lib/accomplish', () => ({

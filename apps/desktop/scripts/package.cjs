@@ -12,6 +12,8 @@ const path = require('path');
 const resourcesDir = path.join(__dirname, '..', 'resources');
 const iconPngPath = path.join(resourcesDir, 'icon.png');
 const iconIcoPath = path.join(resourcesDir, 'icon.ico');
+const memoryToolsDir = path.join(__dirname, '..', 'skills', 'memory-tools');
+const skillsDir = path.join(__dirname, '..', 'skills');
 
 async function ensureWindowsIcon() {
   if (process.platform !== 'win32') {
@@ -38,6 +40,76 @@ async function ensureWindowsIcon() {
   const icoBuffer = await pngToIco(iconPngPath);
   fs.writeFileSync(iconIcoPath, icoBuffer);
   console.log('[package] Generated icon.ico for Windows packaging');
+}
+
+function pinMemoryToolsBinary() {
+  try {
+    const script = path.join(memoryToolsDir, 'scripts', 'pin-prebuild.cjs');
+    if (!fs.existsSync(script)) {
+      console.warn('[package] memory-tools pin-prebuild script not found, skipping.');
+      return;
+    }
+    console.log('[package] Pinning better-sqlite3 prebuild for memory-tools...');
+    execSync(`node "${script}"`, { stdio: 'inherit', cwd: memoryToolsDir });
+  } catch (err) {
+    console.error('[package] Failed to pin memory-tools prebuild:', err?.message || err);
+    process.exit(1);
+  }
+}
+
+function pruneSkillWorkspaceLinks() {
+  if (!fs.existsSync(skillsDir)) {
+    return;
+  }
+
+  const removed = [];
+
+  function walk(dir) {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      let stats;
+      try {
+        stats = fs.lstatSync(fullPath);
+      } catch {
+        continue;
+      }
+
+      if (stats.isSymbolicLink()) {
+        const normalized = fullPath.split(path.sep).join('/').toLowerCase();
+        if (
+          normalized.includes('/skills/')
+          && normalized.includes('/node_modules/')
+          && (
+            normalized.endsWith('/node_modules/accomplish')
+            || normalized.includes('/node_modules/@accomplish/')
+            || normalized.endsWith('/node_modules/@accomplish')
+          )
+        ) {
+          try {
+            fs.rmSync(fullPath, { recursive: true, force: true });
+            removed.push(fullPath);
+          } catch (err) {
+            console.warn('[package] Failed to prune skill workspace link:', fullPath, err?.message || err);
+          }
+          continue;
+        }
+      }
+
+      if (entry.isDirectory()) {
+        walk(fullPath);
+      }
+    }
+  }
+
+  walk(skillsDir);
+
+  if (removed.length > 0) {
+    console.log(`[package] Pruned ${removed.length} skill workspace link(s) before packaging.`);
+    for (const item of removed) {
+      console.log(`  - ${item}`);
+    }
+  }
 }
 
 const nodeModulesPath = path.join(__dirname, '..', 'node_modules');
@@ -81,6 +153,8 @@ let replacedWithCopy = false;
   const command = `npx electron-builder ${args}`;
 
     await ensureWindowsIcon();
+    pinMemoryToolsBinary();
+    pruneSkillWorkspaceLinks();
     console.log('Running:', command);
     execSync(command, { stdio: 'inherit', cwd: path.join(__dirname, '..') });
   } finally {

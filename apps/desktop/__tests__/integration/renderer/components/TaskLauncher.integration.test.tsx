@@ -9,6 +9,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import type { Task, TaskStatus } from '@accomplish/shared';
+import { createMockAccomplish } from '../../../test-utils/mock-accomplish';
 
 // Mock analytics to prevent tracking calls
 vi.mock('@/lib/analytics', () => ({
@@ -39,11 +40,11 @@ function createMockTask(
 }
 
 // Mock accomplish API
-const mockAccomplish = {
+const mockAccomplish = createMockAccomplish({
   hasAnyApiKey: mockHasAnyApiKey,
   getSelectedModel: vi.fn().mockResolvedValue({ provider: 'anthropic', id: 'claude-3-opus' }),
   getOllamaConfig: vi.fn().mockResolvedValue(null),
-};
+});
 
 // Mock the accomplish module
 vi.mock('@/lib/accomplish', () => ({

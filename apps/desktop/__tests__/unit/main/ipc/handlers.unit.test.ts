@@ -90,7 +90,7 @@ vi.mock('@main/opencode/adapter', () => ({
 // Mock task manager
 const mockTaskManager = {
   startTask: vi.fn(),
-  cancelTask: vi.fn(),
+  cancelTask: vi.fn(() => Promise.resolve()),
   interruptTask: vi.fn(),
   sendResponse: vi.fn(),
   hasActiveTask: vi.fn(() => false),
@@ -117,6 +117,7 @@ const mockTasks: Array<{
 vi.mock('@main/store/taskHistory', () => ({
   getTasks: vi.fn(() => mockTasks),
   getTask: vi.fn((taskId: string) => mockTasks.find((t) => t.id === taskId)),
+  getLatestTask: vi.fn(() => (mockTasks.length ? mockTasks[mockTasks.length - 1] : undefined)),
   saveTask: vi.fn((task: unknown) => {
     const t = task as { id: string };
     const existing = mockTasks.findIndex((x) => x.id === t.id);
@@ -129,6 +130,11 @@ vi.mock('@main/store/taskHistory', () => ({
   updateTaskStatus: vi.fn(),
   updateTaskSessionId: vi.fn(),
   updateTaskSummary: vi.fn(),
+  updateTaskSessionMemorySaved: vi.fn(),
+  updateTaskSessionFilePath: vi.fn((taskId: string, sessionFilePath: string) => {
+    const t = mockTasks.find((x) => x.id === taskId) as (typeof mockTasks)[0] | undefined;
+    if (t) (t as unknown as { sessionFilePath?: string }).sessionFilePath = sessionFilePath;
+  }),
   addTaskMessage: vi.fn(),
   deleteTask: vi.fn((taskId: string) => {
     const idx = mockTasks.findIndex((t) => t.id === taskId);
@@ -173,7 +179,16 @@ vi.mock('@main/store/secureStorage', () => ({
 // Mock app settings
 let mockDebugMode = false;
 let mockOnboardingComplete = false;
-let mockSelectedModel: { provider: string; model: string } | null = null;
+let mockSelectedModel: { provider: string; model: string } | null = {
+  provider: 'anthropic',
+  model: 'anthropic/claude-sonnet-4-5',
+};
+let mockMobileNodesEnabled = true;
+let mockMobileNodesMaxLivePreviews = 3;
+let mockMobileNodesDisplayName = '';
+let mockWebhookBindMode: 'localhost' | 'all' = 'localhost';
+let mockWorkspaceRoot: string | null = '/mock/workspace';
+let mockActiveAgentId = 'main';
 
 vi.mock('@main/store/appSettings', () => ({
   getDebugMode: vi.fn(() => mockDebugMode),
@@ -184,6 +199,10 @@ vi.mock('@main/store/appSettings', () => ({
     debugMode: mockDebugMode,
     onboardingComplete: mockOnboardingComplete,
     selectedModel: mockSelectedModel,
+    mobileNodesEnabled: mockMobileNodesEnabled,
+    mobileNodesMaxLivePreviews: mockMobileNodesMaxLivePreviews,
+    mobileNodesDisplayName: mockMobileNodesDisplayName,
+    webhookBindMode: mockWebhookBindMode,
   })),
   getOnboardingComplete: vi.fn(() => mockOnboardingComplete),
   setOnboardingComplete: vi.fn((complete: boolean) => {
@@ -193,6 +212,42 @@ vi.mock('@main/store/appSettings', () => ({
   setSelectedModel: vi.fn((model: { provider: string; model: string }) => {
     mockSelectedModel = model;
   }),
+  getMobileNodesEnabled: vi.fn(() => mockMobileNodesEnabled),
+  setMobileNodesEnabled: vi.fn((enabled: boolean) => {
+    mockMobileNodesEnabled = enabled;
+  }),
+  getMobileNodesMaxLivePreviews: vi.fn(() => mockMobileNodesMaxLivePreviews),
+  setMobileNodesMaxLivePreviews: vi.fn((count: number) => {
+    mockMobileNodesMaxLivePreviews = count;
+    return mockMobileNodesMaxLivePreviews;
+  }),
+  getMobileNodesDisplayName: vi.fn(() => mockMobileNodesDisplayName),
+  setMobileNodesDisplayName: vi.fn((name: string) => {
+    mockMobileNodesDisplayName = name;
+    return mockMobileNodesDisplayName;
+  }),
+  getWebhookBindMode: vi.fn(() => mockWebhookBindMode),
+  setWebhookBindMode: vi.fn((mode: 'localhost' | 'all') => {
+    mockWebhookBindMode = mode;
+    return mockWebhookBindMode;
+  }),
+  getWorkspaceRoot: vi.fn(() => mockWorkspaceRoot),
+  setWorkspaceRoot: vi.fn((root: string | null) => {
+    mockWorkspaceRoot = root;
+    return mockWorkspaceRoot;
+  }),
+  getActiveAgentId: vi.fn(() => mockActiveAgentId),
+  setActiveAgentId: vi.fn((nextId: string) => {
+    mockActiveAgentId = nextId;
+    return mockActiveAgentId;
+  }),
+  // Defaults used by code paths under test; not all are asserted.
+  setRunInBackground: vi.fn(),
+  setLaunchAtLogin: vi.fn(),
+  getBrowserProfile: vi.fn(() => 'default'),
+  setBrowserProfile: vi.fn(() => 'default'),
+  getOllamaConfig: vi.fn(() => ({ enabled: false, baseUrl: 'http://localhost:11434', models: [] })),
+  setOllamaConfig: vi.fn(() => ({ enabled: false, baseUrl: 'http://localhost:11434', models: [] })),
 }));
 
 // Mock config
@@ -261,7 +316,9 @@ describe('IPC Handlers Integration', () => {
     mockStoredCredentials = [];
     mockDebugMode = false;
     mockOnboardingComplete = false;
-    mockSelectedModel = null;
+    mockSelectedModel = { provider: 'anthropic', model: 'anthropic/claude-sonnet-4-5' };
+    mockWorkspaceRoot = '/mock/workspace';
+    mockActiveAgentId = 'main';
     mockPendingPermissions.clear();
 
     // Reset task manager mocks
@@ -458,11 +515,13 @@ describe('IPC Handlers Integration', () => {
       const result = await invokeHandler('settings:app-settings');
 
       // Assert
-      expect(result).toEqual({
-        debugMode: true,
-        onboardingComplete: true,
-        selectedModel: { provider: 'anthropic', model: 'claude-3-opus' },
-      });
+      expect(result).toEqual(
+        expect.objectContaining({
+          debugMode: true,
+          onboardingComplete: true,
+          selectedModel: { provider: 'anthropic', model: 'claude-3-opus' },
+        })
+      );
     });
 
     it('settings:api-keys should return list of stored API keys', async () => {
@@ -1329,7 +1388,7 @@ describe('IPC Handlers Integration', () => {
           sessionId: 'custom_session',
           workingDirectory: '/some/path',
           allowedTools: ['tool1', 'tool2'], // Non-strings filtered
-          systemPromptAppend: 'Additional instructions',
+          systemPromptAppend: expect.stringContaining('Additional instructions'),
           outputSchema: { type: 'object' },
         }),
         expect.any(Object)
@@ -1424,7 +1483,8 @@ describe('IPC Handlers Integration', () => {
         expect.objectContaining({
           type: 'user',
           content: prompt,
-        })
+        }),
+        expect.objectContaining({ skipSessionLog: true })
       );
     });
 

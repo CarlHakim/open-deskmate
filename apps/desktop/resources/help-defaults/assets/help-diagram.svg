@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="340" viewBox="0 0 920 340">
+  <rect width="920" height="340" fill="#f8fafc"/>
+  <rect x="30" y="36" width="250" height="118" rx="10" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="50" y="72" font-family="Arial, sans-serif" font-size="18" fill="#1e3a5f">User Help Folder</text>
+  <text x="50" y="98" font-family="Arial, sans-serif" font-size="14" fill="#475569">index.json + .md + assets</text>
+
+  <rect x="336" y="36" width="250" height="118" rx="10" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="356" y="72" font-family="Arial, sans-serif" font-size="18" fill="#1e3a5f">Main Process</text>
+  <text x="356" y="98" font-family="Arial, sans-serif" font-size="14" fill="#475569">Watcher + IPC + menu updates</text>
+
+  <rect x="642" y="36" width="250" height="118" rx="10" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="662" y="72" font-family="Arial, sans-serif" font-size="18" fill="#1e3a5f">React Help Viewer</text>
+  <text x="662" y="98" font-family="Arial, sans-serif" font-size="14" fill="#475569">Markdown + search + syntax highlight</text>
+
+  <path d="M282 95H332" stroke="#4db6ac" stroke-width="4" marker-end="url(#arrow)"/>
+  <path d="M588 95H638" stroke="#4db6ac" stroke-width="4" marker-end="url(#arrow)"/>
+
+  <rect x="220" y="210" width="480" height="94" rx="10" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="244" y="246" font-family="Arial, sans-serif" font-size="16" fill="#1e3a5f">
+    Security checks: sanitize HTML, validate paths, safe asset resolution
+  </text>
+  <text x="244" y="272" font-family="Arial, sans-serif" font-size="13" fill="#64748b">
+    Relative links and images are rewritten from markdown context.
+  </text>
+
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#4db6ac"/>
+    </marker>
+  </defs>
+</svg>

@@ -117,12 +117,12 @@ describe('Preload Script Integration', () => {
 
       it('getTask should invoke task:get with taskId', async () => {
         await (capturedAccomplishAPI.getTask as (taskId: string) => Promise<unknown>)('task_123');
-        expect(mockInvoke).toHaveBeenCalledWith('task:get', 'task_123');
+        expect(mockInvoke).toHaveBeenCalledWith('task:get', 'task_123', undefined);
       });
 
       it('listTasks should invoke task:list', async () => {
         await (capturedAccomplishAPI.listTasks as () => Promise<unknown[]>)();
-        expect(mockInvoke).toHaveBeenCalledWith('task:list');
+        expect(mockInvoke).toHaveBeenCalledWith('task:list', undefined);
       });
 
       it('deleteTask should invoke task:delete with taskId', async () => {
@@ -132,7 +132,7 @@ describe('Preload Script Integration', () => {
 
       it('clearTaskHistory should invoke task:clear-history', async () => {
         await (capturedAccomplishAPI.clearTaskHistory as () => Promise<void>)();
-        expect(mockInvoke).toHaveBeenCalledWith('task:clear-history');
+        expect(mockInvoke).toHaveBeenCalledWith('task:clear-history', undefined);
       });
     });
 
@@ -147,7 +147,7 @@ describe('Preload Script Integration', () => {
     describe('Session Operations', () => {
       it('resumeSession should invoke session:resume', async () => {
         await (capturedAccomplishAPI.resumeSession as (s: string, p: string, t?: string) => Promise<unknown>)('session_123', 'Continue', 'task_456');
-        expect(mockInvoke).toHaveBeenCalledWith('session:resume', 'session_123', 'Continue', 'task_456');
+        expect(mockInvoke).toHaveBeenCalledWith('session:resume', 'session_123', 'Continue', 'task_456', undefined, undefined);
       });
     });
 

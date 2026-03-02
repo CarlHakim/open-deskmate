@@ -1,0 +1,125 @@
+{
+  "docs": [
+    {
+      "id": "settings-model-api-settings",
+      "title": "Settings: Model & API settings",
+      "file": "settings/model-api-settings.md",
+      "description": "Model selection, provider API keys, and custom provider/model setup."
+    },
+    {
+      "id": "settings-overview",
+      "title": "Settings Overview",
+      "file": "settings/overview.md",
+      "description": "Reference map for every Settings section."
+    },
+    {
+      "id": "settings-skills",
+      "title": "Settings: Skills",
+      "file": "settings/skills.md",
+      "description": "Bundled skill install status and actions."
+    },
+    {
+      "id": "settings-automations",
+      "title": "Settings: Automations",
+      "file": "settings/automations.md",
+      "description": "Schedules, webhook endpoints, and Tailscale options."
+    },
+    {
+      "id": "settings-messaging-connectors",
+      "title": "Settings: Messaging Connector Extensions",
+      "file": "settings/messaging-connectors.md",
+      "description": "Configure Telegram, Discord, and other messaging channels."
+    },
+    {
+      "id": "settings-app-connectors",
+      "title": "Settings: App Connector Extensions",
+      "file": "settings/app-connectors.md",
+      "description": "OAuth and app integration setup."
+    },
+    {
+      "id": "settings-voice-wake-talk-mode",
+      "title": "Settings: Voice Wake + Talk Mode",
+      "file": "settings/voice-wake-talk-mode.md",
+      "description": "Wake words, speech provider, and whisper settings."
+    },
+    {
+      "id": "settings-mobile-node-companions",
+      "title": "Settings: Mobile Node Companions (Pilot)",
+      "file": "settings/mobile-node-companions.md",
+      "description": "Pairing and control for mobile companion nodes."
+    },
+    {
+      "id": "settings-agents",
+      "title": "Settings: Agents",
+      "file": "settings/agents.md",
+      "description": "Create and configure agent profiles and automation behaviors."
+    },
+    {
+      "id": "settings-startup",
+      "title": "Settings: Startup",
+      "file": "settings/startup.md",
+      "description": "Background mode and launch-at-login behavior."
+    },
+    {
+      "id": "settings-workspace-defaults",
+      "title": "Settings: Workspace Defaults",
+      "file": "settings/workspace-defaults.md",
+      "description": "Default workspace folder selection."
+    },
+    {
+      "id": "settings-memory-user-context",
+      "title": "Settings: Memory (User Context)",
+      "file": "settings/memory-user-context.md",
+      "description": "Long-term and daily memory note editing."
+    },
+    {
+      "id": "settings-usage-estimate",
+      "title": "Settings: API usage estimate",
+      "file": "settings/usage-estimate.md",
+      "description": "Pricing inputs and cost estimate controls."
+    },
+    {
+      "id": "settings-browser-profile",
+      "title": "Settings: Browser Profile",
+      "file": "settings/browser-profile.md",
+      "description": "Default browser profile for automation sessions."
+    },
+    {
+      "id": "settings-developer",
+      "title": "Settings: Developer",
+      "file": "settings/developer.md",
+      "description": "Debug log and developer troubleshooting options."
+    },
+    {
+      "id": "settings-doctor",
+      "title": "Settings: Doctor",
+      "file": "settings/doctor.md",
+      "description": "Built-in diagnostics checks."
+    },
+    {
+      "id": "settings-about",
+      "title": "Settings: About",
+      "file": "settings/about.md",
+      "description": "Version info and support links."
+    },
+    {
+      "id": "getting-started",
+      "title": "Getting Started",
+      "file": "getting-started.md",
+      "description": "Overview of the in-app Help system."
+    },
+    {
+      "id": "editing-help",
+      "title": "Editing Help Content",
+      "file": "editing-help.md",
+      "description": "How to add and organize markdown help pages."
+    },
+    {
+      "id": "help-architecture",
+      "title": "Help Architecture",
+      "file": "help-architecture.md",
+      "description": "Runtime rendering design, security model, and embedded docs option."
+    }
+  ],
+  "embeddedSiteUrl": ""
+}

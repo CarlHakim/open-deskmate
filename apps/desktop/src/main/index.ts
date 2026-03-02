@@ -1,12 +1,38 @@
 import { config } from 'dotenv';
-import { app, BrowserWindow, shell, ipcMain, nativeImage } from 'electron';
+import { app, BrowserWindow, shell, ipcMain, nativeImage, Menu } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import type { MenuItemConstructorOptions } from 'electron';
 import { registerIPCHandlers } from './ipc/handlers';
 import { flushPendingTasks } from './store/taskHistory';
+import { reconcileStaleTasksOnStartup } from './store/taskHistory';
 import { disposeTaskManager } from './opencode/task-manager';
 import { checkAndCleanupFreshInstall } from './store/freshInstallCleanup';
+import { cleanupLegacyConnectorConfigStores } from './store/legacyConnectorConfigCleanup';
+import { getLaunchAtLogin, getRunInBackground } from './store/appSettings';
+import { initBackground, setQuitting } from './background';
+import { initScheduler } from './services/scheduler';
+import { startWebhookServer } from './services/webhook-server';
+import { startGatewayConnectorRuntimes, stopGatewayConnectorRuntimes } from './services/gateway-connector-runtimes';
+import { startConnectorBridgeRuntime, stopConnectorBridgeRuntime } from './services/connector-bridge-runtime';
+import { startCanvasHost, stopCanvasHost } from './services/canvas-host';
+import { startCanvasApiServer, stopCanvasApiServer } from './canvas-api';
+import { startNodeToolsApiServer } from './node-tools-api';
+import { startVoiceWakeService, stopVoiceWakeService } from './services/voice-wake';
+import { applyVoiceWakeAutoStart } from './store/voiceWake';
+import { disposeUserSkillsWatcher, ensureUserSkillsWatcher } from './services/user-skills';
+import { startAgentHeartbeatService, stopAgentHeartbeatService } from './services/agent-heartbeat';
+import { maybeHandleAppConnectorOAuthProtocolUrl } from './services/app-connector-oauth';
+import { startAppConnectorOAuthRefreshService, stopAppConnectorOAuthRefreshService } from './services/app-connector-runtimes';
+import {
+  initializeHelpDocs,
+  listHelpDocs,
+  onHelpDocsChanged,
+  openHelpDocsFolder,
+  startHelpDocsWatcher,
+  stopHelpDocsWatcher,
+} from './services/help-docs';
 
 // Local UI - no longer uses remote URL
 
@@ -64,6 +90,186 @@ export const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist');
 export const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
 
 let mainWindow: BrowserWindow | null = null;
+let webhookServer: ReturnType<typeof startWebhookServer> | null = null;
+let canvasApiServer: ReturnType<typeof startCanvasApiServer> | null = null;
+let nodeToolsApiServer: ReturnType<typeof startNodeToolsApiServer> | null = null;
+let unsubscribeHelpDocs: (() => void) | null = null;
+let pendingHelpNavigation: { docId?: string; query?: string } | null = null;
+
+function findProtocolUrlInArgv(argv: string[]): string | null {
+  for (const entry of argv) {
+    if (typeof entry === 'string' && entry.startsWith('accomplish://')) {
+      return entry;
+    }
+  }
+  return null;
+}
+
+async function handleProtocolUrl(url: string): Promise<void> {
+  if (!url.startsWith('accomplish://callback')) return;
+  await maybeHandleAppConnectorOAuthProtocolUrl(url);
+  mainWindow?.webContents?.send('auth:callback', url);
+}
+
+function focusMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow();
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  if (!mainWindow.isVisible()) {
+    mainWindow.show();
+  }
+  mainWindow.focus();
+}
+
+function sendHelpNavigation(payload: { docId?: string; query?: string }): void {
+  pendingHelpNavigation = payload;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.webContents.isLoadingMainFrame()) return;
+  mainWindow.webContents.send('help:navigate', payload);
+  pendingHelpNavigation = null;
+}
+
+function flushPendingHelpNavigation(): void {
+  if (!pendingHelpNavigation) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const payload = pendingHelpNavigation;
+  pendingHelpNavigation = null;
+  mainWindow.webContents.send('help:navigate', payload);
+}
+
+function broadcastHelpDocsUpdated(event: { changedAt: string }): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('help-docs:updated', event);
+    }
+  }
+}
+
+function buildHelpMenuItems(docs: Awaited<ReturnType<typeof listHelpDocs>>['docs']): MenuItemConstructorOptions[] {
+  const openDoc = (docId?: string) => {
+    focusMainWindow();
+    sendHelpNavigation(docId ? { docId } : {});
+  };
+
+  const docItems: MenuItemConstructorOptions[] = docs.length > 0
+    ? docs.map((doc) => ({
+      label: doc.title,
+      click: () => openDoc(doc.id),
+    }))
+    : [{
+      label: 'No help pages found',
+      enabled: false,
+    }];
+
+  return [
+    {
+      label: 'Help Viewer',
+      click: () => openDoc(),
+    },
+    {
+      label: 'Search Help',
+      click: () => {
+        focusMainWindow();
+        sendHelpNavigation({ query: '' });
+      },
+    },
+    { type: 'separator' },
+    ...docItems,
+    { type: 'separator' },
+    {
+      label: 'Open Help Folder',
+      click: () => {
+        void openHelpDocsFolder();
+      },
+    },
+  ];
+}
+
+async function rebuildApplicationMenu(): Promise<void> {
+  let docs: Awaited<ReturnType<typeof listHelpDocs>>['docs'] = [];
+  try {
+    docs = (await listHelpDocs()).docs;
+  } catch (error) {
+    console.warn('[HelpDocs] Failed to load docs for menu:', error);
+  }
+
+  const isMac = process.platform === 'darwin';
+  const template: MenuItemConstructorOptions[] = [
+    ...(isMac
+      ? [{
+        label: app.name,
+        submenu: [
+          { role: 'about' as const },
+          { type: 'separator' as const },
+          { role: 'services' as const },
+          { type: 'separator' as const },
+          { role: 'hide' as const },
+          { role: 'hideOthers' as const },
+          { role: 'unhide' as const },
+          { type: 'separator' as const },
+          { role: 'quit' as const },
+        ],
+      }]
+      : []),
+    {
+      label: 'File',
+      submenu: [
+        isMac ? { role: 'close' as const } : { role: 'quit' as const },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' as const },
+        { role: 'redo' as const },
+        { type: 'separator' as const },
+        { role: 'cut' as const },
+        { role: 'copy' as const },
+        { role: 'paste' as const },
+        ...(isMac ? [
+          { role: 'pasteAndMatchStyle' as const },
+          { role: 'delete' as const },
+          { role: 'selectAll' as const },
+        ] : [
+          { role: 'delete' as const },
+          { type: 'separator' as const },
+          { role: 'selectAll' as const },
+        ]),
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload' as const },
+        { role: 'forceReload' as const },
+        { role: 'toggleDevTools' as const },
+        { type: 'separator' as const },
+        { role: 'resetZoom' as const },
+        { role: 'zoomIn' as const },
+        { role: 'zoomOut' as const },
+        { type: 'separator' as const },
+        { role: 'togglefullscreen' as const },
+      ],
+    },
+    {
+      label: 'Window',
+      submenu: isMac
+        ? [{ role: 'minimize' as const }, { role: 'zoom' as const }, { type: 'separator' as const }, { role: 'front' as const }]
+        : [{ role: 'minimize' as const }, { role: 'close' as const }],
+    },
+    {
+      role: 'help',
+      submenu: buildHelpMenuItems(docs),
+    },
+  ];
+
+  const menu = Menu.buildFromTemplate(template);
+  Menu.setApplicationMenu(menu);
+}
 
 // Get the preload script path
 function getPreloadPath(): string {
@@ -124,6 +330,17 @@ function createWindow() {
     console.log('[Main] Loading from file:', indexPath);
     mainWindow.loadFile(indexPath);
   }
+
+  mainWindow.webContents.on('did-finish-load', () => {
+    flushPendingHelpNavigation();
+  });
+}
+
+function applyLaunchAtLogin(enabled: boolean): void {
+  app.setLoginItemSettings({
+    openAtLogin: enabled,
+    openAsHidden: true,
+  });
 }
 
 // Single instance lock
@@ -133,9 +350,18 @@ if (!gotTheLock) {
   console.log('[Main] Second instance attempted; quitting');
   app.quit();
 } else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, argv) => {
+    const protocolUrl = findProtocolUrlInArgv(argv);
+    if (protocolUrl) {
+      void handleProtocolUrl(protocolUrl);
+    }
     if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
+      if (mainWindow.isMinimized()) {
+        mainWindow.restore();
+      }
+      if (!mainWindow.isVisible()) {
+        mainWindow.show();
+      }
       mainWindow.focus();
       console.log('[Main] Focused existing instance after second-instance event');
     }
@@ -154,6 +380,7 @@ if (!gotTheLock) {
     } catch (err) {
       console.error('[Main] Fresh install cleanup failed:', err);
     }
+    cleanupLegacyConnectorConfigStores();
 
     // Set dock icon on macOS
     if (process.platform === 'darwin' && app.dock) {
@@ -170,12 +397,59 @@ if (!gotTheLock) {
     registerIPCHandlers();
     console.log('[Main] IPC handlers registered');
 
+    await initializeHelpDocs();
+    startHelpDocsWatcher();
+    unsubscribeHelpDocs = onHelpDocsChanged((event) => {
+      broadcastHelpDocsUpdated(event);
+      void rebuildApplicationMenu();
+    });
+
+    // Reconcile any stale running/queued tasks from a previous session (crash/force-close).
+    try {
+      const reconciled = reconcileStaleTasksOnStartup();
+      if (reconciled.interrupted || reconciled.cancelled) {
+        console.log('[Main] Reconciled stale tasks on startup:', reconciled);
+      }
+    } catch (err) {
+      console.warn('[Main] Failed to reconcile stale tasks on startup:', err);
+    }
+
     createWindow();
+    await rebuildApplicationMenu();
+    const startupProtocolUrl = findProtocolUrlInArgv(process.argv);
+    if (startupProtocolUrl) {
+      void handleProtocolUrl(startupProtocolUrl);
+    }
+    if (mainWindow) {
+      initBackground(mainWindow, getRunInBackground());
+    }
+    applyLaunchAtLogin(getLaunchAtLogin());
+    initScheduler();
+    // Start skills watcher early so skill edits are picked up across sessions.
+    ensureUserSkillsWatcher({});
+    nodeToolsApiServer = startNodeToolsApiServer();
+    webhookServer = startWebhookServer();
+    startConnectorBridgeRuntime();
+    try {
+      await startCanvasHost();
+    } catch (err) {
+      console.warn('[Canvas Host] Failed to start:', err);
+    }
+    canvasApiServer = startCanvasApiServer();
+    void startGatewayConnectorRuntimes();
+    applyVoiceWakeAutoStart();
+    void startVoiceWakeService();
+    startAgentHeartbeatService();
+    startAppConnectorOAuthRefreshService();
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
         createWindow();
         console.log('[Main] Application reactivated; recreated window');
+        return;
+      }
+      if (mainWindow && !mainWindow.isVisible()) {
+        mainWindow.show();
       }
     });
   });
@@ -191,6 +465,31 @@ app.on('window-all-closed', () => {
 // Flush pending task history writes and dispose TaskManager before quitting
 app.on('before-quit', () => {
   console.log('[Main] App before-quit event fired');
+  setQuitting(true);
+  if (webhookServer) {
+    webhookServer.close();
+    webhookServer = null;
+  }
+  if (canvasApiServer) {
+    void stopCanvasApiServer();
+    canvasApiServer = null;
+  }
+  if (nodeToolsApiServer) {
+    nodeToolsApiServer.close();
+    nodeToolsApiServer = null;
+  }
+  void stopCanvasHost();
+  void stopGatewayConnectorRuntimes();
+  void stopConnectorBridgeRuntime();
+  void stopVoiceWakeService();
+  stopAgentHeartbeatService();
+  stopAppConnectorOAuthRefreshService();
+  stopHelpDocsWatcher();
+  if (unsubscribeHelpDocs) {
+    unsubscribeHelpDocs();
+    unsubscribeHelpDocs = null;
+  }
+  disposeUserSkillsWatcher();
   flushPendingTasks();
   // Dispose all active tasks and cleanup PTY processes
   disposeTaskManager();
@@ -204,7 +503,7 @@ app.on('open-url', (event, url) => {
   console.log('[Main] Received protocol URL:', url);
   // Handle protocol URL
   if (url.startsWith('accomplish://callback')) {
-    mainWindow?.webContents?.send('auth:callback', url);
+    void handleProtocolUrl(url);
   }
 });
 

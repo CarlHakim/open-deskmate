@@ -41,7 +41,12 @@ export interface PermissionResponse {
   requestId: string;
   /** Task ID to route response to the correct task */
   taskId: string;
-  decision: 'allow' | 'deny';
+  /**
+   * - allow: approve this single request
+   * - allow_all: approve this request and auto-approve future file operations for this task (scoped by app rules)
+   * - deny: deny this request
+   */
+  decision: 'allow' | 'allow_all' | 'deny';
   /** User message/reason */
   message?: string;
   /** Selected options for questions */

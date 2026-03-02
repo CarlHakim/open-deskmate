@@ -6,8 +6,10 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import type { ApiKeyConfig } from '@accomplish/shared';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import type { ApiKeyConfig, ProviderConfig } from '@accomplish/shared';
+import { DEFAULT_PROVIDERS } from '@accomplish/shared';
+import { createMockAccomplish } from '../../../test-utils/mock-accomplish';
 
 // Mock analytics to prevent tracking calls
 vi.mock('@/lib/analytics', () => ({
@@ -36,9 +38,13 @@ const mockSetSelectedModel = vi.fn();
 const mockAddApiKey = vi.fn();
 const mockRemoveApiKey = vi.fn();
 const mockValidateApiKeyForProvider = vi.fn();
+const mockListModelProviders = vi.fn();
+const mockListCustomModelProviders = vi.fn();
+const mockUpsertCustomModelProvider = vi.fn();
+const mockDeleteCustomModelProvider = vi.fn();
 
 // Mock accomplish API
-const mockAccomplish = {
+const mockAccomplish = createMockAccomplish({
   getApiKeys: mockGetApiKeys,
   getAllApiKeys: mockGetAllApiKeys,
   getDebugMode: mockGetDebugMode,
@@ -50,7 +56,11 @@ const mockAccomplish = {
   addApiKey: mockAddApiKey,
   removeApiKey: mockRemoveApiKey,
   validateApiKeyForProvider: mockValidateApiKeyForProvider,
-};
+  listModelProviders: mockListModelProviders,
+  listCustomModelProviders: mockListCustomModelProviders,
+  upsertCustomModelProvider: mockUpsertCustomModelProvider,
+  deleteCustomModelProvider: mockDeleteCustomModelProvider,
+});
 
 // Mock the accomplish module
 vi.mock('@/lib/accomplish', () => ({
@@ -112,6 +122,10 @@ describe('SettingsDialog Integration', () => {
     mockValidateApiKeyForProvider.mockResolvedValue({ valid: true });
     mockAddApiKey.mockResolvedValue({ id: 'key-1', provider: 'anthropic', keyPrefix: 'sk-ant-...' });
     mockRemoveApiKey.mockResolvedValue(undefined);
+    mockListModelProviders.mockResolvedValue(DEFAULT_PROVIDERS);
+    mockListCustomModelProviders.mockResolvedValue([]);
+    mockUpsertCustomModelProvider.mockImplementation(async (provider: ProviderConfig) => provider);
+    mockDeleteCustomModelProvider.mockResolvedValue({ ok: true });
   });
 
   describe('dialog rendering', () => {
@@ -222,7 +236,7 @@ describe('SettingsDialog Integration', () => {
       await waitFor(() => {
         expect(screen.getByText('Google AI')).toBeInTheDocument();
       });
-      fireEvent.click(screen.getByText('Google AI'));
+      fireEvent.click(screen.getAllByRole('button', { name: 'Google AI' })[0]);
 
       // Assert
       await waitFor(() => {
@@ -238,7 +252,7 @@ describe('SettingsDialog Integration', () => {
       await waitFor(() => {
         expect(screen.getByText('Google AI')).toBeInTheDocument();
       });
-      fireEvent.click(screen.getByText('Google AI'));
+      fireEvent.click(screen.getAllByRole('button', { name: 'Google AI' })[0]);
 
       // Assert
       await waitFor(() => {
@@ -488,6 +502,166 @@ describe('SettingsDialog Integration', () => {
     });
   });
 
+  describe('custom provider management', () => {
+    const getCustomProvidersSection = async (): Promise<HTMLElement> => {
+      const heading = await screen.findByRole('heading', { name: 'Custom providers' });
+      const section = heading.closest('div')?.parentElement;
+      expect(section).not.toBeNull();
+      return section as HTMLElement;
+    };
+
+    it('should render custom providers section', async () => {
+      // Arrange & Act
+      render(<SettingsDialog {...defaultProps} />);
+
+      // Assert
+      expect(await screen.findByRole('heading', { name: 'Custom providers' })).toBeInTheDocument();
+    });
+
+    it('should not show model validation warning when models field is empty', async () => {
+      // Arrange & Act
+      render(<SettingsDialog {...defaultProps} />);
+      await getCustomProvidersSection();
+
+      // Assert
+      expect(screen.queryByText('Model validation issues:')).not.toBeInTheDocument();
+      expect(screen.queryByText('At least one model is required.')).not.toBeInTheDocument();
+    });
+
+    it('should save a custom provider with parsed models', async () => {
+      // Arrange
+      render(<SettingsDialog {...defaultProps} />);
+      const sectionScope = within(await getCustomProvidersSection());
+
+      // Act
+      fireEvent.change(sectionScope.getByPlaceholderText('deepseek'), {
+        target: { value: 'deepseek' },
+      });
+      fireEvent.change(sectionScope.getByPlaceholderText('DeepSeek'), {
+        target: { value: 'DeepSeek' },
+      });
+      fireEvent.change(sectionScope.getByPlaceholderText('https://api.example.com/v1'), {
+        target: { value: 'https://api.deepseek.com/v1' },
+      });
+      fireEvent.change(
+        sectionScope.getByPlaceholderText(/chat-model\|Chat Model\|128000\|4096\|true/i),
+        {
+          target: {
+            value: 'chat-model|Chat Model|128000|4096|true\nreasoner|Reasoner|64000|4096|false',
+          },
+        }
+      );
+      fireEvent.click(sectionScope.getByRole('button', { name: 'Add provider' }));
+
+      // Assert
+      await waitFor(() => {
+        expect(mockUpsertCustomModelProvider).toHaveBeenCalledWith({
+          id: 'deepseek',
+          name: 'DeepSeek',
+          requiresApiKey: true,
+          baseUrl: 'https://api.deepseek.com/v1',
+          models: [
+            {
+              id: 'chat-model',
+              displayName: 'Chat Model',
+              provider: 'deepseek',
+              fullId: 'deepseek/chat-model',
+              contextWindow: 128000,
+              maxOutputTokens: 4096,
+              supportsVision: true,
+            },
+            {
+              id: 'reasoner',
+              displayName: 'Reasoner',
+              provider: 'deepseek',
+              fullId: 'deepseek/reasoner',
+              contextWindow: 64000,
+              maxOutputTokens: 4096,
+              supportsVision: false,
+            },
+          ],
+        });
+      });
+    });
+
+    it('should show parse error for invalid model metadata', async () => {
+      // Arrange
+      render(<SettingsDialog {...defaultProps} />);
+      const sectionScope = within(await getCustomProvidersSection());
+
+      // Act
+      fireEvent.change(sectionScope.getByPlaceholderText('deepseek'), {
+        target: { value: 'deepseek' },
+      });
+      fireEvent.change(sectionScope.getByPlaceholderText('https://api.example.com/v1'), {
+        target: { value: 'https://api.deepseek.com/v1' },
+      });
+      fireEvent.change(
+        sectionScope.getByPlaceholderText(/chat-model\|Chat Model\|128000\|4096\|true/i),
+        {
+          target: { value: 'chat-model|Chat Model|abc|4096|true' },
+        }
+      );
+      fireEvent.click(sectionScope.getByRole('button', { name: 'Add provider' }));
+
+      // Assert
+      await waitFor(() => {
+        expect(
+          sectionScope.getAllByText(/context window must be a positive number/i).length
+        ).toBeGreaterThan(0);
+      });
+      expect(mockUpsertCustomModelProvider).not.toHaveBeenCalled();
+    });
+
+    it('should load existing custom provider into edit form and support delete', async () => {
+      // Arrange
+      const customProvider: ProviderConfig = {
+        id: 'deepseek',
+        name: 'DeepSeek',
+        requiresApiKey: true,
+        baseUrl: 'https://api.deepseek.com/v1',
+        models: [
+          {
+            id: 'chat-model',
+            displayName: 'Chat Model',
+            provider: 'deepseek',
+            fullId: 'deepseek/chat-model',
+          },
+        ],
+      };
+      mockListModelProviders.mockResolvedValue([...DEFAULT_PROVIDERS, customProvider]);
+      mockListCustomModelProviders.mockResolvedValue([customProvider]);
+      render(<SettingsDialog {...defaultProps} />);
+      const sectionScope = within(await getCustomProvidersSection());
+
+      // Act: edit
+      const providerCard = sectionScope.getByText('DeepSeek');
+      const providerCardContainer = providerCard.closest('.rounded-lg');
+      expect(providerCardContainer).not.toBeNull();
+      const cardScope = within(providerCardContainer as HTMLElement);
+      fireEvent.click(cardScope.getByRole('button', { name: 'Edit' }));
+
+      // Assert: form populated
+      await waitFor(() => {
+        const idInput = sectionScope.getByPlaceholderText('deepseek') as HTMLInputElement;
+        const nameInput = sectionScope.getByPlaceholderText('DeepSeek') as HTMLInputElement;
+        const baseUrlInput = sectionScope.getByPlaceholderText('https://api.example.com/v1') as HTMLInputElement;
+        expect(idInput.value).toBe('deepseek');
+        expect(nameInput.value).toBe('DeepSeek');
+        expect(baseUrlInput.value).toBe('https://api.deepseek.com/v1');
+        expect(sectionScope.getByRole('button', { name: 'Update provider' })).toBeInTheDocument();
+      });
+
+      // Act: delete
+      fireEvent.click(cardScope.getByRole('button', { name: 'Remove' }));
+
+      // Assert: delete called
+      await waitFor(() => {
+        expect(mockDeleteCustomModelProvider).toHaveBeenCalledWith('deepseek');
+      });
+    });
+  });
+
   describe('model selection', () => {
     it('should render Model section', async () => {
       // Arrange & Act
@@ -509,7 +683,7 @@ describe('SettingsDialog Integration', () => {
 
       // Assert
       await waitFor(() => {
-        const select = screen.getByRole('combobox');
+        const select = screen.getByTestId('settings-model-select');
         expect(select).toBeInTheDocument();
       });
     });
@@ -554,9 +728,9 @@ describe('SettingsDialog Integration', () => {
 
       // Act
       await waitFor(() => {
-        expect(screen.getByRole('combobox')).toBeInTheDocument();
+        expect(screen.getByTestId('settings-model-select')).toBeInTheDocument();
       });
-      fireEvent.change(screen.getByRole('combobox'), { target: { value: 'anthropic/claude-sonnet-4-5' } });
+      fireEvent.change(screen.getByTestId('settings-model-select'), { target: { value: 'anthropic/claude-sonnet-4-5' } });
 
       // Assert
       await waitFor(() => {
@@ -577,9 +751,9 @@ describe('SettingsDialog Integration', () => {
 
       // Act
       await waitFor(() => {
-        expect(screen.getByRole('combobox')).toBeInTheDocument();
+        expect(screen.getByTestId('settings-model-select')).toBeInTheDocument();
       });
-      fireEvent.change(screen.getByRole('combobox'), { target: { value: 'anthropic/claude-sonnet-4-5' } });
+      fireEvent.change(screen.getByTestId('settings-model-select'), { target: { value: 'anthropic/claude-sonnet-4-5' } });
 
       // Assert
       await waitFor(() => {
@@ -630,7 +804,7 @@ describe('SettingsDialog Integration', () => {
 
       // Assert
       await waitFor(() => {
-        const toggle = screen.getByRole('button', { name: '' });
+        const toggle = screen.getByTestId('settings-debug-toggle');
         expect(toggle.className).toContain('bg-muted');
       });
     });
@@ -645,12 +819,7 @@ describe('SettingsDialog Integration', () => {
         expect(screen.getByText('Debug Mode')).toBeInTheDocument();
       });
 
-      // Act - Find toggle by its appearance (the switch button)
-      const developerSection = screen.getByText('Debug Mode').closest('section');
-      const toggleButton = developerSection?.querySelector('button[class*="rounded-full"]');
-      if (toggleButton) {
-        fireEvent.click(toggleButton);
-      }
+      fireEvent.click(screen.getByTestId('settings-debug-toggle'));
 
       // Assert
       await waitFor(() => {
@@ -694,11 +863,7 @@ describe('SettingsDialog Integration', () => {
       });
 
       // Act
-      const developerSection = screen.getByText('Debug Mode').closest('section');
-      const toggleButton = developerSection?.querySelector('button[class*="rounded-full"]');
-      if (toggleButton) {
-        fireEvent.click(toggleButton);
-      }
+      fireEvent.click(screen.getByTestId('settings-debug-toggle'));
 
       // Assert - Mock should have been called and error handled
       await waitFor(() => {

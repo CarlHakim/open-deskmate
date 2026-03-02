@@ -28,7 +28,7 @@ export interface AuthTokens {
 
 export interface ApiKeyConfig {
   id: string;
-  provider: 'anthropic' | 'aws_bedrock';
+  provider: string;
   label?: string;
   keyPrefix?: string;
   isActive: boolean;

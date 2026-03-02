@@ -169,6 +169,30 @@ describe('taskHistory Integration', () => {
       // Assert
       expect(result?.sessionId).toBe('session-abc-123');
     });
+
+    it('should keep incognito tasks in ephemeral store and never persist them', async () => {
+      const { saveTask, getTask, getTasks, flushPendingTasks, clearTaskHistoryStore } = await import('@main/store/taskHistory');
+
+      const incognitoTask: Task = {
+        ...createMockTask('task-incognito', 'Incognito task'),
+        privacyMode: 'incognito',
+      };
+
+      saveTask(incognitoTask);
+      flushPendingTasks();
+
+      const inMemory = getTask('task-incognito');
+      expect(inMemory).toBeDefined();
+      expect(inMemory?.privacyMode).toBe('incognito');
+      expect(getTasks().some((t) => t.id === 'task-incognito')).toBe(true);
+
+      // Reset module (simulate app restart) and verify incognito task is gone.
+      clearTaskHistoryStore();
+      vi.resetModules();
+      const reloaded = await import('@main/store/taskHistory');
+      expect(reloaded.getTask('task-incognito')).toBeUndefined();
+      expect(reloaded.getTasks().some((t) => t.id === 'task-incognito')).toBe(false);
+    });
   });
 
   describe('getTasks', () => {
@@ -365,6 +389,27 @@ describe('taskHistory Integration', () => {
       expect(result?.messages).toHaveLength(2);
       expect(result?.messages[0].content).toBe('Existing');
       expect(result?.messages[1].content).toBe('New');
+    });
+
+    it('should keep incognito session logs ephemeral while preserving active-session context', async () => {
+      const { saveTask, addTaskMessage, getTask } = await import('@main/store/taskHistory');
+      const sessionFilePath = path.join(tempDir, 'incognito-session.jsonl');
+      const task: Task = {
+        ...createMockTask('task-incognito-log', 'Incognito context'),
+        privacyMode: 'incognito',
+      };
+      (task as Task & { sessionFilePath?: string }).sessionFilePath = sessionFilePath;
+      saveTask(task);
+
+      addTaskMessage('task-incognito-log', createMockMessage('msg-i-1', 'user', 'first question'));
+      addTaskMessage('task-incognito-log', createMockMessage('msg-i-2', 'assistant', 'first answer'));
+
+      const updated = getTask('task-incognito-log');
+      expect(updated?.messages).toHaveLength(2);
+      expect(fs.existsSync(sessionFilePath)).toBe(true);
+      const content = fs.readFileSync(sessionFilePath, 'utf-8');
+      expect(content).toContain('first question');
+      expect(content).toContain('first answer');
     });
   });
 

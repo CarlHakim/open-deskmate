@@ -8,13 +8,14 @@ export const taskConfigSchema = z.object({
   systemPromptAppend: z.string().optional(),
   outputSchema: z.record(z.any()).optional(),
   sessionId: z.string().optional(),
+  privacyMode: z.enum(['normal', 'incognito']).optional(),
   chrome: z.boolean().optional(),
 });
 
 export const permissionResponseSchema = z.object({
   requestId: z.string().min(1, 'Request ID is required'),
   taskId: z.string().min(1, 'Task ID is required'),
-  decision: z.enum(['allow', 'deny']),
+  decision: z.enum(['allow', 'allow_all', 'deny']),
   message: z.string().optional(),
   selectedOptions: z.array(z.string()).optional(),
 });
@@ -23,6 +24,7 @@ export const resumeSessionSchema = z.object({
   sessionId: z.string().min(1, 'Session ID is required'),
   prompt: z.string().min(1, 'Prompt is required'),
   existingTaskId: z.string().optional(),
+  privacyMode: z.enum(['normal', 'incognito']).optional(),
   chrome: z.boolean().optional(),
 });
 

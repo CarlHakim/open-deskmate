@@ -9,6 +9,8 @@ export interface Folder {
   icon?: string;
   /** Color for the folder (hex or named) */
   color?: string;
+  /** Agent this folder belongs to */
+  agentId?: string;
   /** Whether the folder is expanded in the UI */
   isExpanded: boolean;
   /** Order position for sorting */

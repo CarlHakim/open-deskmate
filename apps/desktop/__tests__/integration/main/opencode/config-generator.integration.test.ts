@@ -159,9 +159,10 @@ describe('OpenCode Config Generator Integration', () => {
       expect(config.$schema).toBe('https://opencode.ai/config.json');
       expect(config.default_agent).toBe('accomplish');
       expect(config.permission).toBe('allow');
-      expect(config.enabled_providers).toContain('anthropic');
-      expect(config.enabled_providers).toContain('openai');
-      expect(config.enabled_providers).toContain('google');
+      // We intentionally do not set enabled_providers. Some OpenCode builds ship
+      // with only a subset of providers; forcing a list can produce "no providers found"
+      // and the CLI exits without emitting NDJSON, leaving the UI stuck on "Thinking...".
+      expect(config.enabled_providers).toBeUndefined();
     });
 
     it('should include accomplish agent configuration', async () => {
@@ -219,7 +220,7 @@ describe('OpenCode Config Generator Integration', () => {
 
       // Assert
       expect(process.env.OPENCODE_CONFIG).toBe(configPath);
-      expect(configPath).toBe(path.join(tempUserDataDir, 'opencode', 'opencode.json'));
+      expect(configPath).toBe(path.join(tempUserDataDir, 'opencode', 'agents', 'main', 'opencode.json'));
     });
 
     it('should return the config file path', async () => {
@@ -228,8 +229,35 @@ describe('OpenCode Config Generator Integration', () => {
       const result = await generateOpenCodeConfig();
 
       // Assert
-      expect(result).toBe(path.join(tempUserDataDir, 'opencode', 'opencode.json'));
+      expect(result).toBe(path.join(tempUserDataDir, 'opencode', 'agents', 'main', 'opencode.json'));
       expect(fs.existsSync(result)).toBe(true);
+    });
+
+    it('should normalize MiniMax custom provider base URL from /v to /v1', async () => {
+      // Arrange
+      const { upsertCustomModelProvider } = await import('@main/store/modelProviders');
+      upsertCustomModelProvider({
+        id: 'minimax',
+        name: 'MiniMax',
+        requiresApiKey: true,
+        baseUrl: 'https://api.minimax.io/v',
+        models: [
+          {
+            id: 'MiniMax-M2.5',
+            displayName: 'MiniMax M2.5',
+            provider: 'minimax',
+            fullId: 'minimax/MiniMax-M2.5',
+          },
+        ],
+      });
+
+      // Act
+      const { generateOpenCodeConfig } = await import('@main/opencode/config-generator');
+      const configPath = await generateOpenCodeConfig();
+
+      // Assert
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      expect(config.provider?.minimax?.options?.baseURL).toBe('https://api.minimax.io/v1');
     });
   });
 
@@ -240,7 +268,7 @@ describe('OpenCode Config Generator Integration', () => {
       const result = getOpenCodeConfigPath();
 
       // Assert
-      expect(result).toBe(path.join(tempUserDataDir, 'opencode', 'opencode.json'));
+      expect(result).toBe(path.join(tempUserDataDir, 'opencode', 'agents', 'main', 'opencode.json'));
     });
   });
 

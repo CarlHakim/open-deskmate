@@ -1,134 +1,135 @@
 import { create } from 'zustand';
 import type { Folder, FolderConfig, FolderUpdateConfig } from '@accomplish/shared';
 
-const FOLDERS_STORAGE_KEY = 'open-deskmate-folders';
-
 interface FolderState {
   // Folders list
   folders: Folder[];
+  // Loading state
+  isLoading: boolean;
 
   // Actions
-  loadFolders: () => void;
-  createFolder: (config: FolderConfig) => Folder;
-  updateFolder: (folderId: string, config: FolderUpdateConfig) => void;
-  deleteFolder: (folderId: string) => void;
-  toggleFolderExpanded: (folderId: string) => void;
-  expandFolder: (folderId: string) => void;
-  reorderFolders: (folderIds: string[]) => void;
+  loadFolders: () => Promise<void>;
+  createFolder: (config: FolderConfig) => Promise<Folder | null>;
+  updateFolder: (folderId: string, config: FolderUpdateConfig) => Promise<void>;
+  deleteFolder: (folderId: string) => Promise<void>;
+  toggleFolderExpanded: (folderId: string) => Promise<void>;
+  expandFolder: (folderId: string) => Promise<void>;
+  reorderFolders: (folderIds: string[]) => Promise<void>;
   getFolderById: (folderId: string) => Folder | undefined;
-}
-
-function generateFolderId(): string {
-  return `folder_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-}
-
-function saveFoldersToStorage(folders: Folder[]): void {
-  try {
-    localStorage.setItem(FOLDERS_STORAGE_KEY, JSON.stringify(folders));
-  } catch (err) {
-    console.error('Failed to save folders to localStorage:', err);
-  }
-}
-
-function loadFoldersFromStorage(): Folder[] {
-  try {
-    const stored = localStorage.getItem(FOLDERS_STORAGE_KEY);
-    if (stored) {
-      return JSON.parse(stored) as Folder[];
-    }
-  } catch (err) {
-    console.error('Failed to load folders from localStorage:', err);
-  }
-  return [];
 }
 
 export const useFolderStore = create<FolderState>((set, get) => ({
   folders: [],
+  isLoading: false,
 
-  loadFolders: () => {
-    const folders = loadFoldersFromStorage();
-    set({ folders });
+  loadFolders: async () => {
+    if (!window.accomplish) return;
+    set({ isLoading: true });
+    try {
+      const folders = await window.accomplish.listFolders() as Folder[];
+      set({ folders: folders || [] });
+    } catch (err) {
+      console.error('Failed to load folders:', err);
+      set({ folders: [] });
+    } finally {
+      set({ isLoading: false });
+    }
   },
 
-  createFolder: (config: FolderConfig) => {
-    const { folders } = get();
-    const now = new Date().toISOString();
-
-    const newFolder: Folder = {
-      id: generateFolderId(),
-      name: config.name,
-      icon: config.icon,
-      color: config.color,
-      isExpanded: true,
-      order: folders.length,
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    const updatedFolders = [...folders, newFolder];
-    saveFoldersToStorage(updatedFolders);
-    set({ folders: updatedFolders });
-
-    return newFolder;
+  createFolder: async (config: FolderConfig) => {
+    if (!window.accomplish) return null;
+    try {
+      const newFolder = await window.accomplish.createFolder(config) as Folder;
+      if (newFolder) {
+        set((state) => ({ folders: [...state.folders, newFolder] }));
+        return newFolder;
+      }
+      return null;
+    } catch (err) {
+      console.error('Failed to create folder:', err);
+      return null;
+    }
   },
 
-  updateFolder: (folderId: string, config: FolderUpdateConfig) => {
-    const { folders } = get();
-    const now = new Date().toISOString();
-
-    const updatedFolders = folders.map((folder) =>
-      folder.id === folderId
-        ? { ...folder, ...config, updatedAt: now }
-        : folder
-    );
-
-    saveFoldersToStorage(updatedFolders);
-    set({ folders: updatedFolders });
+  updateFolder: async (folderId: string, config: FolderUpdateConfig) => {
+    if (!window.accomplish) return;
+    try {
+      const updatedFolder = await window.accomplish.updateFolder(folderId, config) as Folder;
+      if (updatedFolder) {
+        set((state) => ({
+          folders: state.folders.map((f) =>
+            f.id === folderId ? updatedFolder : f
+          ),
+        }));
+      }
+    } catch (err) {
+      console.error('Failed to update folder:', err);
+    }
   },
 
-  deleteFolder: (folderId: string) => {
-    const { folders } = get();
-    const updatedFolders = folders.filter((f) => f.id !== folderId);
+  deleteFolder: async (folderId: string) => {
+    if (!window.accomplish) return;
+    try {
+      await window.accomplish.deleteFolder(folderId);
+      set((state) => {
+        const updatedFolders = state.folders.filter((f) => f.id !== folderId);
+        // Re-order remaining folders
+        return {
+          folders: updatedFolders.map((folder, index) => ({
+            ...folder,
+            order: index,
+          })),
+        };
+      });
+    } catch (err) {
+      console.error('Failed to delete folder:', err);
+    }
+  },
 
-    // Re-order remaining folders
-    const reorderedFolders = updatedFolders.map((folder, index) => ({
-      ...folder,
-      order: index,
+  toggleFolderExpanded: async (folderId: string) => {
+    const { folders } = get();
+    const folder = folders.find((f) => f.id === folderId);
+    if (!folder) return;
+
+    const newExpanded = !folder.isExpanded;
+    // Optimistically update UI
+    set((state) => ({
+      folders: state.folders.map((f) =>
+        f.id === folderId ? { ...f, isExpanded: newExpanded } : f
+      ),
     }));
 
-    saveFoldersToStorage(reorderedFolders);
-    set({ folders: reorderedFolders });
+    if (!window.accomplish) return;
+    try {
+      await window.accomplish.updateFolder(folderId, { isExpanded: newExpanded });
+    } catch (err) {
+      console.error('Failed to toggle folder expanded:', err);
+      // Revert on error
+      set((state) => ({
+        folders: state.folders.map((f) =>
+          f.id === folderId ? { ...f, isExpanded: !newExpanded } : f
+        ),
+      }));
+    }
   },
 
-  toggleFolderExpanded: (folderId: string) => {
-    const { folders } = get();
-    const now = new Date().toISOString();
+  expandFolder: async (folderId: string) => {
+    // Optimistically update UI
+    set((state) => ({
+      folders: state.folders.map((f) =>
+        f.id === folderId ? { ...f, isExpanded: true } : f
+      ),
+    }));
 
-    const updatedFolders = folders.map((folder) =>
-      folder.id === folderId
-        ? { ...folder, isExpanded: !folder.isExpanded, updatedAt: now }
-        : folder
-    );
-
-    saveFoldersToStorage(updatedFolders);
-    set({ folders: updatedFolders });
+    if (!window.accomplish) return;
+    try {
+      await window.accomplish.updateFolder(folderId, { isExpanded: true });
+    } catch (err) {
+      console.error('Failed to expand folder:', err);
+    }
   },
 
-  expandFolder: (folderId: string) => {
-    const { folders } = get();
-    const now = new Date().toISOString();
-
-    const updatedFolders = folders.map((folder) =>
-      folder.id === folderId
-        ? { ...folder, isExpanded: true, updatedAt: now }
-        : folder
-    );
-
-    saveFoldersToStorage(updatedFolders);
-    set({ folders: updatedFolders });
-  },
-
-  reorderFolders: (folderIds: string[]) => {
+  reorderFolders: async (folderIds: string[]) => {
     const { folders } = get();
     const now = new Date().toISOString();
 
@@ -153,8 +154,17 @@ export const useFolderStore = create<FolderState>((set, get) => ({
       }));
 
     const allFolders = [...reorderedFolders, ...remainingFolders];
-    saveFoldersToStorage(allFolders);
     set({ folders: allFolders });
+
+    if (!window.accomplish) return;
+    // Update each folder's order via IPC
+    try {
+      for (const folder of allFolders) {
+        await window.accomplish.updateFolder(folder.id, { order: folder.order });
+      }
+    } catch (err) {
+      console.error('Failed to reorder folders:', err);
+    }
   },
 
   getFolderById: (folderId: string) => {
@@ -164,8 +174,8 @@ export const useFolderStore = create<FolderState>((set, get) => ({
 }));
 
 // Load folders on module initialization
-if (typeof window !== 'undefined') {
-  // Defer loading to next tick to ensure localStorage is available
+if (typeof window !== 'undefined' && window.accomplish) {
+  // Defer loading to next tick to ensure API is available
   setTimeout(() => {
     useFolderStore.getState().loadFolders();
   }, 0);

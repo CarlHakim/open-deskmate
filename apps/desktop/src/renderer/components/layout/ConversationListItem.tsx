@@ -18,6 +18,7 @@ import {
   Folder,
   Pencil,
 } from 'lucide-react';
+import { getIconByName } from './ProjectIconPicker';
 import { useTaskStore } from '@/stores/taskStore';
 import { useFolderStore } from '@/stores/folderStore';
 import {
@@ -109,9 +110,9 @@ export default function ConversationListItem({ task, draggable = true }: Convers
     setShowCreateFolder(true);
   };
 
-  const handleFolderCreated = (config: FolderConfig) => {
-    const newFolder = createFolder(config);
-    if (pendingMoveAfterCreate) {
+  const handleFolderCreated = async (config: FolderConfig) => {
+    const newFolder = await createFolder(config);
+    if (pendingMoveAfterCreate && newFolder) {
       setTaskFolder(task.id, newFolder.id);
       setPendingMoveAfterCreate(false);
     }
@@ -230,10 +231,15 @@ export default function ConversationListItem({ task, draggable = true }: Convers
                     onClick={() => handleMoveToFolder(folder.id)}
                     disabled={task.folderId === folder.id}
                   >
-                    <Folder
-                      className="h-4 w-4 mr-2"
-                      style={folder.color ? { color: folder.color } : undefined}
-                    />
+                    {(() => {
+                      const IconComponent = getIconByName(folder.icon || 'Folder');
+                      return (
+                        <IconComponent
+                          className="h-4 w-4 mr-2"
+                          style={folder.color ? { color: folder.color } : undefined}
+                        />
+                      );
+                    })()}
                     <span className="truncate">{folder.name}</span>
                     {task.folderId === folder.id && (
                       <span className="ml-auto text-xs text-muted-foreground">(current)</span>

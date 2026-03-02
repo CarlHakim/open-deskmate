@@ -129,6 +129,29 @@
   background: hsl(var(--muted-foreground));
 }
 
+/* Scoped thin scrollbar for multiline follow-up input */
+.followup-textarea-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 116, 139, 0.24) transparent;
+}
+
+.followup-textarea-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+
+.followup-textarea-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.followup-textarea-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.24);
+  border-radius: 999px;
+}
+
+.followup-textarea-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.34);
+}
+
 /* Drag region for frameless window - these work when loaded in Electron BrowserView */
 .drag-region {
   -webkit-app-region: drag;
@@ -316,7 +339,7 @@ textarea::placeholder {
 
   /* Sidebar modern styles */
   .sidebar-modern {
-    @apply bg-card/80 backdrop-blur-sm;
+    @apply bg-card;
     border-right: 1px solid hsl(var(--border) / 0.5);
   }
 
@@ -326,12 +349,12 @@ textarea::placeholder {
 
   /* Input modern styles */
   .input-modern {
-    @apply rounded-xl border-2 border-border/50 bg-background/50 backdrop-blur-sm;
-    transition: all 0.2s ease;
+    @apply rounded-xl border-2 border-border/50 bg-background;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
   }
 
   .input-modern:focus {
-    @apply border-primary/50 bg-background;
+    @apply border-primary/50;
     box-shadow: 0 0 0 4px hsl(var(--primary) / 0.1);
   }
 
@@ -434,4 +457,21 @@ textarea::placeholder {
 .task-item:hover::before,
 .task-item.active::before {
   transform: scaleY(1);
+}
+
+/* Help markdown viewer refinements */
+.help-markdown h1,
+.help-markdown h2,
+.help-markdown h3 {
+  scroll-margin-top: 5.5rem;
+}
+
+.help-markdown a {
+  color: hsl(var(--primary));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.help-markdown img {
+  background: hsl(var(--card));
 }

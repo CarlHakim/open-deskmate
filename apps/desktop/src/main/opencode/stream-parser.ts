@@ -8,6 +8,9 @@ export interface StreamParserEvents {
 
 // Maximum buffer size to prevent memory exhaustion (10MB)
 const MAX_BUFFER_SIZE = 10 * 1024 * 1024;
+const VERBOSE_STREAM_PARSER = process.env.OPENDESKMATE_VERBOSE_STREAM === '1';
+const EVENT_HINT_SCAN_CHARS = 256;
+const NON_EVENT_CANDIDATE_GUARD_CHARS = 768;
 
 /**
  * Parses NDJSON (newline-delimited JSON) stream from OpenCode CLI
@@ -107,6 +110,21 @@ export class StreamParser extends EventEmitter<StreamParserEvents> {
       if (this.currentJson.length > MAX_BUFFER_SIZE) {
         this.emit('error', new Error('Stream buffer size exceeded maximum limit'));
         this.resetState();
+        continue;
+      }
+
+      // Guard: when PTY emits non-JSON log fragments with braces, we can latch onto
+      // them and never reach a valid event boundary. Drop candidates that grow past
+      // a threshold without looking like an OpenCode event payload.
+      if (
+        this.depth > 0 &&
+        this.currentJson.length > NON_EVENT_CANDIDATE_GUARD_CHARS &&
+        !this.isLikelyEventEnvelope(this.currentJson)
+      ) {
+        if (VERBOSE_STREAM_PARSER) {
+          console.debug('[StreamParser] Dropping non-event brace candidate');
+        }
+        this.resetState();
       }
     }
   }
@@ -126,43 +144,125 @@ export class StreamParser extends EventEmitter<StreamParserEvents> {
 
   private tryParseJson(text: string, emitError: boolean): { ok: boolean; error?: Error } {
     try {
-      const message = JSON.parse(text) as OpenCodeMessage;
+      const parsed = JSON.parse(text) as unknown;
 
-      // Log parsed message for debugging
-      console.log('[StreamParser] Parsed message type:', message.type);
+      // OpenCode NDJSON events always contain a top-level string `type`.
+      // When --print-logs is enabled, OpenCode logs may include embedded JSON
+      // snippets like `time={...}`. Our brace-depth scanner can pick those up,
+      // but they are not OpenCodeMessage events. Ignore them silently.
+      if (!parsed || typeof parsed !== 'object' || typeof (parsed as any).type !== 'string') {
+        return { ok: true };
+      }
 
-      // Enhanced logging for MCP/Playwriter-related messages
-      if (message.type === 'tool_call' || message.type === 'tool_result') {
-        const part = message.part as Record<string, unknown>;
-        console.log('[StreamParser] Tool message details:', {
-          type: message.type,
-          tool: part?.tool,
-          hasInput: !!part?.input,
-          hasOutput: !!part?.output,
-        });
+      const message = parsed as OpenCodeMessage;
 
-        // Check if it's a dev-browser tool
-        const toolName = String(part?.tool || '').toLowerCase();
-        const output = String(part?.output || '').toLowerCase();
-        if (toolName.includes('dev-browser') ||
-            toolName.includes('browser') ||
-            toolName.includes('mcp') ||
-            output.includes('dev-browser') ||
-            output.includes('browser')) {
-          console.log('[StreamParser] >>> DEV-BROWSER MESSAGE <<<');
-          console.log('[StreamParser] Full message:', JSON.stringify(message, null, 2));
-        }
+      if (VERBOSE_STREAM_PARSER) {
+        console.log('[StreamParser] Parsed message type:', message.type);
       }
 
       this.emit('message', message);
       return { ok: true };
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
-      if (emitError) {
+      // Recovery path: PTY streams can interleave non-JSON text with JSON events.
+      // Try extracting event-looking JSON objects from the corrupted payload.
+      const recovered = this.tryRecoverCorruptedEventPayload(text);
+      if (recovered) {
+        return { ok: true };
+      }
+
+      // PTY output can contain non-event brace payloads (tool logs, snippets, etc.)
+      // that are not OpenCode NDJSON events. Avoid noisy warnings unless the payload
+      // looks like an actual OpenCode event envelope.
+      if (emitError && this.isLikelyEventEnvelope(text)) {
         this.emit('error', new Error(`Failed to parse JSON: ${error.message}`));
+      } else if (VERBOSE_STREAM_PARSER) {
+        console.debug('[StreamParser] Ignoring non-event JSON parse failure');
       }
       return { ok: false, error };
     }
+  }
+
+  private isLikelyEventEnvelope(text: string): boolean {
+    const head = text.slice(0, EVENT_HINT_SCAN_CHARS);
+    // Typical OpenCode NDJSON starts with {"type":...}
+    if (/^\s*\{\s*"type"\s*:/.test(head)) return true;
+    // Also catch split/pretty-printed envelopes with type near the start.
+    if (head.includes('"type"')) return true;
+    return false;
+  }
+
+  private tryRecoverCorruptedEventPayload(text: string): boolean {
+    if (!text || !text.includes('"type"')) return false;
+    const starts = this.findTypeObjectStarts(text);
+    for (const start of starts) {
+      const extracted = this.extractBalancedObject(text, start);
+      if (!extracted) continue;
+      try {
+        const parsed = JSON.parse(extracted) as unknown;
+        if (!parsed || typeof parsed !== 'object' || typeof (parsed as any).type !== 'string') {
+          continue;
+        }
+        const message = parsed as OpenCodeMessage;
+        if (VERBOSE_STREAM_PARSER) {
+          console.log('[StreamParser] Recovered message type:', message.type);
+        }
+        this.emit('message', message);
+        return true;
+      } catch {
+        // keep trying other candidates
+      }
+    }
+    return false;
+  }
+
+  private findTypeObjectStarts(text: string): number[] {
+    const starts: number[] = [];
+    const re = /\{\s*"type"\s*:/g;
+    let match: RegExpExecArray | null = null;
+    while ((match = re.exec(text)) !== null) {
+      starts.push(match.index);
+      if (starts.length >= 8) break; // bounded recovery work
+    }
+    return starts;
+  }
+
+  private extractBalancedObject(text: string, start: number): string | null {
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    for (let i = start; i < text.length; i += 1) {
+      const ch = text[i];
+      if (inString) {
+        if (escape) {
+          escape = false;
+          continue;
+        }
+        if (ch === '\\') {
+          escape = true;
+          continue;
+        }
+        if (ch === '"') {
+          inString = false;
+        }
+        continue;
+      }
+      if (ch === '"') {
+        inString = true;
+        continue;
+      }
+      if (ch === '{') {
+        depth += 1;
+        continue;
+      }
+      if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          return text.slice(start, i + 1);
+        }
+      }
+    }
+    return null;
   }
 
   /**

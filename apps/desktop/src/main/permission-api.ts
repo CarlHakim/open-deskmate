@@ -7,8 +7,12 @@
  */
 
 import http from 'http';
+import fs from 'fs';
 import type { BrowserWindow } from 'electron';
 import type { PermissionRequest, FileOperation } from '@accomplish/shared';
+import { enqueueWebPermissionRequest } from './services/webhook-permissions';
+import path from 'path';
+import { getWorkspaceRoot } from './store/appSettings';
 
 export const PERMISSION_API_PORT = 9226;
 
@@ -19,20 +23,40 @@ interface PendingPermission {
 
 // Store pending permission requests waiting for user response
 const pendingPermissions = new Map<string, PendingPermission>();
+const filePermissionMeta = new Map<string, { taskId: string; filePath: string; targetPath?: string }>();
+
+type TaskFilePermissionPolicy = {
+  /** When enabled, the app auto-approves all file operations for this task. */
+  allowAllForTask: boolean;
+};
+
+const taskFilePolicies = new Map<string, TaskFilePermissionPolicy>();
 
 // Store reference to main window and task manager
 let mainWindow: BrowserWindow | null = null;
-let getActiveTaskId: (() => string | null) | null = null;
+let resolveTaskIdForPermission: ((requestedTaskId?: string) => string | null) | null = null;
+let resolveTaskWorkspaceRootForPermission: ((taskId: string) => string | null) | null = null;
+
+type PermissionApiInitOptions = {
+  resolveTaskId: (requestedTaskId?: string) => string | null;
+  resolveTaskWorkspaceRoot?: (taskId: string) => string | null;
+};
 
 /**
  * Initialize the permission API with dependencies
  */
 export function initPermissionApi(
   window: BrowserWindow,
-  taskIdGetter: () => string | null
+  taskIdResolver: ((requestedTaskId?: string) => string | null) | PermissionApiInitOptions
 ): void {
   mainWindow = window;
-  getActiveTaskId = taskIdGetter;
+  if (typeof taskIdResolver === 'function') {
+    resolveTaskIdForPermission = taskIdResolver;
+    resolveTaskWorkspaceRootForPermission = null;
+    return;
+  }
+  resolveTaskIdForPermission = taskIdResolver.resolveTaskId;
+  resolveTaskWorkspaceRootForPermission = taskIdResolver.resolveTaskWorkspaceRoot ?? null;
 }
 
 /**
@@ -48,7 +72,81 @@ export function resolvePermission(requestId: string, allowed: boolean): boolean 
   clearTimeout(pending.timeoutId);
   pending.resolve(allowed);
   pendingPermissions.delete(requestId);
+  filePermissionMeta.delete(requestId);
   return true;
+}
+
+function normalizePathForCompare(p: string): string {
+  // Resolve removes .. and normalizes slashes. Best effort: use realpath for existing files.
+  const resolved = path.resolve(p);
+  let canonical = resolved;
+  try {
+    canonical = fs.realpathSync.native(resolved);
+  } catch {
+    canonical = resolved;
+  }
+  return process.platform === 'win32' ? canonical.toLowerCase() : canonical;
+}
+
+function isSubPath(candidatePath: string, parentDir: string): boolean {
+  const cand = normalizePathForCompare(candidatePath);
+  const parent = normalizePathForCompare(parentDir);
+  const rel = path.relative(parent, cand);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+function getOrCreateTaskFilePolicy(taskId: string): TaskFilePermissionPolicy {
+  const existing = taskFilePolicies.get(taskId);
+  if (existing) return existing;
+  const created: TaskFilePermissionPolicy = { allowAllForTask: false };
+  taskFilePolicies.set(taskId, created);
+  return created;
+}
+
+export function applyAllowAllForFileRequest(requestId: string): boolean {
+  const meta = filePermissionMeta.get(requestId);
+  if (!meta) return false;
+
+  const policy = getOrCreateTaskFilePolicy(meta.taskId);
+  // UX expectation for "Allow all (this task)": do not block on further file
+  // permission prompts until this task completes.
+  policy.allowAllForTask = true;
+
+  return true;
+}
+
+export function clearTaskFilePermissionPolicy(taskId: string): void {
+  taskFilePolicies.delete(taskId);
+}
+
+function resolveTaskWorkspaceRoot(taskId: string): string | null {
+  const fromResolver = resolveTaskWorkspaceRootForPermission?.(taskId);
+  const candidate = typeof fromResolver === 'string' ? fromResolver.trim() : '';
+  if (candidate) return candidate;
+  const globalRoot = (getWorkspaceRoot() || '').trim();
+  return globalRoot || null;
+}
+
+function isWorkspaceAutoAllowOperation(
+  taskId: string,
+  operation: FileOperation,
+  filePath: string,
+  targetPath?: string
+): boolean {
+  const workspaceRoot = resolveTaskWorkspaceRoot(taskId);
+  if (!workspaceRoot) return false;
+  if (!isSubPath(filePath, workspaceRoot)) return false;
+  if (operation === 'move' || operation === 'rename') {
+    if (!targetPath) return false;
+    return isSubPath(targetPath, workspaceRoot);
+  }
+  return true;
+}
+
+function shouldAutoAllowFileOperation(taskId: string, operation: FileOperation, filePath: string, targetPath?: string): boolean {
+  const policy = taskFilePolicies.get(taskId);
+  if (policy?.allowAllForTask) return true;
+  return isWorkspaceAutoAllowOperation(taskId, operation, filePath, targetPath);
 }
 
 /**
@@ -93,6 +191,7 @@ export function startPermissionApiServer(): http.Server {
       filePath?: string;
       targetPath?: string;
       contentPreview?: string;
+      taskId?: string;
     };
 
     try {
@@ -119,16 +218,25 @@ export function startPermissionApiServer(): http.Server {
     }
 
     // Check if we have the necessary dependencies
-    if (!mainWindow || mainWindow.isDestroyed() || !getActiveTaskId) {
+    if (!mainWindow || mainWindow.isDestroyed() || !resolveTaskIdForPermission) {
       res.writeHead(503, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Permission API not initialized' }));
       return;
     }
 
-    const taskId = getActiveTaskId();
+    const requestedTaskId = typeof data.taskId === 'string' ? data.taskId.trim() : '';
+    const taskId = resolveTaskIdForPermission(requestedTaskId || undefined);
     if (!taskId) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'No active task' }));
+      res.end(JSON.stringify({ error: 'No matching active task for permission request' }));
+      return;
+    }
+
+    // If the user chose "allow all" for this task, auto-approve operations within allowed directories.
+    if (shouldAutoAllowFileOperation(taskId, data.operation as FileOperation, data.filePath, data.targetPath)) {
+      console.log(`[Permission API] Auto-approving file operation for task ${taskId}: ${data.operation} ${data.filePath}`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ allowed: true, autoApproved: true }));
       return;
     }
 
@@ -146,8 +254,19 @@ export function startPermissionApiServer(): http.Server {
       createdAt: new Date().toISOString(),
     };
 
+    filePermissionMeta.set(requestId, {
+      taskId,
+      filePath: data.filePath,
+      targetPath: data.targetPath,
+    });
+
     // Send to renderer
     mainWindow.webContents.send('permission:request', permissionRequest);
+    try {
+      enqueueWebPermissionRequest(permissionRequest);
+    } catch (err) {
+      console.warn('[Permission API] Failed to enqueue web permission request:', err);
+    }
 
     // Wait for user response (with 5 minute timeout)
     const PERMISSION_TIMEOUT_MS = 5 * 60 * 1000;
@@ -156,6 +275,7 @@ export function startPermissionApiServer(): http.Server {
       const allowed = await new Promise<boolean>((resolve, reject) => {
         const timeoutId = setTimeout(() => {
           pendingPermissions.delete(requestId);
+          filePermissionMeta.delete(requestId);
           reject(new Error('Permission request timed out'));
         }, PERMISSION_TIMEOUT_MS);
 

@@ -12,6 +12,9 @@ out/
 .env
 .env.local
 .env*.local
+.env.*
+!.env.example
+!.env.sample
 
 # Vercel
 .vercel/
@@ -68,3 +71,29 @@ CLAUDE.md
 
 # ignore nul
 nul
+
+# memory
+MEMORY.md
+
+# Local/private machine files
+.claude/settings.local.json
+.claude/*.local.json
+.tmp*
+*.tmp
+*.bak
+*.orig
+
+# Local runtime/debug artifacts that may contain personal data
+apps/desktop/skills/dev-browser/*debug*.png
+apps/desktop/skills/dev-browser/*debug*.jpg
+apps/desktop/skills/dev-browser/*debug*.jpeg
+apps/desktop/skills/dev-browser/*debug*.webp
+
+# Local databases/checkpoints
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.db-wal
+*.db-shm

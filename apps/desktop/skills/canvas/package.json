@@ -1,0 +1,19 @@
+{
+  "name": "canvas",
+  "version": "0.0.1",
+  "type": "module",
+  "imports": {
+    "@/*": "./src/*"
+  },
+  "scripts": {
+    "start": "npx tsx src/index.ts",
+    "dev": "npx tsx --watch src/index.ts"
+  },
+  "dependencies": {
+    "@accomplish/desktop": "file:../..",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "accomplish": "file:../../../..",
+    "tsx": "^4.21.0",
+    "typescript": "^5.0.0"
+  }
+}

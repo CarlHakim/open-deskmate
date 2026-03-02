@@ -205,10 +205,21 @@ describe('appSettings Integration', () => {
       expect(result).toEqual({
         debugMode: false,
         onboardingComplete: false,
+        runInBackground: false,
+        launchAtLogin: false,
+        browserProfile: 'default',
+        workspaceRoot: null,
+        activeAgentId: 'main',
         selectedModel: {
           provider: 'anthropic',
           model: 'anthropic/claude-opus-4-5',
         },
+        ollamaConfig: null,
+        mobileNodesEnabled: true,
+        mobileNodesMaxLivePreviews: 3,
+        mobileNodesDisplayName: '',
+        webhookBindMode: 'localhost',
+        agentSpeedMode: 'fast',
       });
     });
 
@@ -228,7 +239,18 @@ describe('appSettings Integration', () => {
       expect(result).toEqual({
         debugMode: true,
         onboardingComplete: true,
+        runInBackground: false,
+        launchAtLogin: false,
+        browserProfile: 'default',
+        workspaceRoot: null,
+        activeAgentId: 'main',
         selectedModel: customModel,
+        ollamaConfig: null,
+        mobileNodesEnabled: true,
+        mobileNodesMaxLivePreviews: 3,
+        mobileNodesDisplayName: '',
+        webhookBindMode: 'localhost',
+        agentSpeedMode: 'fast',
       });
     });
 
@@ -248,6 +270,9 @@ describe('appSettings Integration', () => {
         provider: 'anthropic',
         model: 'anthropic/claude-opus-4-5',
       });
+      expect(result.mobileNodesEnabled).toBe(true);
+      expect(result.mobileNodesMaxLivePreviews).toBe(3);
+      expect(result.mobileNodesDisplayName).toBe('');
     });
   });
 
@@ -275,10 +300,21 @@ describe('appSettings Integration', () => {
       expect(result).toEqual({
         debugMode: false,
         onboardingComplete: false,
+        runInBackground: false,
+        launchAtLogin: false,
+        browserProfile: 'default',
+        workspaceRoot: null,
+        activeAgentId: 'main',
         selectedModel: {
           provider: 'anthropic',
           model: 'anthropic/claude-opus-4-5',
         },
+        ollamaConfig: null,
+        mobileNodesEnabled: true,
+        mobileNodesMaxLivePreviews: 3,
+        mobileNodesDisplayName: '',
+        webhookBindMode: 'localhost',
+        agentSpeedMode: 'fast',
       });
     });
 
