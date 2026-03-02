@@ -1,6 +1,6 @@
 # OpenDeskmate
 
-An open-source desktop AI assistant for Windows. Run AI locally with your own API keys - no subscriptions, no cloud dependency.
+An open-source local-first AI agent platform for Windows forked from the Openwork for Mac project. It offers OpenClaw-style capabilities including multi-agent workflows, connector routing, automation loops, and tool-driven execution, but with a full settings UI instead of CLI-only setup. Run locally with your own provider keys, configure everything from the desktop/web settings panels, and install directly on Windows (installer or portable executable) without a cloud dependency.
 
 ---
 
