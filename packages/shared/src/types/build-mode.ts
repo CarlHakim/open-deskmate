@@ -218,3 +218,35 @@ export interface BuildProjectPresetListResult {
   presets: BuildProjectPreset[];
   activePresetId?: string;
 }
+
+export type BuildTerminalEntryKind = 'output' | 'system' | 'example';
+
+export interface BuildTerminalEntry {
+  seq: number;
+  at: string;
+  kind: BuildTerminalEntryKind;
+  text: string;
+}
+
+export interface BuildTerminalSessionSummary {
+  id: string;
+  title: string;
+  shellLabel: string;
+  cwd: string;
+  workspaceRelativePath: string;
+  createdAt: string;
+  updatedAt: string;
+  running: boolean;
+  pid: number | null;
+}
+
+export interface BuildTerminalSnapshot {
+  agentId: string;
+  activeSessionId: string | null;
+  sessions: BuildTerminalSessionSummary[];
+}
+
+export interface BuildTerminalOutputResponse {
+  entries: BuildTerminalEntry[];
+  nextCursor: number;
+}

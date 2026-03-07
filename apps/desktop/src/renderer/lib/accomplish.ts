@@ -45,6 +45,9 @@ import type {
   BuildProjectPreset,
   BuildProjectPresetInput,
   BuildProjectPresetListResult,
+  BuildTerminalEntry,
+  BuildTerminalOutputResponse,
+  BuildTerminalSnapshot,
   BuildRuntimeCommandResult,
   BuildSessionSnapshot,
   BuildStartRequest,
@@ -404,6 +407,17 @@ interface AccomplishAPI {
   runStartCommandOnce(payload: { agentId: string; workspaceRelativePath?: string; envOverrides?: Record<string, string>; commandOverride?: string }): Promise<{ snapshot: BuildSessionSnapshot; result: BuildRuntimeCommandResult }>;
   getBuildRuntimeLogs(payload: { agentId: string; cursor?: number; limit?: number }): Promise<BuildLogsResponse>;
   clearBuildRuntimeLogs(payload: { agentId: string }): Promise<{ ok: boolean }>;
+  getBuildTerminalSnapshot(payload: { agentId: string }): Promise<BuildTerminalSnapshot>;
+  createBuildTerminalSession(payload: { agentId: string; workspaceRelativePath?: string; splitFromSessionId?: string }): Promise<BuildTerminalSnapshot>;
+  setBuildTerminalActiveSession(payload: { agentId: string; sessionId: string }): Promise<BuildTerminalSnapshot>;
+  getBuildTerminalOutput(payload: { agentId: string; sessionId: string; cursor?: number; limit?: number }): Promise<BuildTerminalOutputResponse>;
+  runBuildTerminalCommand(payload: { agentId: string; sessionId: string; command: string }): Promise<{ ok: boolean }>;
+  writeBuildTerminalInput(payload: { agentId: string; sessionId: string; input: string }): Promise<{ ok: boolean }>;
+  interruptBuildTerminalSession(payload: { agentId: string; sessionId: string }): Promise<{ ok: boolean }>;
+  resizeBuildTerminalSession(payload: { agentId: string; sessionId: string; cols: number; rows: number }): Promise<{ ok: boolean }>;
+  clearBuildTerminalSession(payload: { agentId: string; sessionId: string }): Promise<{ ok: boolean }>;
+  closeBuildTerminalSession(payload: { agentId: string; sessionId: string }): Promise<BuildTerminalSnapshot>;
+  onBuildTerminalEntry(callback: (payload: { agentId: string; sessionId: string; entry: BuildTerminalEntry }) => void): (() => void);
   getBuildWorkspaceRoot(payload: { agentId: string }): Promise<{ workspaceRoot: string }>;
   openBuildWorkspacePath(payload: { agentId: string; relativePath?: string }): Promise<{ ok: boolean; path: string; error?: string }>;
   revealBuildWorkspacePath(payload: { agentId: string; relativePath?: string }): Promise<{ ok: boolean; path: string; error?: string }>;

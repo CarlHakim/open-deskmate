@@ -26,6 +26,7 @@ import { startAgentHeartbeatService, stopAgentHeartbeatService } from './service
 import { maybeHandleAppConnectorOAuthProtocolUrl } from './services/app-connector-oauth';
 import { startAppConnectorOAuthRefreshService, stopAppConnectorOAuthRefreshService } from './services/app-connector-runtimes';
 import { buildDevProcessManager } from './services/build-mode/dev-process-manager';
+import { buildTerminalManager } from './services/build-mode/terminal-manager';
 import {
   initializeHelpDocs,
   listHelpDocs,
@@ -98,6 +99,7 @@ let unsubscribeHelpDocs: (() => void) | null = null;
 let pendingHelpNavigation: { docId?: string; query?: string } | null = null;
 let shutdownInProgress = false;
 let parentWatchdogTimer: NodeJS.Timeout | null = null;
+let unsubscribeBuildTerminalEntry: (() => void) | null = null;
 
 const SHUTDOWN_TIMEOUT_MS = 8000;
 const SHUTDOWN_STEP_TIMEOUT_MS = 3000;
@@ -143,6 +145,10 @@ function closeNodeServer(server: { close: (cb?: (err?: Error) => void) => void }
 async function runShutdownCleanup(): Promise<void> {
   setQuitting(true);
   stopDevParentWatchdog();
+  if (unsubscribeBuildTerminalEntry) {
+    unsubscribeBuildTerminalEntry();
+    unsubscribeBuildTerminalEntry = null;
+  }
 
   const webhook = webhookServer;
   webhookServer = null;
@@ -171,6 +177,7 @@ async function runShutdownCleanup(): Promise<void> {
     withTimeout(stopConnectorBridgeRuntime(), SHUTDOWN_STEP_TIMEOUT_MS, 'Connector bridge stop'),
     withTimeout(stopVoiceWakeService(), SHUTDOWN_STEP_TIMEOUT_MS, 'Voice wake stop'),
     withTimeout(buildDevProcessManager.disposeAll(), SHUTDOWN_STEP_TIMEOUT_MS, 'Build runtime dispose'),
+    Promise.resolve(buildTerminalManager.disposeAll()),
   ];
 
   const results = await Promise.allSettled(cleanupTasks);
@@ -443,6 +450,38 @@ function createWindow() {
     return { action: 'deny' };
   });
 
+  mainWindow.webContents.on('context-menu', (_event, params) => {
+    const hasSelection = Boolean(params.selectionText && params.selectionText.trim().length > 0);
+    const isEditable = Boolean(params.isEditable);
+    if (!hasSelection && !isEditable) return;
+
+    const template: MenuItemConstructorOptions[] = [];
+
+    if (isEditable) {
+      template.push(
+        { role: 'undo' as const, enabled: params.editFlags.canUndo },
+        { role: 'redo' as const, enabled: params.editFlags.canRedo },
+        { type: 'separator' as const },
+        { role: 'cut' as const, enabled: params.editFlags.canCut },
+        { role: 'copy' as const, enabled: params.editFlags.canCopy || hasSelection },
+        { role: 'paste' as const, enabled: params.editFlags.canPaste },
+        { role: 'delete' as const, enabled: params.editFlags.canDelete },
+      );
+      if (process.platform === 'darwin') {
+        template.push({ role: 'pasteAndMatchStyle' as const, enabled: params.editFlags.canPaste });
+      }
+      template.push({ type: 'separator' as const });
+    } else if (hasSelection) {
+      template.push({ role: 'copy' as const, enabled: true });
+      template.push({ type: 'separator' as const });
+    }
+
+    template.push({ role: 'selectAll' as const });
+
+    const menu = Menu.buildFromTemplate(template);
+    menu.popup({ window: mainWindow ?? undefined });
+  });
+
   // Maximize window by default
   mainWindow.maximize();
 
@@ -528,6 +567,10 @@ if (!gotTheLock) {
     // Register IPC handlers before creating window
     registerIPCHandlers();
     console.log('[Main] IPC handlers registered');
+    unsubscribeBuildTerminalEntry = buildTerminalManager.onEntry((payload) => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      mainWindow.webContents.send('build-mode:terminal:entry', payload);
+    });
 
     await initializeHelpDocs();
     startHelpDocsWatcher();

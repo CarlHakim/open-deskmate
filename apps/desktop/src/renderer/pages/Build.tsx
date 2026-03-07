@@ -4,6 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ComponentProps, MouseEvent as ReactMouseEvent, ReactElement, ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { Terminal as XTermTerminal } from 'xterm';
+import { FitAddon } from '@xterm/addon-fit';
+import 'xterm/css/xterm.css';
 import CodeMirror from '@uiw/react-codemirror';
 import type { Extension } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
@@ -22,6 +25,9 @@ import type {
   BuildLogEntry,
   BuildProjectPreset,
   BuildSessionSnapshot,
+  BuildTerminalEntry,
+  BuildTerminalSessionSummary,
+  BuildTerminalSnapshot,
   BuildTaskSession,
   BuildTaskSessionListItem,
   BuildWorkspaceFingerprint,
@@ -66,8 +72,9 @@ import {
   History,
   Star,
   Square,
-  Terminal,
+  Terminal as TerminalIcon,
   Trash2,
+  PanelBottomClose,
   Wrench,
   X,
 } from 'lucide-react';
@@ -76,6 +83,7 @@ import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Textarea } from '@/components/ui/textarea';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { useAgentStore } from '@/stores/agentStore';
 import { getAccomplish } from '@/lib/accomplish';
@@ -99,6 +107,9 @@ const CODE_FILE_EXTENSIONS = new Set([
 const TEXT_FILE_EXTENSIONS = new Set(['md', 'txt', 'rtf', 'log']);
 const CONFIG_FILE_EXTENSIONS = new Set(['json', 'yaml', 'yml', 'toml', 'xml', 'ini', 'env', 'lock']);
 const ASSET_FILE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'avif', 'bmp', 'mp4', 'mp3', 'wav']);
+const BUILD_CENTER_PANEL_MIN_HEIGHT = 180;
+const BUILD_LOWER_PANEL_MIN_HEIGHT = 160;
+const BUILD_CENTER_PANEL_SPLITTER_HEIGHT = 8;
 
 type BuildEditorTab = {
   node: BuildFileTreeNode;
@@ -950,6 +961,208 @@ function TreeNode({
   );
 }
 
+type BuildTerminalPaneProps = {
+  accomplish: ReturnType<typeof getAccomplish>;
+  agentId: string | null;
+  session: BuildTerminalSessionSummary;
+  entries: BuildTerminalEntry[];
+  isActive: boolean;
+  onActivate: () => void;
+  onNewTerminal: () => void;
+  onSplitTerminal: () => void;
+  onClearTerminal: () => void;
+  onInterruptTerminal: () => void;
+};
+
+function BuildTerminalPane({
+  accomplish,
+  agentId,
+  session,
+  entries,
+  isActive,
+  onActivate,
+  onNewTerminal,
+  onSplitTerminal,
+  onClearTerminal,
+  onInterruptTerminal,
+}: BuildTerminalPaneProps) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const xtermRef = useRef<XTermTerminal | null>(null);
+  const fitAddonRef = useRef<FitAddon | null>(null);
+  const renderedSeqRef = useRef(0);
+  const onNewTerminalRef = useRef(onNewTerminal);
+  const onSplitTerminalRef = useRef(onSplitTerminal);
+  const onClearTerminalRef = useRef(onClearTerminal);
+  const onInterruptTerminalRef = useRef(onInterruptTerminal);
+
+  useEffect(() => {
+    onNewTerminalRef.current = onNewTerminal;
+  }, [onNewTerminal]);
+
+  useEffect(() => {
+    onSplitTerminalRef.current = onSplitTerminal;
+  }, [onSplitTerminal]);
+
+  useEffect(() => {
+    onClearTerminalRef.current = onClearTerminal;
+  }, [onClearTerminal]);
+
+  useEffect(() => {
+    onInterruptTerminalRef.current = onInterruptTerminal;
+  }, [onInterruptTerminal]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const terminal = new XTermTerminal({
+      allowTransparency: true,
+      cursorBlink: true,
+      convertEol: false,
+      cursorStyle: 'bar',
+      fontFamily: 'Consolas, "SFMono-Regular", Menlo, Monaco, "Liberation Mono", monospace',
+      fontSize: 11,
+      lineHeight: 1.35,
+      scrollback: 5000,
+      theme: {
+        background: '#0b1220',
+        foreground: '#f4f4f5',
+        cursor: '#5eead4',
+        cursorAccent: '#0b1220',
+        selectionBackground: 'rgba(148, 163, 184, 0.28)',
+      },
+    });
+    const fitAddon = new FitAddon();
+    terminal.loadAddon(fitAddon);
+    terminal.open(container);
+    xtermRef.current = terminal;
+    fitAddonRef.current = fitAddon;
+    renderedSeqRef.current = 0;
+
+    const resizeToContainer = () => {
+      fitAddon.fit();
+      if (!agentId) return;
+      void accomplish.resizeBuildTerminalSession({
+        agentId,
+        sessionId: session.id,
+        cols: terminal.cols,
+        rows: terminal.rows,
+      });
+    };
+
+    const dataDisposable = terminal.onData((data) => {
+      if (!agentId) return;
+      void accomplish.writeBuildTerminalInput({
+        agentId,
+        sessionId: session.id,
+        input: data,
+      });
+    });
+
+    terminal.attachCustomKeyEventHandler((event) => {
+      if (event.type !== 'keydown') return true;
+      const key = event.key.toLowerCase();
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && key === 't') {
+        event.preventDefault();
+        void onNewTerminalRef.current();
+        return false;
+      }
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && key === 'd') {
+        event.preventDefault();
+        void onSplitTerminalRef.current();
+        return false;
+      }
+      if ((event.ctrlKey || event.metaKey) && key === 'l') {
+        event.preventDefault();
+        void onClearTerminalRef.current();
+        return false;
+      }
+      if ((event.ctrlKey || event.metaKey) && key === 'c' && !terminal.hasSelection()) {
+        event.preventDefault();
+        void onInterruptTerminalRef.current();
+        return false;
+      }
+      return true;
+    });
+
+    const resizeObserver = new ResizeObserver(() => {
+      resizeToContainer();
+    });
+    resizeObserver.observe(container);
+    window.setTimeout(resizeToContainer, 0);
+
+    return () => {
+      resizeObserver.disconnect();
+      dataDisposable.dispose();
+      fitAddonRef.current = null;
+      xtermRef.current = null;
+      terminal.dispose();
+    };
+  }, [accomplish, agentId, session.id]);
+
+  useEffect(() => {
+    const terminal = xtermRef.current;
+    const fitAddon = fitAddonRef.current;
+    if (!terminal || !fitAddon) return;
+
+    const wasNearBottom = isTerminalNearBottom(terminal);
+    const lastSeq = entries[entries.length - 1]?.seq || 0;
+    if (lastSeq < renderedSeqRef.current) {
+      terminal.reset();
+      renderedSeqRef.current = 0;
+    }
+
+    const pendingEntries = entries.filter((entry) => entry.seq > renderedSeqRef.current);
+    if (pendingEntries.length > 0) {
+      terminal.write(pendingEntries.map((entry) => entry.text).join(''));
+      renderedSeqRef.current = pendingEntries[pendingEntries.length - 1]?.seq || renderedSeqRef.current;
+      if (wasNearBottom) {
+        terminal.scrollToBottom();
+      }
+    }
+  }, [entries]);
+
+  useEffect(() => {
+    if (!isActive) return;
+    const terminal = xtermRef.current;
+    const fitAddon = fitAddonRef.current;
+    if (!terminal || !fitAddon) return;
+    fitAddon.fit();
+    terminal.focus();
+  }, [isActive]);
+
+  return (
+    <div
+      className={cn(
+        'flex min-w-0 flex-1 flex-col overflow-hidden bg-[#0b1220]',
+        isActive ? 'ring-1 ring-emerald-400/30' : 'ring-1 ring-transparent'
+      )}
+      onMouseDown={onActivate}
+    >
+      <div className={cn(
+        'flex items-center justify-between border-b px-2 py-1 text-[11px]',
+        isActive ? 'border-emerald-400/20 bg-emerald-400/5 text-foreground' : 'border-border/40 bg-background/5 text-muted-foreground'
+      )}>
+        <span className="truncate">{session.title}</span>
+        <span className="truncate text-[10px] opacity-80">{pathLeaf(session.cwd)}</span>
+      </div>
+      <div
+        ref={containerRef}
+        className="min-h-0 flex-1 overflow-hidden px-3 py-2"
+        onClick={() => {
+          onActivate();
+          xtermRef.current?.focus();
+        }}
+      />
+    </div>
+  );
+}
+
+function isTerminalNearBottom(terminal: XTermTerminal): boolean {
+  const buffer = terminal.buffer.active;
+  return (buffer.baseY - buffer.viewportY) <= 1;
+}
+
 export default function BuildPage() {
   const accomplish = getAccomplish();
   const { resolvedTheme } = useTheme();
@@ -961,6 +1174,8 @@ export default function BuildPage() {
   const [presets, setPresets] = useState<BuildProjectPreset[]>([]);
   const [activePresetId, setActivePresetId] = useState<string | undefined>(undefined);
   const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
+  const [presetsLoaded, setPresetsLoaded] = useState(false);
+  const [workspacePathReady, setWorkspacePathReady] = useState(false);
   const [presetNameInput, setPresetNameInput] = useState('');
   const [presetStartCommandInput, setPresetStartCommandInput] = useState('');
   const [presetBuildCommandInput, setPresetBuildCommandInput] = useState('');
@@ -971,6 +1186,9 @@ export default function BuildPage() {
   const [snapshot, setSnapshot] = useState<BuildSessionSnapshot | null>(null);
   const [globalSelectedModel, setGlobalSelectedModel] = useState<SelectedModel | null>(null);
   const [logs, setLogs] = useState<BuildLogEntry[]>([]);
+  const [terminalSnapshot, setTerminalSnapshot] = useState<BuildTerminalSnapshot | null>(null);
+  const [terminalEntriesBySession, setTerminalEntriesBySession] = useState<Record<string, BuildTerminalEntry[]>>({});
+  const [terminalCursorBySession, setTerminalCursorBySession] = useState<Record<string, number>>({});
   const [logCursor, setLogCursor] = useState(0);
   const [workspaceTree, setWorkspaceTree] = useState<BuildFileTreeNode | null>(null);
   const [editorTabs, setEditorTabs] = useState<BuildEditorTab[]>([]);
@@ -1007,7 +1225,9 @@ export default function BuildPage() {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
   const [buildFingerprintCollapsed, setBuildFingerprintCollapsed] = useState(false);
-  const [runtimeLogsCollapsed, setRuntimeLogsCollapsed] = useState(false);
+  const [terminalSectionHidden, setTerminalSectionHidden] = useState(false);
+  const [runtimeLogsSectionHidden, setRuntimeLogsSectionHidden] = useState(false);
+  const [buildLowerPanelHeight, setBuildLowerPanelHeight] = useState(192);
 
   const [pendingWorkspaceCreateType, setPendingWorkspaceCreateType] = useState<'file' | 'folder' | null>(null);
   const [pendingWorkspaceCreateName, setPendingWorkspaceCreateName] = useState('');
@@ -1018,9 +1238,11 @@ export default function BuildPage() {
   const [workspaceTreeClipboardEntry, setWorkspaceTreeClipboardEntry] = useState<WorkspaceTreeClipboardEntry | null>(null);
   const [lastWorkspaceDirectoryPath, setLastWorkspaceDirectoryPath] = useState<string | null>(null);
   const [collapseWorkspaceTreeToken, setCollapseWorkspaceTreeToken] = useState(0);
+  const [terminalPaneSessionIds, setTerminalPaneSessionIds] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const logsRef = useRef<HTMLDivElement | null>(null);
+  const terminalSnapshotRequestIdRef = useRef(0);
   const assistantMessagesRef = useRef<HTMLDivElement | null>(null);
   const assistantMessageContentRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const restoringHistoryRef = useRef(false);
@@ -1034,6 +1256,8 @@ export default function BuildPage() {
   const pendingWorkspaceCreateInputRef = useRef<HTMLInputElement | null>(null);
   const pendingWorkspaceRenameInputRef = useRef<HTMLInputElement | null>(null);
   const workspaceTreeContextMenuRef = useRef<HTMLDivElement | null>(null);
+  const centerColumnRef = useRef<HTMLDivElement | null>(null);
+  const buildLowerPanelHeightRef = useRef(buildLowerPanelHeight);
 
   const isAssistantPanelNearBottom = useCallback((element: HTMLDivElement): boolean => {
     const thresholdPx = 72;
@@ -1082,6 +1306,24 @@ export default function BuildPage() {
     () => (activeAgentId ? getBuildEditorLayoutStorageKey(activeAgentId) : null),
     [activeAgentId]
   );
+  const hiddenBuildSections = useMemo(() => {
+    const hidden: string[] = [];
+    if (terminalSectionHidden) hidden.push('Terminal');
+    if (runtimeLogsSectionHidden) hidden.push('Runtime Logs');
+    return hidden;
+  }, [runtimeLogsSectionHidden, terminalSectionHidden]);
+  const activeTerminalSession = useMemo(
+    () => terminalSnapshot?.sessions.find((session) => session.id === terminalSnapshot.activeSessionId) || null,
+    [terminalSnapshot]
+  );
+  const terminalPaneSessions = useMemo(() => {
+    const sessions = terminalSnapshot?.sessions || [];
+    const byId = new Map(sessions.map((session) => [session.id, session]));
+    const resolved = terminalPaneSessionIds
+      .map((sessionId) => byId.get(sessionId) || null)
+      .filter((session): session is BuildTerminalSessionSummary => Boolean(session));
+    return resolved;
+  }, [terminalPaneSessionIds, terminalSnapshot?.sessions]);
   const effectiveSelectedModel = activeAgent?.selectedModel ?? globalSelectedModel;
   const modelBadgeLabel = useMemo(
     () => formatSelectedModelBadgeLabel(effectiveSelectedModel),
@@ -1116,6 +1358,57 @@ export default function BuildPage() {
       ...languageExtensions,
     ];
   }, [activeEditorTab?.node.relativePath]);
+
+  const clampBuildLowerPanelHeight = useCallback((nextHeight: number, containerHeight?: number) => {
+    const resolvedContainerHeight = containerHeight ?? centerColumnRef.current?.clientHeight ?? 0;
+    if (resolvedContainerHeight <= 0) {
+      return Math.max(BUILD_LOWER_PANEL_MIN_HEIGHT, nextHeight);
+    }
+    const maxHeight = Math.max(
+      BUILD_LOWER_PANEL_MIN_HEIGHT,
+      resolvedContainerHeight - BUILD_CENTER_PANEL_MIN_HEIGHT - BUILD_CENTER_PANEL_SPLITTER_HEIGHT
+    );
+    return Math.min(Math.max(nextHeight, BUILD_LOWER_PANEL_MIN_HEIGHT), maxHeight);
+  }, []);
+
+  const handleBuildCenterPanelResizeStart = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    if (terminalSectionHidden && runtimeLogsSectionHidden) return;
+    const containerHeight = centerColumnRef.current?.clientHeight ?? 0;
+    const startHeight = buildLowerPanelHeightRef.current;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      const deltaY = moveEvent.clientY - event.clientY;
+      setBuildLowerPanelHeight(clampBuildLowerPanelHeight(startHeight - deltaY, containerHeight));
+    };
+
+    const handleMouseUp = () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+  }, [clampBuildLowerPanelHeight, runtimeLogsSectionHidden, terminalSectionHidden]);
+
+  useEffect(() => {
+    buildLowerPanelHeightRef.current = buildLowerPanelHeight;
+  }, [buildLowerPanelHeight]);
+
+  useEffect(() => {
+    if (terminalSectionHidden && runtimeLogsSectionHidden) return;
+    const syncLowerPanelHeight = () => {
+      setBuildLowerPanelHeight((current) => clampBuildLowerPanelHeight(current));
+    };
+    syncLowerPanelHeight();
+    window.addEventListener('resize', syncLowerPanelHeight);
+    return () => window.removeEventListener('resize', syncLowerPanelHeight);
+  }, [clampBuildLowerPanelHeight, runtimeLogsSectionHidden, terminalSectionHidden]);
   const diffEmptyReason = useMemo(() => {
     if (!diff) return 'Diff is loading.';
     const hasFiles = (diff.files?.length || 0) > 0;
@@ -1174,6 +1467,24 @@ export default function BuildPage() {
       setHistoryBusy(false);
     }
   }, [accomplish, activeAgentId, historyQuery]);
+
+  const exportRuntimeLogs = useCallback(() => {
+    if (logs.length === 0) return;
+    const text = logs.map((entry) => (
+      `[${new Date(entry.at).toLocaleTimeString()}] ${formatStream(entry.stream)} ${entry.line}`
+    )).join('\n');
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const workspaceLabel = workspaceFolderName || 'workspace';
+    const timestamp = new Date().toISOString().replace(/[:]/g, '-');
+    link.href = url;
+    link.download = `${workspaceLabel}-runtime-logs-${timestamp}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  }, [logs, workspaceFolderName]);
 
   const restoreHistorySession = useCallback(async (sessionId: string) => {
     try {
@@ -1353,9 +1664,94 @@ export default function BuildPage() {
     }
   }, [accomplish, activeAgentId, logCursor]);
 
+  const refreshTerminalSnapshot = useCallback(async () => {
+    if (!activeAgentId) return null;
+    const requestId = ++terminalSnapshotRequestIdRef.current;
+    try {
+      const next = await accomplish.getBuildTerminalSnapshot({ agentId: activeAgentId });
+      if (requestId !== terminalSnapshotRequestIdRef.current) {
+        return next;
+      }
+      setTerminalSnapshot(next);
+      return next;
+    } catch {
+      return null;
+    }
+  }, [accomplish, activeAgentId]);
+
+  const ensureBuildTerminalSession = useCallback(async (splitFromSessionId?: string) => {
+    if (!activeAgentId) return null;
+    const requestId = ++terminalSnapshotRequestIdRef.current;
+    try {
+      const next = await accomplish.createBuildTerminalSession({
+        agentId: activeAgentId,
+        workspaceRelativePath,
+        splitFromSessionId,
+      });
+      if (requestId !== terminalSnapshotRequestIdRef.current) {
+        return next;
+      }
+      setTerminalSnapshot(next);
+      return next;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      return null;
+    }
+  }, [accomplish, activeAgentId, workspaceRelativePath]);
+
+  const refreshActiveTerminalOutput = useCallback(async () => {
+    if (!activeAgentId || !terminalSnapshot?.activeSessionId) return;
+    const sessionId = terminalSnapshot.activeSessionId;
+    const cursor = terminalCursorBySession[sessionId] || 0;
+    try {
+      const response = await accomplish.getBuildTerminalOutput({
+        agentId: activeAgentId,
+        sessionId,
+        cursor,
+        limit: 400,
+      });
+      if (response.entries.length > 0) {
+        setTerminalEntriesBySession((current) => ({
+          ...current,
+          [sessionId]: [...(current[sessionId] || []), ...response.entries].slice(-2500),
+        }));
+        setTerminalCursorBySession((current) => ({
+          ...current,
+          [sessionId]: response.nextCursor,
+        }));
+        void refreshTerminalSnapshot();
+      }
+    } catch {
+      // Ignore transient terminal polling errors.
+    }
+  }, [accomplish, activeAgentId, refreshTerminalSnapshot, terminalCursorBySession, terminalSnapshot?.activeSessionId]);
+
   useEffect(() => {
     void loadAgents();
   }, [loadAgents]);
+
+  useEffect(() => {
+    if (!activeAgentId) return;
+    if (!presetsLoaded || !workspacePathReady) return;
+    let cancelled = false;
+
+    void (async () => {
+      const next = await refreshTerminalSnapshot();
+      if (cancelled) return;
+      if (!next || next.sessions.length === 0) {
+        await ensureBuildTerminalSession();
+        return;
+      }
+      const activeSession = next.sessions.find((session) => session.id === next.activeSessionId) || null;
+      if (!activeSession || normalizeFsPath(activeSession.workspaceRelativePath || '.') !== normalizeFsPath(workspaceRelativePath || '.')) {
+        await ensureBuildTerminalSession();
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeAgentId, ensureBuildTerminalSession, presetsLoaded, refreshTerminalSnapshot, workspacePathReady, workspaceRelativePath]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1394,15 +1790,37 @@ export default function BuildPage() {
 
   useEffect(() => {
     if (!activeAgentId) return;
+    setPresetsLoaded(false);
+    setWorkspacePathReady(false);
+    setWorkspaceRelativePath('.');
+    setSelectedPresetId(null);
     setActiveHistorySessionId(null);
     setActiveHistoryRunTaskId(null);
     setActiveHistorySessionToken(null);
     setHistoryDropdownOpen(false);
-    void refreshPresets(null);
+    let cancelled = false;
+
+    void (async () => {
+      await refreshPresets(null);
+      if (!cancelled) {
+        setPresetsLoaded(true);
+      }
+    })();
+
     void refreshHistorySessions('');
     void accomplish.getBuildWorkspaceRoot({ agentId: activeAgentId })
-      .then((result) => setAgentWorkspaceRoot(result.workspaceRoot))
-      .catch(() => setAgentWorkspaceRoot(null));
+      .then((result) => {
+        if (cancelled) return;
+        setAgentWorkspaceRoot(result.workspaceRoot);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setAgentWorkspaceRoot(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [activeAgentId, refreshPresets, refreshHistorySessions]);
 
   useEffect(() => {
@@ -1448,6 +1866,7 @@ export default function BuildPage() {
   }, [accomplish, activeAgentId, buildDiffEnforcementMode, pendingDiffBaselineId]);
 
   useEffect(() => {
+    if (!presetsLoaded) return;
     if (!selectedPreset) {
       setPresetNameInput('');
       setPresetStartCommandInput('');
@@ -1457,6 +1876,7 @@ export default function BuildPage() {
       setPresetEnvProfiles([fallbackProfile]);
       setPresetActiveEnvProfileId(fallbackProfile.id);
       setPresetEnvEditorText('');
+      setWorkspacePathReady(true);
       return;
     }
 
@@ -1479,7 +1899,8 @@ export default function BuildPage() {
           : current
       );
     }
-  }, [selectedPreset]);
+    setWorkspacePathReady(true);
+  }, [presetsLoaded, selectedPreset]);
 
   useEffect(() => {
     if (restoringHistoryRef.current) return;
@@ -1609,16 +2030,65 @@ export default function BuildPage() {
     const logInterval = setInterval(() => {
       void refreshLogs();
     }, 1000);
+    const terminalSnapshotInterval = setInterval(() => {
+      void refreshTerminalSnapshot();
+    }, 2000);
+    const terminalOutputInterval = setInterval(() => {
+      void refreshActiveTerminalOutput();
+    }, 2500);
     return () => {
       clearInterval(runtimeInterval);
       clearInterval(logInterval);
+      clearInterval(terminalSnapshotInterval);
+      clearInterval(terminalOutputInterval);
     };
-  }, [refreshSnapshot, refreshLogs]);
+  }, [refreshActiveTerminalOutput, refreshLogs, refreshSnapshot, refreshTerminalSnapshot]);
 
   useEffect(() => {
     if (!logsRef.current) return;
     logsRef.current.scrollTop = logsRef.current.scrollHeight;
   }, [logs]);
+
+  useEffect(() => {
+    const unsubscribe = accomplish.onBuildTerminalEntry((payload) => {
+      if (!activeAgentId || payload.agentId !== activeAgentId) return;
+
+      setTerminalEntriesBySession((current) => ({
+        ...current,
+        [payload.sessionId]: [...(current[payload.sessionId] || []), payload.entry].slice(-2500),
+      }));
+      setTerminalCursorBySession((current) => ({
+        ...current,
+        [payload.sessionId]: Math.max(current[payload.sessionId] || 0, payload.entry.seq),
+      }));
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [accomplish, activeAgentId]);
+
+  useEffect(() => {
+    void refreshActiveTerminalOutput();
+  }, [refreshActiveTerminalOutput, terminalSnapshot?.activeSessionId]);
+
+  useEffect(() => {
+    const sessions = terminalSnapshot?.sessions || [];
+    if (sessions.length === 0) {
+      setTerminalPaneSessionIds([]);
+      return;
+    }
+
+    const activeSessionId = terminalSnapshot?.activeSessionId || sessions[0]?.id || null;
+    setTerminalPaneSessionIds((current) => {
+      const availableIds = new Set(sessions.map((session) => session.id));
+      const next = current.filter((sessionId) => availableIds.has(sessionId));
+      if (next.length > 0) {
+        return next;
+      }
+      return activeSessionId ? [activeSessionId] : [sessions[0].id];
+    });
+  }, [terminalSnapshot]);
 
   useEffect(() => () => {
     if (assistantScrollRafRef.current !== null) {
@@ -2564,6 +3034,105 @@ export default function BuildPage() {
     setCenterPanelView('preview');
   }, [editorTabs]);
 
+  const activateBuildTerminalSession = useCallback(async (sessionId: string) => {
+    if (!activeAgentId) return;
+    const requestId = ++terminalSnapshotRequestIdRef.current;
+    try {
+      const next = await accomplish.setBuildTerminalActiveSession({ agentId: activeAgentId, sessionId });
+      if (requestId !== terminalSnapshotRequestIdRef.current) {
+        return;
+      }
+      setTerminalSnapshot(next);
+      setTerminalPaneSessionIds((current) => (current.includes(sessionId) ? current : [sessionId]));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [accomplish, activeAgentId]);
+
+  const createBuildTerminalTab = useCallback(async (splitFromSessionId?: string) => {
+    const next = await ensureBuildTerminalSession(splitFromSessionId);
+    if (!next?.activeSessionId) return;
+    if (splitFromSessionId) {
+      setTerminalPaneSessionIds((current) => {
+        const base = current.length > 0 ? current.filter((id) => id !== next.activeSessionId) : [splitFromSessionId];
+        const withoutSource = base.filter((id) => id !== splitFromSessionId);
+        return [splitFromSessionId, ...withoutSource, next.activeSessionId].filter((id): id is string => Boolean(id));
+      });
+      return;
+    }
+    setTerminalPaneSessionIds([next.activeSessionId]);
+  }, [ensureBuildTerminalSession]);
+
+  const clearActiveBuildTerminal = useCallback(async () => {
+    if (!activeAgentId || !activeTerminalSession) return;
+    try {
+      await accomplish.clearBuildTerminalSession({
+        agentId: activeAgentId,
+        sessionId: activeTerminalSession.id,
+      });
+      setTerminalEntriesBySession((current) => ({
+        ...current,
+        [activeTerminalSession.id]: [],
+      }));
+      setTerminalCursorBySession((current) => ({
+        ...current,
+        [activeTerminalSession.id]: 0,
+      }));
+      await refreshActiveTerminalOutput();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [accomplish, activeAgentId, activeTerminalSession, refreshActiveTerminalOutput]);
+
+  const interruptActiveBuildTerminal = useCallback(async () => {
+    if (!activeAgentId || !activeTerminalSession) return;
+    try {
+      await accomplish.interruptBuildTerminalSession({
+        agentId: activeAgentId,
+        sessionId: activeTerminalSession.id,
+      });
+      await refreshTerminalSnapshot();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [accomplish, activeAgentId, activeTerminalSession, refreshTerminalSnapshot]);
+
+  const closeActiveBuildTerminal = useCallback(async () => {
+    if (!activeAgentId || !activeTerminalSession) return;
+    const requestId = ++terminalSnapshotRequestIdRef.current;
+    try {
+      const next = await accomplish.closeBuildTerminalSession({
+        agentId: activeAgentId,
+        sessionId: activeTerminalSession.id,
+      });
+      if (requestId !== terminalSnapshotRequestIdRef.current) {
+        return;
+      }
+      setTerminalSnapshot(next);
+      setTerminalEntriesBySession((current) => {
+        const clone = { ...current };
+        delete clone[activeTerminalSession.id];
+        return clone;
+      });
+      setTerminalCursorBySession((current) => {
+        const clone = { ...current };
+        delete clone[activeTerminalSession.id];
+        return clone;
+      });
+      setTerminalPaneSessionIds((current) => current.filter((sessionId) => sessionId !== activeTerminalSession.id));
+      if (next.sessions.length === 0) {
+        await createBuildTerminalTab();
+      } else if (!terminalPaneSessionIds.some((sessionId) => sessionId !== activeTerminalSession.id)) {
+        const fallbackSessionId = next.activeSessionId || next.sessions[0]?.id || null;
+        if (fallbackSessionId) {
+          setTerminalPaneSessionIds([fallbackSessionId]);
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [accomplish, activeAgentId, activeTerminalSession, createBuildTerminalTab, terminalPaneSessionIds]);
+
   const resolvePendingDiffBaseline = useCallback(async (decision: 'approve' | 'reject') => {
     if (!activeAgentId || !pendingDiffBaselineId) return;
     setResolvingDiffDecision(decision);
@@ -3133,10 +3702,10 @@ export default function BuildPage() {
   return (
     <div className="h-full flex flex-col bg-background">
       <div className="flex-shrink-0 border-b border-border bg-card/50 px-4 py-3">
-        <div className="mx-auto flex w-full max-w-[1600px] items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
+        <div className="flex w-full flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          <div className="flex flex-wrap items-center gap-2">
             <ModeSwitch />
-            <div className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground">
+            <div className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground">
               <Wrench className="h-3.5 w-3.5" />
               Agent: {activeAgent?.name || activeAgentId}
             </div>
@@ -3149,21 +3718,21 @@ export default function BuildPage() {
                 <span className="truncate">Model</span>
               </div>
             ) : null}
-            <div className="inline-flex items-center rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground">
+            <div className="inline-flex shrink-0 items-center rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground">
               Preset: {selectedPreset?.name || 'None'}
             </div>
-            <div className={cn('inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium', statusBadgeClass)}>
+            <div className={cn('inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium', statusBadgeClass)}>
               {snapshot?.runtime.status === 'running' ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Circle className="h-3.5 w-3.5" />}
               {formatRuntimeStatus(snapshot?.runtime.status ?? 'stopped')}
             </div>
             {snapshot?.runtime.port ? (
-              <div className="inline-flex items-center rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground">
+              <div className="inline-flex shrink-0 items-center rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground">
                 Port {snapshot.runtime.port}
               </div>
             ) : null}
             {snapshot?.runtime.buildStatus && snapshot.runtime.buildStatus !== 'unknown' ? (
               <div className={cn(
-                'inline-flex items-center rounded-full px-2.5 py-1 text-xs',
+                'inline-flex shrink-0 items-center rounded-full px-2.5 py-1 text-xs',
                 snapshot.runtime.buildStatus === 'success' ? 'bg-emerald-500/10 text-emerald-700' : 'bg-destructive/10 text-destructive'
               )}>
                 Build {snapshot.runtime.buildStatus}
@@ -3171,7 +3740,57 @@ export default function BuildPage() {
             ) : null}
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className={cn(
+                    'h-8 gap-1.5 px-2 text-[11px]',
+                    terminalSectionHidden || runtimeLogsSectionHidden
+                      ? 'border-amber-400/60 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+                      : ''
+                  )}
+                  title={hiddenBuildSections.length > 0
+                    ? `Closed sections: ${hiddenBuildSections.join(', ')}`
+                    : 'Show or hide collapsible Build Mode sections.'}
+                >
+                  Sections
+                  <ChevronsUpDown className="h-3.5 w-3.5" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="start" className="w-52 p-1.5">
+                <div className="space-y-1">
+                  <button
+                    type="button"
+                    className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs hover:bg-accent"
+                    onClick={() => setTerminalSectionHidden((current) => !current)}
+                    title="Toggle the terminal section."
+                  >
+                    <span>Terminal</span>
+                    {terminalSectionHidden ? (
+                      <Circle className="h-3.5 w-3.5 text-muted-foreground" />
+                    ) : (
+                      <Check className="h-3.5 w-3.5 text-emerald-500" />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs hover:bg-accent"
+                    onClick={() => setRuntimeLogsSectionHidden((current) => !current)}
+                    title="Toggle the runtime logs section."
+                  >
+                    <span>Runtime Logs</span>
+                    {runtimeLogsSectionHidden ? (
+                      <Circle className="h-3.5 w-3.5 text-muted-foreground" />
+                    ) : (
+                      <Check className="h-3.5 w-3.5 text-emerald-500" />
+                    )}
+                  </button>
+                </div>
+              </PopoverContent>
+            </Popover>
             <select
               className="h-8 rounded-md border border-input bg-background px-2 text-xs"
               value={selectedPresetId || ''}
@@ -3187,7 +3806,7 @@ export default function BuildPage() {
                 </option>
               ))}
             </select>
-            <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+            <label className="inline-flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
               <input
                 type="checkbox"
                 checked={autoRestart}
@@ -3195,7 +3814,7 @@ export default function BuildPage() {
               />
               Auto-restart
             </label>
-            <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+            <label className="inline-flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
               <input
                 type="checkbox"
                 checked={autoRepairEnabled}
@@ -3572,7 +4191,7 @@ export default function BuildPage() {
             </Card>
             )}
 
-            <div className="min-h-0 flex flex-col gap-3">
+            <div ref={centerColumnRef} className="min-h-0 flex flex-col gap-0">
               <Card className="min-h-0 flex flex-1 flex-col gap-1 px-1.5 pt-2 pb-1.5">
                 <div className="flex items-center justify-between">
                   <div className="inline-flex items-center gap-1 rounded-lg border border-border/60 bg-muted/30 p-1">
@@ -3821,7 +4440,7 @@ export default function BuildPage() {
                     <>
                       {snapshot?.runtime.status === 'stopped' ? (
                         <div className="h-full flex flex-col items-center justify-center p-6 text-center text-sm text-muted-foreground gap-2">
-                          <Terminal className="h-6 w-6" />
+                          <TerminalIcon className="h-6 w-6" />
                           <div className="font-medium text-foreground">Runtime stopped</div>
                           <Button
                             size="sm"
@@ -3855,7 +4474,7 @@ export default function BuildPage() {
 
                       {snapshot?.runtime.status === 'running' && !isIframePreviewReady ? (
                         <div className="h-full flex flex-col items-center justify-center p-6 text-center text-sm text-muted-foreground gap-2">
-                          <Terminal className="h-6 w-6" />
+                          <TerminalIcon className="h-6 w-6" />
                           <div className="font-medium text-foreground">Runtime running</div>
                           <div>
                             {snapshot.runtime.previewUrl
@@ -3874,45 +4493,227 @@ export default function BuildPage() {
                 </div>
               </Card>
 
-              <Card className={cn('p-3', runtimeLogsCollapsed ? 'min-h-0' : 'h-48 min-h-[160px]')}>
-                <div className="mb-2 flex items-center justify-between">
-                  <div className="text-sm font-medium">Runtime Logs</div>
-                  <div className="flex items-center gap-2">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      title={runtimeLogsCollapsed ? 'Expand runtime logs.' : 'Collapse runtime logs.'}
-                      onClick={() => setRuntimeLogsCollapsed((current) => !current)}
-                    >
-                      {runtimeLogsCollapsed ? 'Expand' : 'Collapse'}
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      title="Clear the runtime log panel for this session."
-                      onClick={() => {
-                        void accomplish.clearBuildRuntimeLogs({ agentId: activeAgentId });
-                        setLogs([]);
-                        setLogCursor(0);
-                      }}
-                    >
-                      Clear
-                    </Button>
+              {!terminalSectionHidden || !runtimeLogsSectionHidden ? (
+                <>
+                  <div
+                    className="flex h-3 shrink-0 cursor-row-resize select-none touch-none items-center justify-center"
+                    onMouseDown={handleBuildCenterPanelResizeStart}
+                    title="Drag to resize Runtime Preview and Terminal/Runtime Logs."
+                    role="separator"
+                    aria-orientation="horizontal"
+                    aria-label="Resize runtime preview and lower panels"
+                  >
+                    <div className="h-px w-full rounded-full bg-border/70" />
                   </div>
-                </div>
-                {!runtimeLogsCollapsed ? (
-                  <div ref={logsRef} className="h-[calc(100%-2rem)] overflow-auto rounded-md border border-border/60 bg-background p-2 font-mono text-[11px] leading-relaxed">
-                    {logs.length === 0 ? (
-                      <div className="text-muted-foreground">No logs yet.</div>
-                    ) : logs.map((entry) => (
-                      <div key={entry.seq} className="whitespace-pre-wrap break-words">
-                        <span className="text-muted-foreground">[{new Date(entry.at).toLocaleTimeString()}] {formatStream(entry.stream)}</span>{' '}
-                        <span className={entry.stream === 'stderr' ? 'text-destructive' : ''}>{entry.line}</span>
+                  <div
+                    className={cn(
+                      'grid min-h-0 gap-3',
+                      !terminalSectionHidden && !runtimeLogsSectionHidden
+                        ? 'xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]'
+                        : 'grid-cols-1'
+                    )}
+                    style={{ height: `${buildLowerPanelHeight}px` }}
+                  >
+                  {!terminalSectionHidden ? (
+                    <Card className="h-full min-h-0 overflow-hidden rounded-xl p-0">
+                      <div className="flex h-full min-h-0">
+                        <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+                          <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+                            {terminalPaneSessions.length > 0 ? (
+                              <div className="flex min-h-0 flex-1 flex-row overflow-hidden bg-[#0b1220]">
+                                {terminalPaneSessions.map((session, index) => (
+                                  <div
+                                    key={session.id}
+                                    className={cn(
+                                      'min-w-0 flex-1',
+                                      index > 0 ? 'border-l border-border/60' : ''
+                                    )}
+                                  >
+                                    <BuildTerminalPane
+                                      accomplish={accomplish}
+                                      agentId={activeAgentId || null}
+                                      session={session}
+                                      entries={terminalEntriesBySession[session.id] || []}
+                                      isActive={session.id === activeTerminalSession?.id}
+                                      onActivate={() => void activateBuildTerminalSession(session.id)}
+                                      onNewTerminal={() => createBuildTerminalTab()}
+                                      onSplitTerminal={() => createBuildTerminalTab(session.id)}
+                                      onClearTerminal={() => clearActiveBuildTerminal()}
+                                      onInterruptTerminal={() => interruptActiveBuildTerminal()}
+                                    />
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className="flex h-full items-center justify-center bg-background text-sm text-muted-foreground">
+                                <Button size="sm" variant="outline" onClick={() => void createBuildTerminalTab()}>
+                                  <Plus className="mr-1.5 h-3.5 w-3.5" />
+                                  New terminal
+                                </Button>
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="flex w-[160px] min-w-[160px] shrink-0 flex-col border-l border-border/60 bg-muted/20">
+                            <div className="flex items-center justify-between border-b border-border/60 pl-2 pr-3 py-1">
+                              <span className="text-[11px] font-medium text-muted-foreground">Terminals</span>
+                              <div className="flex items-center">
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="h-6 w-6"
+                                  title="New terminal (Ctrl/Cmd+Shift+T)"
+                                  onClick={() => void createBuildTerminalTab()}
+                                >
+                                  <Plus className="h-3 w-3" />
+                                </Button>
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="h-6 w-6"
+                                  title="Split terminal (Ctrl/Cmd+Shift+D)"
+                                  onClick={() => void createBuildTerminalTab(activeTerminalSession?.id)}
+                                  disabled={!activeTerminalSession}
+                                >
+                                  <Copy className="h-3 w-3" />
+                                </Button>
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="h-6 w-6"
+                                  title="Clear terminal (Ctrl/Cmd+L)"
+                                  onClick={() => void clearActiveBuildTerminal()}
+                                  disabled={!activeTerminalSession}
+                                >
+                                  <Trash2 className="h-3 w-3" />
+                                </Button>
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="h-6 w-6 ml-1 border border-dashed border-muted-foreground/30 hover:border-amber-400/60 hover:bg-amber-500/10 hover:text-amber-600 dark:hover:text-amber-400"
+                                  title="Hide terminal section"
+                                  onClick={() => setTerminalSectionHidden(true)}
+                                >
+                                  <PanelBottomClose className="h-3 w-3" />
+                                </Button>
+                              </div>
+                            </div>
+                            <div className="min-h-0 flex-1 overflow-y-auto py-0.5">
+                              <TooltipProvider delayDuration={400}>
+                                {(terminalSnapshot?.sessions || []).map((session) => {
+                                  const isActive = session.id === terminalSnapshot?.activeSessionId;
+                                  return (
+                                    <Tooltip key={session.id}>
+                                      <TooltipTrigger asChild>
+                                        <div
+                                          className={cn(
+                                            'group/term flex items-center gap-1.5 px-2 py-1 text-[11px] cursor-pointer transition-colors',
+                                            isActive
+                                              ? 'bg-accent/50 text-foreground'
+                                              : 'text-muted-foreground hover:bg-accent/30 hover:text-foreground'
+                                          )}
+                                          onClick={() => void activateBuildTerminalSession(session.id)}
+                                        >
+                                          <TerminalIcon className="h-3.5 w-3.5 shrink-0" />
+                                          <span className="min-w-0 flex-1 truncate">{session.title}</span>
+                                          {isActive ? (
+                                            <button
+                                              type="button"
+                                              className="shrink-0 rounded p-0.5 opacity-0 transition-opacity hover:bg-accent group-hover/term:opacity-100"
+                                              title="Close active terminal"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                void closeActiveBuildTerminal();
+                                              }}
+                                            >
+                                              <X className="h-3 w-3" />
+                                            </button>
+                                          ) : null}
+                                        </div>
+                                      </TooltipTrigger>
+                                      <TooltipContent side="left" className="w-max max-w-[280px]">
+                                        <div className="mb-1 text-[11px] font-semibold">{session.title}</div>
+                                        <div className="space-y-0.5 text-[10px] text-muted-foreground">
+                                          <div><span className="text-foreground/70">Shell:</span> {session.shellLabel}</div>
+                                          <div><span className="text-foreground/70">CWD:</span> {session.cwd}</div>
+                                          {session.workspaceRelativePath ? (
+                                            <div><span className="text-foreground/70">Workspace:</span> {session.workspaceRelativePath}</div>
+                                          ) : null}
+                                          {session.pid != null ? (
+                                            <div><span className="text-foreground/70">PID:</span> {session.pid}</div>
+                                          ) : null}
+                                          <div><span className="text-foreground/70">Status:</span> {session.running ? 'Running' : 'Exited'}</div>
+                                          <div><span className="text-foreground/70">Created:</span> {new Date(session.createdAt).toLocaleString()}</div>
+                                        </div>
+                                      </TooltipContent>
+                                    </Tooltip>
+                                  );
+                                })}
+                              </TooltipProvider>
+                            </div>
+                          </div>
+                        </div>
                       </div>
-                    ))}
+                    </Card>
+                  ) : null}
+
+                  {!runtimeLogsSectionHidden ? (
+                    <Card className="h-full min-h-0 gap-0 rounded-xl p-0 flex flex-col">
+                      <div className="flex items-center justify-between border-b border-border/60 px-2 py-1">
+                        <div className="text-[11px] font-medium text-muted-foreground">Runtime Logs</div>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            size="icon"
+                            variant="outline"
+                            className="h-7 w-7"
+                            title="Export the currently shown runtime logs."
+                            onClick={exportRuntimeLogs}
+                            disabled={logs.length === 0}
+                          >
+                            <Download className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="outline"
+                            className="h-7 w-7"
+                            title="Clear the runtime log panel for this session."
+                            onClick={() => {
+                              void accomplish.clearBuildRuntimeLogs({ agentId: activeAgentId });
+                              setLogs([]);
+                              setLogCursor(0);
+                            }}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-7 w-7 ml-1 border border-dashed border-muted-foreground/30 hover:border-amber-400/60 hover:bg-amber-500/10 hover:text-amber-600 dark:hover:text-amber-400"
+                            title="Hide runtime logs section"
+                            onClick={() => setRuntimeLogsSectionHidden(true)}
+                          >
+                            <PanelBottomClose className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      </div>
+                      <div
+                        ref={logsRef}
+                        className="min-h-0 flex-1 overflow-auto bg-background px-2 pb-2 pt-1 font-mono text-[11px] leading-tight"
+                      >
+                        {logs.length === 0 ? (
+                          <div className="text-muted-foreground">No logs yet.</div>
+                        ) : logs.map((entry) => (
+                          <div key={entry.seq} className="whitespace-pre-wrap break-words">
+                            <span className="text-muted-foreground">[{new Date(entry.at).toLocaleTimeString()}] {formatStream(entry.stream)}</span>{' '}
+                            <span className={entry.stream === 'stderr' ? 'text-destructive' : ''}>{entry.line}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </Card>
+                  ) : null}
                   </div>
-                ) : null}
-              </Card>
+                </>
+              ) : null}
             </div>
 
             <Card className="min-h-0 flex flex-col p-3 gap-3">

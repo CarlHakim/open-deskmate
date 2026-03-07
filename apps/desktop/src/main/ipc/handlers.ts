@@ -64,6 +64,7 @@ import {
   resolvePathInWorkspace,
   writeWorkspaceFile,
 } from '../services/build-mode/file-service';
+import { buildTerminalManager } from '../services/build-mode/terminal-manager';
 import {
   deleteBuildModePreset,
   listBuildModePresets,
@@ -4652,6 +4653,78 @@ let nodeToolsApiInitialized = false;
     const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
     await buildDevProcessManager.clearLogs(agentId);
     return { ok: true };
+  });
+
+  handle('build-mode:terminal:snapshot', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    return buildTerminalManager.getSnapshot(agentId);
+  });
+
+  handle('build-mode:terminal:create', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; workspaceRelativePath?: unknown; splitFromSessionId?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const workspaceRelativePath = sanitizeOptionalText(payload?.workspaceRelativePath, 'workspaceRelativePath', 300) || '.';
+    const splitFromSessionId = sanitizeOptionalText(payload?.splitFromSessionId, 'splitFromSessionId', 120) || undefined;
+    return buildTerminalManager.createSession(agentId, workspaceRelativePath, splitFromSessionId);
+  });
+
+  handle('build-mode:terminal:set-active', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; sessionId?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const sessionId = sanitizeString(payload?.sessionId, 'sessionId', 120);
+    return buildTerminalManager.setActiveSession(agentId, sessionId);
+  });
+
+  handle('build-mode:terminal:output', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; sessionId?: unknown; cursor?: unknown; limit?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const sessionId = sanitizeString(payload?.sessionId, 'sessionId', 120);
+    const cursor = typeof payload?.cursor === 'number' && Number.isFinite(payload.cursor) ? payload.cursor : 0;
+    const limit = typeof payload?.limit === 'number' && Number.isFinite(payload.limit) ? payload.limit : 500;
+    return buildTerminalManager.getOutput(agentId, sessionId, cursor, limit);
+  });
+
+  handle('build-mode:terminal:run', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; sessionId?: unknown; command?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const sessionId = sanitizeString(payload?.sessionId, 'sessionId', 120);
+    const command = sanitizeString(payload?.command, 'command', 4_000);
+    return buildTerminalManager.runCommand(agentId, sessionId, command);
+  });
+
+  handle('build-mode:terminal:write', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; sessionId?: unknown; input?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const sessionId = sanitizeString(payload?.sessionId, 'sessionId', 120);
+    if (typeof payload?.input !== 'string') {
+      throw new Error('input must be a string');
+    }
+    if (payload.input.length > 20_000) {
+      throw new Error('input exceeds maximum length');
+    }
+    const input = payload.input;
+    return buildTerminalManager.writeInput(agentId, sessionId, input);
+  });
+
+  handle('build-mode:terminal:interrupt', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; sessionId?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const sessionId = sanitizeString(payload?.sessionId, 'sessionId', 120);
+    return buildTerminalManager.interruptSession(agentId, sessionId);
+  });
+
+  handle('build-mode:terminal:resize', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; sessionId?: unknown; cols?: unknown; rows?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const sessionId = sanitizeString(payload?.sessionId, 'sessionId', 120);
+    const cols = typeof payload?.cols === 'number' && Number.isFinite(payload.cols) ? payload.cols : 120;
+    const rows = typeof payload?.rows === 'number' && Number.isFinite(payload.rows) ? payload.rows : 24;
+    return buildTerminalManager.resizeSession(agentId, sessionId, cols, rows);
+  });
+
+  handle('build-mode:terminal:clear', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; sessionId?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const sessionId = sanitizeString(payload?.sessionId, 'sessionId', 120);
+    return buildTerminalManager.clearSession(agentId, sessionId);
+  });
+
+  handle('build-mode:terminal:close', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; sessionId?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const sessionId = sanitizeString(payload?.sessionId, 'sessionId', 120);
+    return buildTerminalManager.closeSession(agentId, sessionId);
   });
 
   handle('build-mode:files:tree', async (_event: IpcMainInvokeEvent, payload: {

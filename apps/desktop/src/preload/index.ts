@@ -439,6 +439,31 @@ const accomplishAPI = {
     ipcRenderer.invoke('build-mode:runtime:logs', payload),
   clearBuildRuntimeLogs: (payload: { agentId: string }): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('build-mode:runtime:clear-logs', payload),
+  getBuildTerminalSnapshot: (payload: { agentId: string }): Promise<import('@accomplish/shared').BuildTerminalSnapshot> =>
+    ipcRenderer.invoke('build-mode:terminal:snapshot', payload),
+  createBuildTerminalSession: (payload: { agentId: string; workspaceRelativePath?: string; splitFromSessionId?: string }): Promise<import('@accomplish/shared').BuildTerminalSnapshot> =>
+    ipcRenderer.invoke('build-mode:terminal:create', payload),
+  setBuildTerminalActiveSession: (payload: { agentId: string; sessionId: string }): Promise<import('@accomplish/shared').BuildTerminalSnapshot> =>
+    ipcRenderer.invoke('build-mode:terminal:set-active', payload),
+  getBuildTerminalOutput: (payload: { agentId: string; sessionId: string; cursor?: number; limit?: number }): Promise<import('@accomplish/shared').BuildTerminalOutputResponse> =>
+    ipcRenderer.invoke('build-mode:terminal:output', payload),
+  runBuildTerminalCommand: (payload: { agentId: string; sessionId: string; command: string }): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('build-mode:terminal:run', payload),
+  writeBuildTerminalInput: (payload: { agentId: string; sessionId: string; input: string }): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('build-mode:terminal:write', payload),
+  interruptBuildTerminalSession: (payload: { agentId: string; sessionId: string }): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('build-mode:terminal:interrupt', payload),
+  resizeBuildTerminalSession: (payload: { agentId: string; sessionId: string; cols: number; rows: number }): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('build-mode:terminal:resize', payload),
+  clearBuildTerminalSession: (payload: { agentId: string; sessionId: string }): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('build-mode:terminal:clear', payload),
+  closeBuildTerminalSession: (payload: { agentId: string; sessionId: string }): Promise<import('@accomplish/shared').BuildTerminalSnapshot> =>
+    ipcRenderer.invoke('build-mode:terminal:close', payload),
+  onBuildTerminalEntry: (callback: (payload: { agentId: string; sessionId: string; entry: import('@accomplish/shared').BuildTerminalEntry }) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: { agentId: string; sessionId: string; entry: import('@accomplish/shared').BuildTerminalEntry }) => callback(payload);
+    ipcRenderer.on('build-mode:terminal:entry', listener);
+    return () => ipcRenderer.removeListener('build-mode:terminal:entry', listener);
+  },
   getBuildWorkspaceRoot: (payload: { agentId: string }): Promise<{ workspaceRoot: string }> =>
     ipcRenderer.invoke('build-mode:workspace:root', payload),
   openBuildWorkspacePath: (payload: { agentId: string; relativePath?: string }): Promise<{ ok: boolean; path: string; error?: string }> =>
