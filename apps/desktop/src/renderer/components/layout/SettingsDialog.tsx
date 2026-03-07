@@ -71,6 +71,7 @@ import {
 } from 'react-icons/si';
 import type {
   ApiKeyConfig,
+  BuildDiffEnforcementMode,
   ProviderConfig,
   ProviderType,
   SelectedModel,
@@ -437,6 +438,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
   const [selectedModel, setSelectedModel] = useState<SelectedModel | null>(null);
   const [agentSpeedMode, setAgentSpeedMode] = useState<'fast' | 'balanced' | 'deep'>('fast');
   const [agentSpeedModeSaving, setAgentSpeedModeSaving] = useState(false);
+  const [buildDiffEnforcementMode, setBuildDiffEnforcementMode] = useState<BuildDiffEnforcementMode>('preview-only');
+  const [buildDiffEnforcementSaving, setBuildDiffEnforcementSaving] = useState(false);
   const [loadingModel, setLoadingModel] = useState(true);
   const [modelStatusMessage, setModelStatusMessage] = useState<string | null>(null);
   const [modelLimitOverrides, setModelLimitOverrides] = useState<Record<string, { contextWindowTokens?: number }>>({});
@@ -1305,6 +1308,13 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
             : settings?.agentSpeedMode === 'balanced'
               ? 'balanced'
               : 'fast'
+        );
+        setBuildDiffEnforcementMode(
+          settings?.buildDiffEnforcementMode === 'auto-apply'
+            ? 'auto-apply'
+            : settings?.buildDiffEnforcementMode === 'approval'
+              ? 'approval'
+              : 'preview-only'
         );
       } catch (err) {
         console.error('Failed to fetch app settings:', err);
@@ -5685,6 +5695,21 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
     }, 2000);
   };
 
+  const handleBuildDiffEnforcementModeChange = async (mode: BuildDiffEnforcementMode) => {
+    const accomplish = getAccomplish();
+    const previous = buildDiffEnforcementMode;
+    setBuildDiffEnforcementMode(mode);
+    setBuildDiffEnforcementSaving(true);
+    try {
+      await accomplish.setBuildDiffEnforcementMode(mode);
+    } catch (err) {
+      console.error('Failed to save Build Mode diff enforcement mode:', err);
+      setBuildDiffEnforcementMode(previous);
+    } finally {
+      setBuildDiffEnforcementSaving(false);
+    }
+  };
+
   const handleSaveAppConnectorOAuthClientSecret = async () => {
     const accomplish = getAccomplish();
     if (!selectedAppConnector || selectedAppConnector.definition.authMethod !== 'oauth2') return;
@@ -6481,6 +6506,12 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
         const enabledToggles = [runInBackground, launchAtLogin].filter(Boolean).length;
         return `${enabledToggles} startup toggle${enabledToggles === 1 ? '' : 's'} enabled`;
       }
+      case 'Build Mode Safety':
+        return buildDiffEnforcementMode === 'auto-apply'
+          ? 'Full Auto-Apply (no approval)'
+          : buildDiffEnforcementMode === 'preview-only'
+            ? 'Preview Only (no approval)'
+            : 'Approval Mode (safe)';
       case 'Workspace Defaults':
         return workspaceRoot || 'No global workspace default set';
       case 'Memory (User Context)': {
@@ -12680,6 +12711,62 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
               {startupSaving && (
                 <p className="text-xs text-muted-foreground">Saving startup settings…</p>
               )}
+            </div>
+            )}
+          </section>
+
+          <section>
+            <h2 className="mb-4 text-base font-medium text-foreground">
+              Build Mode Safety
+              <InfoTip text="Choose how Build Mode handles proposed code changes after AI runs." />
+            </h2>
+            {isSettingsSectionExpandedByHeading('Build Mode Safety') && (
+            <div className="rounded-lg border border-border bg-card p-5 space-y-3">
+              <label className="flex items-start gap-2 rounded-md border border-border/60 bg-background/70 p-3">
+                <input
+                  type="radio"
+                  className="mt-0.5"
+                  checked={buildDiffEnforcementMode === 'auto-apply'}
+                  onChange={() => void handleBuildDiffEnforcementModeChange('auto-apply')}
+                  disabled={buildDiffEnforcementSaving}
+                />
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-foreground">Full Auto-Apply (No Approval Needed)</div>
+                  <div className="text-xs text-muted-foreground">Accept everything automatically. Fastest workflow, lowest safety.</div>
+                </div>
+              </label>
+
+              <label className="flex items-start gap-2 rounded-md border border-border/60 bg-background/70 p-3">
+                <input
+                  type="radio"
+                  className="mt-0.5"
+                  checked={buildDiffEnforcementMode === 'preview-only'}
+                  onChange={() => void handleBuildDiffEnforcementModeChange('preview-only')}
+                  disabled={buildDiffEnforcementSaving}
+                />
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-foreground">Preview Only (No Approval Needed)</div>
+                  <div className="text-xs text-muted-foreground">Show synthetic before/after diff, but do not block changes.</div>
+                </div>
+              </label>
+
+              <label className="flex items-start gap-2 rounded-md border border-border/60 bg-background/70 p-3">
+                <input
+                  type="radio"
+                  className="mt-0.5"
+                  checked={buildDiffEnforcementMode === 'approval'}
+                  onChange={() => void handleBuildDiffEnforcementModeChange('approval')}
+                  disabled={buildDiffEnforcementSaving}
+                />
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-foreground">Approval Mode (Safe Mode)</div>
+                  <div className="text-xs text-muted-foreground">Changes stay pending until you approve or reject them.</div>
+                </div>
+              </label>
+
+              {buildDiffEnforcementSaving ? (
+                <p className="text-xs text-muted-foreground">Saving Build Mode safety mode…</p>
+              ) : null}
             </div>
             )}
           </section>

@@ -12,6 +12,30 @@ import type {
   AppConnectorExtensionState,
   AppConnectorRuntimeStatus,
   AppConnectorRuntimeTestResult,
+  BuildBuildRequest,
+  BuildDiffEnforcementMode,
+  BuildTaskHistoryListInput,
+  BuildTaskSession,
+  BuildTaskSessionArchiveInput,
+  BuildTaskSessionCreateInput,
+  BuildTaskSessionDeleteInput,
+  BuildTaskSessionListResult,
+  BuildTaskSessionPinInput,
+  BuildTaskSessionRenameInput,
+  BuildTaskSessionUpdateInput,
+  BuildProjectPreset,
+  BuildProjectPresetInput,
+  BuildProjectPresetListResult,
+  BuildFileTreeNode,
+  BuildLogsResponse,
+  BuildRuntimeCommandResult,
+  BuildSessionSnapshot,
+  BuildStartRequest,
+  BuildWorkspaceFingerprint,
+  BuildWorkspaceDiff,
+  BuildWorkspaceBaselineCaptureResult,
+  BuildWorkspaceBaselineResolveResult,
+  BuildWorkspaceFileContent,
   GatewayConnectorRuntimeDiscoveryItem,
   GatewayConnectorDiscoverySnapshot,
   GatewayConnectorExtensionConfig,
@@ -62,8 +86,8 @@ const accomplishAPI = {
     ipcRenderer.invoke('help-docs:open-asset', { docId, assetPath }),
 
   // Dialog
-  selectFolder: (): Promise<string | null> =>
-    ipcRenderer.invoke('dialog:select-folder'),
+  selectFolder: (defaultPath?: string): Promise<string | null> =>
+    ipcRenderer.invoke('dialog:select-folder', defaultPath ? { defaultPath } : undefined),
   selectFiles: (): Promise<string[]> =>
     ipcRenderer.invoke('dialog:select-files'),
 
@@ -147,7 +171,7 @@ const accomplishAPI = {
     ipcRenderer.invoke('settings:debug-mode'),
   setDebugMode: (enabled: boolean): Promise<void> =>
     ipcRenderer.invoke('settings:set-debug-mode', enabled),
-  getAppSettings: (): Promise<{ debugMode: boolean; onboardingComplete: boolean; runInBackground: boolean; launchAtLogin: boolean; browserProfile: string; workspaceRoot: string | null; activeAgentId: string; mobileNodesEnabled: boolean; mobileNodesMaxLivePreviews: number; mobileNodesDisplayName: string; webhookBindMode: 'localhost' | 'all'; agentSpeedMode: 'fast' | 'balanced' | 'deep' }> =>
+  getAppSettings: (): Promise<{ debugMode: boolean; onboardingComplete: boolean; runInBackground: boolean; launchAtLogin: boolean; browserProfile: string; workspaceRoot: string | null; activeAgentId: string; mobileNodesEnabled: boolean; mobileNodesMaxLivePreviews: number; mobileNodesDisplayName: string; webhookBindMode: 'localhost' | 'all'; agentSpeedMode: 'fast' | 'balanced' | 'deep'; buildDiffEnforcementMode: BuildDiffEnforcementMode }> =>
     ipcRenderer.invoke('settings:app-settings'),
   setRunInBackground: (enabled: boolean): Promise<void> =>
     ipcRenderer.invoke('settings:set-run-in-background', enabled),
@@ -163,6 +187,8 @@ const accomplishAPI = {
     ipcRenderer.invoke('settings:set-webhook-bind', mode),
   setAgentSpeedMode: (mode: 'fast' | 'balanced' | 'deep'): Promise<'fast' | 'balanced' | 'deep'> =>
     ipcRenderer.invoke('settings:set-agent-speed-mode', mode),
+  setBuildDiffEnforcementMode: (mode: BuildDiffEnforcementMode): Promise<BuildDiffEnforcementMode> =>
+    ipcRenderer.invoke('settings:set-build-diff-enforcement-mode', mode),
   saveDataUrlToFile: (dataUrl: string, baseName?: string): Promise<{ filePath: string }> =>
     ipcRenderer.invoke('files:save-data-url', { dataUrl, baseName }),
   setBrowserProfile: (profile: string): Promise<string> =>
@@ -393,6 +419,89 @@ const accomplishAPI = {
   }): Promise<unknown> => ipcRenderer.invoke('app-connectors:oauth:disconnect', payload),
   handleAppConnectorOAuthCallback: (callbackUrl: string): Promise<unknown> =>
     ipcRenderer.invoke('app-connectors:oauth:handle-callback', callbackUrl),
+
+  // Build Mode
+  detectBuildProject: (payload: { agentId: string; workspaceRelativePath?: string }): Promise<BuildSessionSnapshot> =>
+    ipcRenderer.invoke('build-mode:project:detect', payload),
+  getBuildRuntimeSnapshot: (payload: { agentId: string; workspaceRelativePath?: string }): Promise<BuildSessionSnapshot> =>
+    ipcRenderer.invoke('build-mode:runtime:get', payload),
+  startBuildRuntime: (payload: BuildStartRequest): Promise<BuildSessionSnapshot> =>
+    ipcRenderer.invoke('build-mode:runtime:start', payload),
+  stopBuildRuntime: (payload: { agentId: string }): Promise<BuildSessionSnapshot> =>
+    ipcRenderer.invoke('build-mode:runtime:stop', payload),
+  restartBuildRuntime: (payload: { agentId: string }): Promise<BuildSessionSnapshot> =>
+    ipcRenderer.invoke('build-mode:runtime:restart', payload),
+  runBuildCommand: (payload: BuildBuildRequest): Promise<{ snapshot: BuildSessionSnapshot; result: BuildRuntimeCommandResult }> =>
+    ipcRenderer.invoke('build-mode:runtime:run-build', payload),
+  runStartCommandOnce: (payload: { agentId: string; workspaceRelativePath?: string; envOverrides?: Record<string, string>; commandOverride?: string }): Promise<{ snapshot: BuildSessionSnapshot; result: BuildRuntimeCommandResult }> =>
+    ipcRenderer.invoke('build-mode:runtime:run-once', payload),
+  getBuildRuntimeLogs: (payload: { agentId: string; cursor?: number; limit?: number }): Promise<BuildLogsResponse> =>
+    ipcRenderer.invoke('build-mode:runtime:logs', payload),
+  clearBuildRuntimeLogs: (payload: { agentId: string }): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('build-mode:runtime:clear-logs', payload),
+  getBuildWorkspaceRoot: (payload: { agentId: string }): Promise<{ workspaceRoot: string }> =>
+    ipcRenderer.invoke('build-mode:workspace:root', payload),
+  openBuildWorkspacePath: (payload: { agentId: string; relativePath?: string }): Promise<{ ok: boolean; path: string; error?: string }> =>
+    ipcRenderer.invoke('build-mode:workspace:open', payload),
+  revealBuildWorkspacePath: (payload: { agentId: string; relativePath?: string }): Promise<{ ok: boolean; path: string; error?: string }> =>
+    ipcRenderer.invoke('build-mode:workspace:reveal', payload),
+  getBuildWorkspaceFingerprint: (payload: { agentId: string; relativePath?: string }): Promise<BuildWorkspaceFingerprint> =>
+    ipcRenderer.invoke('build-mode:workspace:fingerprint', payload),
+  getBuildWorkspaceTree: (payload: { agentId: string; relativePath?: string; depth?: number; includeHidden?: boolean; maxEntries?: number }): Promise<BuildFileTreeNode> =>
+    ipcRenderer.invoke('build-mode:files:tree', payload),
+  readBuildWorkspaceFile: (payload: { agentId: string; relativePath: string; workspaceRelativePath?: string }): Promise<BuildWorkspaceFileContent> =>
+    ipcRenderer.invoke('build-mode:files:read', payload),
+  writeBuildWorkspaceFile: (payload: { agentId: string; relativePath: string; content: string; workspaceRelativePath?: string }): Promise<{ relativePath: string; size: number; modifiedAt: string }> =>
+    ipcRenderer.invoke('build-mode:files:write', payload),
+  createBuildWorkspaceFolder: (payload: { agentId: string; relativePath: string; workspaceRelativePath?: string }): Promise<{ relativePath: string; createdAt: string }> =>
+    ipcRenderer.invoke('build-mode:files:create-folder', payload),
+  createBuildWorkspaceFile: (payload: { agentId: string; relativePath: string; workspaceRelativePath?: string }): Promise<{ relativePath: string; size: number; modifiedAt: string }> =>
+    ipcRenderer.invoke('build-mode:files:create-file', payload),
+  renameBuildWorkspaceEntry: (payload: { agentId: string; relativePath: string; nextName: string; workspaceRelativePath?: string }): Promise<{ relativePath: string; renamedPath: string }> =>
+    ipcRenderer.invoke('build-mode:files:rename', payload),
+  deleteBuildWorkspaceEntry: (payload: { agentId: string; relativePath: string; workspaceRelativePath?: string }): Promise<{ relativePath: string; ok: boolean }> =>
+    ipcRenderer.invoke('build-mode:files:delete', payload),
+  pasteBuildWorkspaceEntry: (payload: {
+    agentId: string;
+    sourceRelativePath: string;
+    destinationDirectoryRelativePath: string;
+    mode: 'cut' | 'copy';
+    sourceWorkspaceRelativePath?: string;
+    destinationWorkspaceRelativePath?: string;
+  }): Promise<{ sourceRelativePath: string; pastedPath: string; mode: 'cut' | 'copy' }> =>
+    ipcRenderer.invoke('build-mode:files:paste', payload),
+  getBuildWorkspaceDiff: (payload: { agentId: string; relativePath?: string; maxChars?: number; baselineId?: string }): Promise<BuildWorkspaceDiff> =>
+    ipcRenderer.invoke('build-mode:workspace:diff', payload),
+  captureBuildWorkspaceBaseline: (payload: { agentId: string; relativePath?: string }): Promise<BuildWorkspaceBaselineCaptureResult> =>
+    ipcRenderer.invoke('build-mode:workspace:baseline:capture', payload),
+  resolveBuildWorkspaceBaseline: (payload: { agentId: string; baselineId: string; decision: 'approve' | 'reject' }): Promise<BuildWorkspaceBaselineResolveResult> =>
+    ipcRenderer.invoke('build-mode:workspace:baseline:resolve', payload),
+  exportBuildWorkspaceZip: (payload: { agentId: string; relativePath?: string; suggestedName?: string }): Promise<{ ok: boolean; filePath?: string; cancelled?: boolean }> =>
+    ipcRenderer.invoke('build-mode:workspace:export-zip', payload),
+  listBuildPresets: (payload: { agentId: string }): Promise<BuildProjectPresetListResult> =>
+    ipcRenderer.invoke('build-mode:presets:list', payload),
+  upsertBuildPreset: (payload: BuildProjectPresetInput): Promise<BuildProjectPreset> =>
+    ipcRenderer.invoke('build-mode:presets:upsert', payload),
+  deleteBuildPreset: (payload: { agentId: string; presetId: string }): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('build-mode:presets:delete', payload),
+  setActiveBuildPreset: (payload: { agentId: string; presetId?: string | null }): Promise<{ activePresetId?: string }> =>
+    ipcRenderer.invoke('build-mode:presets:set-active', payload),
+  listBuildTaskHistorySessions: (payload: BuildTaskHistoryListInput): Promise<BuildTaskSessionListResult> =>
+    ipcRenderer.invoke('build-mode:history:list', payload),
+  getBuildTaskHistorySession: (payload: { sessionId: string }): Promise<BuildTaskSession | null> =>
+    ipcRenderer.invoke('build-mode:history:get', payload),
+  createBuildTaskHistorySession: (payload: BuildTaskSessionCreateInput): Promise<BuildTaskSession> =>
+    ipcRenderer.invoke('build-mode:history:create', payload),
+  updateBuildTaskHistorySession: (payload: BuildTaskSessionUpdateInput): Promise<BuildTaskSession> =>
+    ipcRenderer.invoke('build-mode:history:update', payload),
+  renameBuildTaskHistorySession: (payload: BuildTaskSessionRenameInput): Promise<BuildTaskSession> =>
+    ipcRenderer.invoke('build-mode:history:rename', payload),
+  archiveBuildTaskHistorySession: (payload: BuildTaskSessionArchiveInput): Promise<BuildTaskSession> =>
+    ipcRenderer.invoke('build-mode:history:archive', payload),
+  setBuildTaskHistorySessionPinned: (payload: BuildTaskSessionPinInput): Promise<BuildTaskSession> =>
+    ipcRenderer.invoke('build-mode:history:pin', payload),
+  deleteBuildTaskHistorySession: (payload: BuildTaskSessionDeleteInput): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('build-mode:history:delete', payload),
 
   // API Key management (new simplified handlers)
   hasApiKey: (): Promise<boolean> =>

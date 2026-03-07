@@ -46,6 +46,40 @@ import { generateTaskSummary } from '../services/summarizer';
 import { getMemoryState, readMemoryFile, saveMemoryFile, saveSessionMemorySnapshot, initSessionLog } from '../services/memory';
 import { planNextJobs } from '../services/proactive-planner';
 import { generateUserSkillFromTask } from '../services/skill-workflow-generator';
+import { buildDevProcessManager } from '../services/build-mode/dev-process-manager';
+import {
+  captureWorkspaceBaseline,
+  createWorkspaceDirectory,
+  createWorkspaceFile,
+  deleteWorkspaceEntry,
+  exportWorkspaceZipToFile,
+  listWorkspaceTree,
+  pasteWorkspaceEntry,
+  readWorkspaceFile,
+  readWorkspaceFingerprint,
+  readWorkspaceGitDiff,
+  renameWorkspaceEntry,
+  resolveWorkspaceBaseline,
+  resolveAgentWorkspaceRoot,
+  resolvePathInWorkspace,
+  writeWorkspaceFile,
+} from '../services/build-mode/file-service';
+import {
+  deleteBuildModePreset,
+  listBuildModePresets,
+  setActiveBuildModePreset,
+  upsertBuildModePreset,
+} from '../store/buildModePresets';
+import {
+  archiveBuildTaskSession,
+  createBuildTaskSession,
+  deleteBuildTaskSession,
+  getBuildTaskSession,
+  listBuildTaskSessions,
+  renameBuildTaskSession,
+  setPinnedBuildTaskSession,
+  updateBuildTaskSession,
+} from '../store/buildTaskHistory';
 import { preparePayloadForSend } from '../services/context/prepare-payload';
 import { normalizeOpenCodeUsage } from '../services/context/usage-normalize';
 import { appendSessionLogMessage } from '../services/context/session-log';
@@ -109,6 +143,7 @@ import {
   setUserSkillAssistantModel,
   getOllamaConfig,
   setOllamaConfig,
+  setBuildDiffEnforcementMode,
 } from '../store/appSettings';
 import { getModelLimitOverrides, setModelContextLimitOverride } from '../store/modelLimits';
 import { setRunInBackground as setBackgroundRunInBackground } from '../background';
@@ -171,6 +206,17 @@ import type {
   AppConnectorExtensionConfigInput,
   AppConnectorExtensionId,
   AppConnectorExtensionState,
+  BuildBuildRequest,
+  BuildTaskHistoryListInput,
+  BuildTaskSessionArchiveInput,
+  BuildTaskSessionCreateInput,
+  BuildTaskSessionDeleteInput,
+  BuildTaskSessionPinInput,
+  BuildTaskSessionRenameInput,
+  BuildTaskSessionUpdateInput,
+  BuildProjectPresetInput,
+  BuildStartRequest,
+  BuildWorkspaceBaselineDecision,
 } from '@accomplish/shared';
 import {
   DEFAULT_PROVIDERS,
@@ -532,6 +578,18 @@ function sanitizeOptionalText(input: unknown, field: string, maxLength: number):
     throw new Error(`${field} exceeds maximum length`);
   }
   return input;
+}
+
+function normalizeEnvOverrides(input: unknown): Record<string, string> | undefined {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const result: Record<string, string> = {};
+  for (const [rawKey, rawValue] of Object.entries(input)) {
+    const key = String(rawKey || '').trim().toUpperCase();
+    if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) continue;
+    if (rawValue === null || rawValue === undefined) continue;
+    result[key] = typeof rawValue === 'string' ? rawValue : String(rawValue);
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
 }
 
 function sanitizeIntegerRange(
@@ -2790,6 +2848,14 @@ let nodeToolsApiInitialized = false;
     return setAgentSpeedMode(mode);
   });
 
+  // Settings: Set Build Mode diff enforcement mode
+  handle('settings:set-build-diff-enforcement-mode', async (_event: IpcMainInvokeEvent, mode: string) => {
+    if (mode !== 'auto-apply' && mode !== 'preview-only' && mode !== 'approval') {
+      throw new Error('Invalid build diff enforcement mode');
+    }
+    return setBuildDiffEnforcementMode(mode);
+  });
+
   // Settings: Set browser profile
   handle('settings:set-browser-profile', async (_event: IpcMainInvokeEvent, profile: string) => {
     const sanitizedProfile = sanitizeString(profile, 'browserProfile', 64);
@@ -4399,15 +4465,17 @@ let nodeToolsApiInitialized = false;
   });
 
   // Dialog: Select folder
-  handle('dialog:select-folder', async (event: IpcMainInvokeEvent) => {
+  handle('dialog:select-folder', async (event: IpcMainInvokeEvent, payload?: { defaultPath?: unknown }) => {
     const window = BrowserWindow.fromWebContents(event.sender);
     if (!window) {
       throw new Error('No window found');
     }
+    const defaultPath = sanitizeOptionalText(payload?.defaultPath, 'defaultPath', 1024).trim() || undefined;
 
     const result = await dialog.showOpenDialog(window, {
       properties: ['openDirectory'],
       title: 'Select Working Folder',
+      defaultPath,
     });
 
     if (result.canceled || result.filePaths.length === 0) {
@@ -4503,6 +4571,363 @@ let nodeToolsApiInitialized = false;
     if (!docId) throw new Error('docId is required');
     if (!assetPath) throw new Error('assetPath is required');
     return openHelpAssetExternally(docId, assetPath);
+  });
+
+  // ========== BUILD MODE HANDLERS ==========
+  handle('build-mode:project:detect', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; workspaceRelativePath?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const workspaceRelativePath = sanitizeOptionalText(payload?.workspaceRelativePath, 'workspaceRelativePath', 300) || '.';
+    return buildDevProcessManager.getSnapshot(agentId, workspaceRelativePath);
+  });
+
+  handle('build-mode:runtime:get', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; workspaceRelativePath?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const workspaceRelativePath = sanitizeOptionalText(payload?.workspaceRelativePath, 'workspaceRelativePath', 300) || '.';
+    return buildDevProcessManager.getSnapshot(agentId, workspaceRelativePath);
+  });
+
+  handle('build-mode:runtime:start', async (_event: IpcMainInvokeEvent, payload: BuildStartRequest) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const workspaceRelativePath = sanitizeOptionalText(payload?.workspaceRelativePath, 'workspaceRelativePath', 300) || '.';
+    const mode = payload?.mode === 'run' ? 'run' : 'dev';
+    const commandOverride = sanitizeOptionalText(payload?.commandOverride, 'commandOverride', 500);
+    const autoRestart = payload?.autoRestart !== false;
+    const forceRestart = payload?.forceRestart === true;
+    const envOverrides = normalizeEnvOverrides(payload?.envOverrides);
+    const portHint = typeof payload?.portHint === 'number' && Number.isFinite(payload.portHint)
+      ? Math.max(1024, Math.min(65535, Math.floor(payload.portHint)))
+      : undefined;
+
+    return buildDevProcessManager.startDevelopmentProcess({
+      agentId,
+      workspaceRelativePath,
+      mode,
+      commandOverride: commandOverride || undefined,
+      envOverrides,
+      autoRestart,
+      forceRestart,
+      portHint,
+    });
+  });
+
+  handle('build-mode:runtime:stop', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    return buildDevProcessManager.stopProcess(agentId);
+  });
+
+  handle('build-mode:runtime:restart', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    return buildDevProcessManager.restartProcess(agentId);
+  });
+
+  handle('build-mode:runtime:run-build', async (_event: IpcMainInvokeEvent, payload: BuildBuildRequest) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const workspaceRelativePath = sanitizeOptionalText(payload?.workspaceRelativePath, 'workspaceRelativePath', 300) || '.';
+    const commandOverride = sanitizeOptionalText(payload?.commandOverride, 'commandOverride', 500);
+    const envOverrides = normalizeEnvOverrides(payload?.envOverrides);
+    return buildDevProcessManager.runBuildCommand({
+      agentId,
+      workspaceRelativePath,
+      commandOverride: commandOverride || undefined,
+      envOverrides,
+    });
+  });
+
+  handle('build-mode:runtime:run-once', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; workspaceRelativePath?: unknown; envOverrides?: unknown; commandOverride?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const workspaceRelativePath = sanitizeOptionalText(payload?.workspaceRelativePath, 'workspaceRelativePath', 300) || '.';
+    const envOverrides = normalizeEnvOverrides(payload?.envOverrides);
+    const commandOverride = sanitizeOptionalText(payload?.commandOverride, 'commandOverride', 500) || undefined;
+    return buildDevProcessManager.runStartCommandOnce(agentId, workspaceRelativePath, envOverrides, commandOverride);
+  });
+
+  handle('build-mode:runtime:logs', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; cursor?: unknown; limit?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const cursor = typeof payload?.cursor === 'number' && Number.isFinite(payload.cursor) ? payload.cursor : 0;
+    const limit = typeof payload?.limit === 'number' && Number.isFinite(payload.limit) ? payload.limit : 300;
+    return buildDevProcessManager.getLogs(agentId, cursor, limit);
+  });
+
+  handle('build-mode:runtime:clear-logs', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    await buildDevProcessManager.clearLogs(agentId);
+    return { ok: true };
+  });
+
+  handle('build-mode:files:tree', async (_event: IpcMainInvokeEvent, payload: {
+    agentId?: unknown;
+    relativePath?: unknown;
+    depth?: unknown;
+    includeHidden?: unknown;
+    maxEntries?: unknown;
+  }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    const depth = typeof payload?.depth === 'number' && Number.isFinite(payload.depth) ? payload.depth : undefined;
+    const includeHidden = payload?.includeHidden === true;
+    const maxEntries = typeof payload?.maxEntries === 'number' && Number.isFinite(payload.maxEntries) ? payload.maxEntries : undefined;
+    return listWorkspaceTree(agentId, relativePath, { depth, includeHidden, maxEntries });
+  });
+
+  handle('build-mode:files:read', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown; workspaceRelativePath?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeString(payload?.relativePath, 'relativePath', 500);
+    const workspaceRelativePath = sanitizeOptionalText(payload?.workspaceRelativePath, 'workspaceRelativePath', 400) || '.';
+    return readWorkspaceFile(agentId, relativePath, workspaceRelativePath);
+  });
+
+  handle('build-mode:files:write', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown; content?: unknown; workspaceRelativePath?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeString(payload?.relativePath, 'relativePath', 500);
+    const content = typeof payload?.content === 'string' ? payload.content : '';
+    const workspaceRelativePath = sanitizeOptionalText(payload?.workspaceRelativePath, 'workspaceRelativePath', 400) || '.';
+    return writeWorkspaceFile(agentId, relativePath, content, workspaceRelativePath);
+  });
+
+  handle('build-mode:files:create-folder', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown; workspaceRelativePath?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeString(payload?.relativePath, 'relativePath', 500);
+    const workspaceRelativePath = sanitizeOptionalText(payload?.workspaceRelativePath, 'workspaceRelativePath', 400) || '.';
+    return createWorkspaceDirectory(agentId, relativePath, workspaceRelativePath);
+  });
+
+  handle('build-mode:files:create-file', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown; workspaceRelativePath?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeString(payload?.relativePath, 'relativePath', 500);
+    const workspaceRelativePath = sanitizeOptionalText(payload?.workspaceRelativePath, 'workspaceRelativePath', 400) || '.';
+    return createWorkspaceFile(agentId, relativePath, workspaceRelativePath);
+  });
+
+  handle('build-mode:files:rename', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown; nextName?: unknown; workspaceRelativePath?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeString(payload?.relativePath, 'relativePath', 500);
+    const nextName = sanitizeString(payload?.nextName, 'nextName', 255);
+    const workspaceRelativePath = sanitizeOptionalText(payload?.workspaceRelativePath, 'workspaceRelativePath', 400) || '.';
+    return renameWorkspaceEntry(agentId, relativePath, nextName, workspaceRelativePath);
+  });
+
+  handle('build-mode:files:delete', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown; workspaceRelativePath?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeString(payload?.relativePath, 'relativePath', 500);
+    const workspaceRelativePath = sanitizeOptionalText(payload?.workspaceRelativePath, 'workspaceRelativePath', 400) || '.';
+    return deleteWorkspaceEntry(agentId, relativePath, workspaceRelativePath);
+  });
+
+  handle('build-mode:files:paste', async (_event: IpcMainInvokeEvent, payload: {
+    agentId?: unknown;
+    sourceRelativePath?: unknown;
+    destinationDirectoryRelativePath?: unknown;
+    mode?: unknown;
+    sourceWorkspaceRelativePath?: unknown;
+    destinationWorkspaceRelativePath?: unknown;
+  }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const sourceRelativePath = sanitizeString(payload?.sourceRelativePath, 'sourceRelativePath', 500);
+    const destinationDirectoryRelativePath = sanitizeString(payload?.destinationDirectoryRelativePath, 'destinationDirectoryRelativePath', 500);
+    const modeRaw = sanitizeString(payload?.mode, 'mode', 16).toLowerCase();
+    const mode: 'cut' | 'copy' = modeRaw === 'cut' ? 'cut' : 'copy';
+    const sourceWorkspaceRelativePath = sanitizeOptionalText(payload?.sourceWorkspaceRelativePath, 'sourceWorkspaceRelativePath', 400) || '.';
+    const destinationWorkspaceRelativePath = sanitizeOptionalText(payload?.destinationWorkspaceRelativePath, 'destinationWorkspaceRelativePath', 400) || '.';
+    return pasteWorkspaceEntry(
+      agentId,
+      sourceRelativePath,
+      destinationDirectoryRelativePath,
+      mode,
+      sourceWorkspaceRelativePath,
+      destinationWorkspaceRelativePath,
+    );
+  });
+
+  handle('build-mode:workspace:root', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    return { workspaceRoot: resolveAgentWorkspaceRoot(agentId) };
+  });
+
+  handle('build-mode:workspace:open', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    const absolutePath = resolvePathInWorkspace(agentId, relativePath);
+    const result = await shell.openPath(absolutePath);
+    if (result) {
+      return { ok: false, path: absolutePath, error: result };
+    }
+    return { ok: true, path: absolutePath };
+  });
+
+  handle('build-mode:workspace:reveal', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    const absolutePath = resolvePathInWorkspace(agentId, relativePath);
+    const stat = await fs.promises.stat(absolutePath);
+
+    if (stat.isDirectory()) {
+      const result = await shell.openPath(absolutePath);
+      if (result) {
+        return { ok: false, path: absolutePath, error: result };
+      }
+      return { ok: true, path: absolutePath };
+    }
+
+    shell.showItemInFolder(absolutePath);
+    return { ok: true, path: absolutePath };
+  });
+
+  handle('build-mode:workspace:fingerprint', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    return readWorkspaceFingerprint(agentId, relativePath);
+  });
+
+  handle('build-mode:workspace:diff', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown; maxChars?: unknown; baselineId?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    const maxChars = typeof payload?.maxChars === 'number' && Number.isFinite(payload.maxChars) ? payload.maxChars : undefined;
+    const baselineId = sanitizeOptionalText(payload?.baselineId, 'baselineId', 120) || undefined;
+    return readWorkspaceGitDiff(agentId, relativePath, { maxChars, baselineId });
+  });
+
+  handle('build-mode:workspace:baseline:capture', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    return captureWorkspaceBaseline(agentId, relativePath);
+  });
+
+  handle(
+    'build-mode:workspace:baseline:resolve',
+    async (
+      _event: IpcMainInvokeEvent,
+      payload: { agentId?: unknown; baselineId?: unknown; decision?: unknown }
+    ) => {
+      const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+      const baselineId = sanitizeString(payload?.baselineId, 'baselineId', 120);
+      const decisionRaw = sanitizeString(payload?.decision, 'decision', 24).toLowerCase();
+      const decision: BuildWorkspaceBaselineDecision =
+        decisionRaw === 'reject' ? 'reject' : 'approve';
+      return resolveWorkspaceBaseline(agentId, baselineId, decision);
+    }
+  );
+
+  handle('build-mode:workspace:export-zip', async (event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown; suggestedName?: unknown }) => {
+    const window = assertTrustedWindow(BrowserWindow.fromWebContents(event.sender));
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    const suggestedName = sanitizeOptionalText(payload?.suggestedName, 'suggestedName', 120) || undefined;
+    return exportWorkspaceZipToFile(window, agentId, relativePath, suggestedName);
+  });
+
+  handle('build-mode:presets:list', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    return listBuildModePresets(agentId);
+  });
+
+  handle('build-mode:presets:upsert', async (_event: IpcMainInvokeEvent, payload: BuildProjectPresetInput) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const name = sanitizeString(payload?.name, 'name', 120);
+    const workspaceRelativePath = sanitizeString(payload?.workspaceRelativePath, 'workspaceRelativePath', 300);
+    const id = sanitizeOptionalText(payload?.id, 'id', 64) || undefined;
+    const activeEnvProfileId = sanitizeOptionalText(payload?.activeEnvProfileId, 'activeEnvProfileId', 64) || undefined;
+
+    return upsertBuildModePreset({
+      id,
+      agentId,
+      name,
+      workspaceRelativePath,
+      commands: payload?.commands,
+      envProfiles: payload?.envProfiles,
+      activeEnvProfileId,
+    });
+  });
+
+  handle('build-mode:presets:delete', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; presetId?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const presetId = sanitizeString(payload?.presetId, 'presetId', 64);
+    return deleteBuildModePreset(agentId, presetId);
+  });
+
+  handle('build-mode:presets:set-active', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; presetId?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const presetId = sanitizeOptionalText(payload?.presetId, 'presetId', 64) || null;
+    return setActiveBuildModePreset(agentId, presetId);
+  });
+
+  handle('build-mode:history:list', async (_event: IpcMainInvokeEvent, payload: BuildTaskHistoryListInput) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const query = sanitizeOptionalText(payload?.query, 'query', 400) || undefined;
+    const includeArchived = payload?.includeArchived === true;
+    const limit = typeof payload?.limit === 'number' && Number.isFinite(payload.limit)
+      ? Math.max(1, Math.min(500, Math.floor(payload.limit)))
+      : undefined;
+    return listBuildTaskSessions({ agentId, query, includeArchived, limit });
+  });
+
+  handle('build-mode:history:get', async (_event: IpcMainInvokeEvent, payload: { sessionId?: unknown }) => {
+    const sessionId = sanitizeString(payload?.sessionId, 'sessionId', 128);
+    return getBuildTaskSession(sessionId);
+  });
+
+  handle('build-mode:history:create', async (_event: IpcMainInvokeEvent, payload: BuildTaskSessionCreateInput) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const title = sanitizeOptionalText(payload?.title, 'title', 120) || undefined;
+    const titleSourcePrompt = sanitizeString(payload?.titleSourcePrompt, 'titleSourcePrompt', MAX_TEXT_LENGTH);
+    const goalPrompt = sanitizeString(payload?.goalPrompt, 'goalPrompt', MAX_TEXT_LENGTH);
+    const workspaceRelativePath = sanitizeOptionalText(payload?.workspaceRelativePath, 'workspaceRelativePath', 400) || '.';
+    const selectedPresetId = sanitizeOptionalText(payload?.selectedPresetId, 'selectedPresetId', 64) || null;
+    return createBuildTaskSession({
+      agentId,
+      title,
+      titleSourcePrompt,
+      goalPrompt,
+      workspaceRelativePath,
+      selectedPresetId,
+    });
+  });
+
+  handle('build-mode:history:update', async (_event: IpcMainInvokeEvent, payload: BuildTaskSessionUpdateInput) => {
+    const sessionId = sanitizeString(payload?.sessionId, 'sessionId', 128);
+    const next: BuildTaskSessionUpdateInput = {
+      ...payload,
+      sessionId,
+    };
+    if (payload?.goalPrompt !== undefined) {
+      next.goalPrompt = sanitizeOptionalText(payload.goalPrompt, 'goalPrompt', MAX_TEXT_LENGTH);
+    }
+    if (payload?.workspaceRelativePath !== undefined) {
+      next.workspaceRelativePath = sanitizeOptionalText(payload.workspaceRelativePath, 'workspaceRelativePath', 400) || '.';
+    }
+    if (payload?.selectedPresetId !== undefined) {
+      next.selectedPresetId = sanitizeOptionalText(payload.selectedPresetId, 'selectedPresetId', 64) || null;
+    }
+    if (payload?.lifecycleStatus !== undefined) {
+      const lifecycleStatus = sanitizeOptionalText(payload.lifecycleStatus, 'lifecycleStatus', 32);
+      if (!['active', 'completed', 'failed', 'interrupted', 'archived'].includes(lifecycleStatus)) {
+        throw new Error('Invalid lifecycleStatus.');
+      }
+      next.lifecycleStatus = lifecycleStatus as BuildTaskSessionUpdateInput['lifecycleStatus'];
+    }
+    return updateBuildTaskSession(next);
+  });
+
+  handle('build-mode:history:rename', async (_event: IpcMainInvokeEvent, payload: BuildTaskSessionRenameInput) => {
+    const sessionId = sanitizeString(payload?.sessionId, 'sessionId', 128);
+    const title = sanitizeString(payload?.title, 'title', 120);
+    return renameBuildTaskSession({ sessionId, title });
+  });
+
+  handle('build-mode:history:archive', async (_event: IpcMainInvokeEvent, payload: BuildTaskSessionArchiveInput) => {
+    const sessionId = sanitizeString(payload?.sessionId, 'sessionId', 128);
+    const archived = payload?.archived === true;
+    return archiveBuildTaskSession({ sessionId, archived });
+  });
+
+  handle('build-mode:history:pin', async (_event: IpcMainInvokeEvent, payload: BuildTaskSessionPinInput) => {
+    const sessionId = sanitizeString(payload?.sessionId, 'sessionId', 128);
+    const pinned = payload?.pinned === true;
+    return setPinnedBuildTaskSession({ sessionId, pinned });
+  });
+
+  handle('build-mode:history:delete', async (_event: IpcMainInvokeEvent, payload: BuildTaskSessionDeleteInput) => {
+    const sessionId = sanitizeString(payload?.sessionId, 'sessionId', 128);
+    return deleteBuildTaskSession({ sessionId });
   });
 
   // Log event handler - now just returns ok (no external logging)

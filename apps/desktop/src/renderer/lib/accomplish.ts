@@ -29,6 +29,30 @@ import type {
   AppConnectorExtensionState,
   AppConnectorRuntimeStatus,
   AppConnectorRuntimeTestResult,
+  BuildBuildRequest,
+  BuildDiffEnforcementMode,
+  BuildFileTreeNode,
+  BuildLogsResponse,
+  BuildTaskHistoryListInput,
+  BuildTaskSession,
+  BuildTaskSessionArchiveInput,
+  BuildTaskSessionCreateInput,
+  BuildTaskSessionDeleteInput,
+  BuildTaskSessionListResult,
+  BuildTaskSessionPinInput,
+  BuildTaskSessionRenameInput,
+  BuildTaskSessionUpdateInput,
+  BuildProjectPreset,
+  BuildProjectPresetInput,
+  BuildProjectPresetListResult,
+  BuildRuntimeCommandResult,
+  BuildSessionSnapshot,
+  BuildStartRequest,
+  BuildWorkspaceBaselineCaptureResult,
+  BuildWorkspaceBaselineResolveResult,
+  BuildWorkspaceFingerprint,
+  BuildWorkspaceDiff,
+  BuildWorkspaceFileContent,
   DiscordConnectorConfig,
   DiscordConnectorStatus,
   DiscordPairingRequest,
@@ -103,7 +127,7 @@ interface AccomplishAPI {
   openHelpAsset(docId: string, assetPath: string): Promise<{ ok: boolean; path: string }>;
 
   // Dialog
-  selectFolder(): Promise<string | null>;
+  selectFolder(defaultPath?: string): Promise<string | null>;
   selectFiles(): Promise<string[]>;
 
   // Task operations
@@ -171,7 +195,7 @@ interface AccomplishAPI {
   removeApiKey(id: string): Promise<void>;
   getDebugMode(): Promise<boolean>;
   setDebugMode(enabled: boolean): Promise<void>;
-  getAppSettings(): Promise<{ debugMode: boolean; onboardingComplete: boolean; runInBackground: boolean; launchAtLogin: boolean; browserProfile: string; workspaceRoot: string | null; activeAgentId: string; mobileNodesEnabled: boolean; mobileNodesMaxLivePreviews: number; mobileNodesDisplayName: string; webhookBindMode: 'localhost' | 'all'; agentSpeedMode: 'fast' | 'balanced' | 'deep' }>;
+  getAppSettings(): Promise<{ debugMode: boolean; onboardingComplete: boolean; runInBackground: boolean; launchAtLogin: boolean; browserProfile: string; workspaceRoot: string | null; activeAgentId: string; mobileNodesEnabled: boolean; mobileNodesMaxLivePreviews: number; mobileNodesDisplayName: string; webhookBindMode: 'localhost' | 'all'; agentSpeedMode: 'fast' | 'balanced' | 'deep'; buildDiffEnforcementMode: BuildDiffEnforcementMode }>;
   setRunInBackground(enabled: boolean): Promise<void>;
   setLaunchAtLogin(enabled: boolean): Promise<void>;
   setMobileNodesEnabled(enabled: boolean): Promise<boolean>;
@@ -179,6 +203,7 @@ interface AccomplishAPI {
   setMobileNodesDisplayName(name: string): Promise<string>;
   setWebhookBindMode(mode: 'localhost' | 'all'): Promise<'localhost' | 'all'>;
   setAgentSpeedMode(mode: 'fast' | 'balanced' | 'deep'): Promise<'fast' | 'balanced' | 'deep'>;
+  setBuildDiffEnforcementMode(mode: BuildDiffEnforcementMode): Promise<BuildDiffEnforcementMode>;
   saveDataUrlToFile(dataUrl: string, baseName?: string): Promise<{ filePath: string }>;
   setBrowserProfile(profile: string): Promise<string>;
   setWorkspaceRoot(root: string | null): Promise<string | null>;
@@ -368,6 +393,52 @@ interface AccomplishAPI {
     completedAt?: string;
     expiresAt: string;
   } | null>;
+
+  // Build Mode
+  detectBuildProject(payload: { agentId: string; workspaceRelativePath?: string }): Promise<BuildSessionSnapshot>;
+  getBuildRuntimeSnapshot(payload: { agentId: string; workspaceRelativePath?: string }): Promise<BuildSessionSnapshot>;
+  startBuildRuntime(payload: BuildStartRequest): Promise<BuildSessionSnapshot>;
+  stopBuildRuntime(payload: { agentId: string }): Promise<BuildSessionSnapshot>;
+  restartBuildRuntime(payload: { agentId: string }): Promise<BuildSessionSnapshot>;
+  runBuildCommand(payload: BuildBuildRequest): Promise<{ snapshot: BuildSessionSnapshot; result: BuildRuntimeCommandResult }>;
+  runStartCommandOnce(payload: { agentId: string; workspaceRelativePath?: string; envOverrides?: Record<string, string>; commandOverride?: string }): Promise<{ snapshot: BuildSessionSnapshot; result: BuildRuntimeCommandResult }>;
+  getBuildRuntimeLogs(payload: { agentId: string; cursor?: number; limit?: number }): Promise<BuildLogsResponse>;
+  clearBuildRuntimeLogs(payload: { agentId: string }): Promise<{ ok: boolean }>;
+  getBuildWorkspaceRoot(payload: { agentId: string }): Promise<{ workspaceRoot: string }>;
+  openBuildWorkspacePath(payload: { agentId: string; relativePath?: string }): Promise<{ ok: boolean; path: string; error?: string }>;
+  revealBuildWorkspacePath(payload: { agentId: string; relativePath?: string }): Promise<{ ok: boolean; path: string; error?: string }>;
+  getBuildWorkspaceFingerprint(payload: { agentId: string; relativePath?: string }): Promise<BuildWorkspaceFingerprint>;
+  getBuildWorkspaceTree(payload: { agentId: string; relativePath?: string; depth?: number; includeHidden?: boolean; maxEntries?: number }): Promise<BuildFileTreeNode>;
+  readBuildWorkspaceFile(payload: { agentId: string; relativePath: string; workspaceRelativePath?: string }): Promise<BuildWorkspaceFileContent>;
+  writeBuildWorkspaceFile(payload: { agentId: string; relativePath: string; content: string; workspaceRelativePath?: string }): Promise<{ relativePath: string; size: number; modifiedAt: string }>;
+  createBuildWorkspaceFolder(payload: { agentId: string; relativePath: string; workspaceRelativePath?: string }): Promise<{ relativePath: string; createdAt: string }>;
+  createBuildWorkspaceFile(payload: { agentId: string; relativePath: string; workspaceRelativePath?: string }): Promise<{ relativePath: string; size: number; modifiedAt: string }>;
+  renameBuildWorkspaceEntry(payload: { agentId: string; relativePath: string; nextName: string; workspaceRelativePath?: string }): Promise<{ relativePath: string; renamedPath: string }>;
+  deleteBuildWorkspaceEntry(payload: { agentId: string; relativePath: string; workspaceRelativePath?: string }): Promise<{ relativePath: string; ok: boolean }>;
+  pasteBuildWorkspaceEntry(payload: {
+    agentId: string;
+    sourceRelativePath: string;
+    destinationDirectoryRelativePath: string;
+    mode: 'cut' | 'copy';
+    sourceWorkspaceRelativePath?: string;
+    destinationWorkspaceRelativePath?: string;
+  }): Promise<{ sourceRelativePath: string; pastedPath: string; mode: 'cut' | 'copy' }>;
+  getBuildWorkspaceDiff(payload: { agentId: string; relativePath?: string; maxChars?: number; baselineId?: string }): Promise<BuildWorkspaceDiff>;
+  captureBuildWorkspaceBaseline(payload: { agentId: string; relativePath?: string }): Promise<BuildWorkspaceBaselineCaptureResult>;
+  resolveBuildWorkspaceBaseline(payload: { agentId: string; baselineId: string; decision: 'approve' | 'reject' }): Promise<BuildWorkspaceBaselineResolveResult>;
+  exportBuildWorkspaceZip(payload: { agentId: string; relativePath?: string; suggestedName?: string }): Promise<{ ok: boolean; filePath?: string; cancelled?: boolean }>;
+  listBuildPresets(payload: { agentId: string }): Promise<BuildProjectPresetListResult>;
+  upsertBuildPreset(payload: BuildProjectPresetInput): Promise<BuildProjectPreset>;
+  deleteBuildPreset(payload: { agentId: string; presetId: string }): Promise<{ ok: boolean }>;
+  setActiveBuildPreset(payload: { agentId: string; presetId?: string | null }): Promise<{ activePresetId?: string }>;
+  listBuildTaskHistorySessions(payload: BuildTaskHistoryListInput): Promise<BuildTaskSessionListResult>;
+  getBuildTaskHistorySession(payload: { sessionId: string }): Promise<BuildTaskSession | null>;
+  createBuildTaskHistorySession(payload: BuildTaskSessionCreateInput): Promise<BuildTaskSession>;
+  updateBuildTaskHistorySession(payload: BuildTaskSessionUpdateInput): Promise<BuildTaskSession>;
+  renameBuildTaskHistorySession(payload: BuildTaskSessionRenameInput): Promise<BuildTaskSession>;
+  archiveBuildTaskHistorySession(payload: BuildTaskSessionArchiveInput): Promise<BuildTaskSession>;
+  setBuildTaskHistorySessionPinned(payload: BuildTaskSessionPinInput): Promise<BuildTaskSession>;
+  deleteBuildTaskHistorySession(payload: BuildTaskSessionDeleteInput): Promise<{ ok: boolean }>;
 
   // API Key management
   hasApiKey(): Promise<boolean>;

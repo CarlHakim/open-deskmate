@@ -31,6 +31,7 @@ import {
 import { StreamingText } from '../components/ui/streaming-text';
 import { isWaitingForUser } from '../lib/waiting-detection';
 import SavedPromptsDialog from '../components/layout/SavedPromptsDialog';
+import ModeSwitch from '../components/layout/ModeSwitch';
 import ContextWindowIndicator from '../components/chat/ContextWindowIndicator';
 import { useVoiceWakeTalkMode } from '../hooks/useVoiceWakeTalkMode';
 import { useAttachmentStore } from '../stores/attachmentStore';
@@ -123,6 +124,77 @@ function getOperationBadgeClasses(operation?: string): string {
     case 'move': return 'bg-blue-500/10 text-blue-600';
     default: return 'bg-gray-500/10 text-gray-600';
   }
+}
+
+interface ParsedPlanItem {
+  id: string;
+  content: string;
+  status?: string;
+  priority?: string;
+}
+
+function parsePlanItemsFromAssistantContent(content: string): ParsedPlanItem[] | null {
+  const raw = String(content || '').trim();
+  if (!raw) return null;
+
+  const candidates: string[] = [raw];
+  const fencedMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fencedMatch?.[1]) {
+    candidates.unshift(fencedMatch[1].trim());
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as unknown;
+      const planArray = Array.isArray(parsed)
+        ? parsed
+        : (parsed && typeof parsed === 'object' && Array.isArray((parsed as Record<string, unknown>).plan))
+          ? ((parsed as Record<string, unknown>).plan as unknown[])
+          : null;
+      if (!planArray) continue;
+
+      const items: ParsedPlanItem[] = [];
+      for (let i = 0; i < planArray.length; i += 1) {
+        const entry = planArray[i];
+        if (!entry || typeof entry !== 'object') return null;
+        const record = entry as Record<string, unknown>;
+        const text = typeof record.content === 'string' ? record.content.trim() : '';
+        if (!text) return null;
+        items.push({
+          id: typeof record.id === 'string' && record.id.trim() ? record.id.trim() : String(i + 1),
+          content: text,
+          status: typeof record.status === 'string' ? record.status.trim().toLowerCase() : undefined,
+          priority: typeof record.priority === 'string' ? record.priority.trim().toLowerCase() : undefined,
+        });
+      }
+
+      return items.length > 0 ? items : null;
+    } catch {
+      // Try next candidate.
+    }
+  }
+
+  return null;
+}
+
+function formatPlanStatus(status?: string): string {
+  if (!status) return 'pending';
+  if (status === 'in_progress') return 'in progress';
+  return status.replace(/_/g, ' ');
+}
+
+function getPlanStatusBadgeClasses(status?: string): string {
+  if (status === 'completed') return 'bg-emerald-500/10 text-emerald-700';
+  if (status === 'in_progress') return 'bg-amber-500/10 text-amber-700';
+  if (status === 'failed' || status === 'blocked') return 'bg-destructive/10 text-destructive';
+  return 'bg-muted text-muted-foreground';
+}
+
+function getPlanPriorityBadgeClasses(priority?: string): string {
+  if (priority === 'high') return 'bg-destructive/10 text-destructive';
+  if (priority === 'medium') return 'bg-amber-500/10 text-amber-700';
+  if (priority === 'low') return 'bg-emerald-500/10 text-emerald-700';
+  return 'bg-muted text-muted-foreground';
 }
 
 // --- FollowUpBar: isolated component that owns its own typing state ---
@@ -1339,7 +1411,10 @@ export default function ExecutionPage() {
     <div className="h-full flex flex-col bg-background relative">
       {/* Task header */}
       <div className="flex-shrink-0 border-b border-border bg-card/50 px-6 py-4">
-        <div className="flex items-center justify-between max-w-5xl mx-auto">
+        <div className="flex items-center justify-between gap-3 max-w-6xl mx-auto">
+          <div className="shrink-0">
+            <ModeSwitch />
+          </div>
           <div className="flex items-center gap-4 min-w-0 flex-1">
             <Button
               variant="ghost"
@@ -2266,6 +2341,10 @@ const MessageBubble = memo(function MessageBubble({ message, shouldStream = fals
     && toolContent.length > 0
     && !/^using tool:/i.test(toolContent)
     && !/^tool\s+.+\s+(completed|error)$/i.test(toolContent);
+  const parsedAssistantPlan = useMemo(() => {
+    if (!isAssistant || isTool || isSystem || isUser) return null;
+    return parsePlanItemsFromAssistantContent(message.content || '');
+  }, [isAssistant, isTool, isSystem, isUser, message.content]);
 
   // Get tool icon from mapping
   const toolName = message.toolName || message.content?.match(/Using tool: (\w+)/)?.[1];
@@ -2502,9 +2581,45 @@ const MessageBubble = memo(function MessageBubble({ message, shouldStream = fals
                     )}
                   </StreamingText>
                 ) : (
-                  <div ref={isAssistant ? contentRef : undefined} className={proseClasses}>
-                    <ReactMarkdown>{message.content}</ReactMarkdown>
-                  </div>
+                  parsedAssistantPlan ? (
+                    <div ref={isAssistant ? contentRef : undefined} className="space-y-2 text-sm">
+                      {parsedAssistantPlan.map((item, index) => (
+                        <div key={`${message.id}:${item.id}:${index}`} className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2">
+                          <div className="flex items-start gap-2">
+                            <div className="mt-0.5 shrink-0">
+                              {item.status === 'completed' ? (
+                                <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                              ) : item.status === 'in_progress' ? (
+                                <Clock className="h-4 w-4 text-amber-600" />
+                              ) : item.status === 'failed' || item.status === 'blocked' ? (
+                                <AlertCircle className="h-4 w-4 text-destructive" />
+                              ) : (
+                                <Clock className="h-4 w-4 text-muted-foreground" />
+                              )}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="whitespace-pre-wrap break-words text-foreground">{item.content}</div>
+                              <div className="mt-1.5 flex items-center gap-1.5 text-[10px]">
+                                <span className="rounded border border-border/60 bg-background px-1 py-0.5 text-muted-foreground">#{item.id}</span>
+                                <span className={cn('rounded px-1 py-0.5', getPlanStatusBadgeClasses(item.status))}>
+                                  {formatPlanStatus(item.status)}
+                                </span>
+                                {item.priority ? (
+                                  <span className={cn('rounded px-1 py-0.5', getPlanPriorityBadgeClasses(item.priority))}>
+                                    {item.priority}
+                                  </span>
+                                ) : null}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div ref={isAssistant ? contentRef : undefined} className={proseClasses}>
+                      <ReactMarkdown>{message.content}</ReactMarkdown>
+                    </div>
+                  )
                 )}
                 {isAssistant ? (
                   <div className="mt-1.5 flex items-center justify-between gap-2">

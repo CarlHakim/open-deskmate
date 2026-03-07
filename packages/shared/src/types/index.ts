@@ -2,6 +2,8 @@ export * from './auth';
 export * from './discord';
 export * from './telegram';
 export * from './agent';
+export * from './build-mode';
+export * from './build-task-history';
 export * from './context-window';
 export * from './gateway';
 export * from './gateway-connectors';

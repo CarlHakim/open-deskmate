@@ -5,6 +5,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import TaskInputBar, { type TaskInputBarHandle } from '../components/landing/TaskInputBar';
 import SettingsDialog from '../components/layout/SettingsDialog';
+import ModeSwitch from '../components/layout/ModeSwitch';
 import { useTaskStore } from '../stores/taskStore';
 import { useAgentStore } from '../stores/agentStore';
 import { getAccomplish } from '../lib/accomplish';
@@ -339,7 +340,9 @@ export default function HomePage() {
       />
       <div className="h-full flex flex-col bg-background">
         <div className="flex-shrink-0 border-b border-border bg-card/50 px-6 py-3">
-          <div className="mx-auto flex w-full max-w-5xl flex-wrap items-center justify-end gap-2">
+          <div className="mx-auto flex w-full max-w-5xl flex-wrap items-center justify-between gap-2">
+            <ModeSwitch />
+            <div className="flex flex-wrap items-center justify-end gap-2">
             <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-700 shrink-0">
               <CheckCircle2 className="h-3 w-3" />
               Ready
@@ -357,6 +360,7 @@ export default function HomePage() {
               <User className="h-3 w-3" />
               Agent: {activeAgentDisplayName}
             </span>
+            </div>
           </div>
         </div>
         <div className="flex-1 overflow-y-auto gradient-subtle">

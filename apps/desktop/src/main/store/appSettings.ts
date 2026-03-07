@@ -1,5 +1,5 @@
 import Store from 'electron-store';
-import type { SelectedModel, OllamaConfig } from '@accomplish/shared';
+import type { SelectedModel, OllamaConfig, BuildDiffEnforcementMode } from '@accomplish/shared';
 
 /**
  * App settings schema
@@ -35,6 +35,8 @@ interface AppSettingsSchema {
   agentSpeedMode: 'fast' | 'balanced' | 'deep';
   /** Optional model override for Skill Assistant (falls back to global selectedModel) */
   userSkillAssistantModel: SelectedModel | null;
+  /** Build Mode diff enforcement behavior */
+  buildDiffEnforcementMode: BuildDiffEnforcementMode;
 }
 
 const appSettingsStore = new Store<AppSettingsSchema>({
@@ -58,6 +60,7 @@ const appSettingsStore = new Store<AppSettingsSchema>({
     webhookBindMode: 'localhost',
     agentSpeedMode: 'fast',
     userSkillAssistantModel: null,
+    buildDiffEnforcementMode: 'preview-only',
   },
 });
 
@@ -291,6 +294,19 @@ export function setUserSkillAssistantModel(model: SelectedModel | null): Selecte
   return model;
 }
 
+export function getBuildDiffEnforcementMode(): BuildDiffEnforcementMode {
+  const value = appSettingsStore.get('buildDiffEnforcementMode');
+  if (value === 'auto-apply' || value === 'approval' || value === 'preview-only') return value;
+  return 'preview-only';
+}
+
+export function setBuildDiffEnforcementMode(mode: BuildDiffEnforcementMode): BuildDiffEnforcementMode {
+  const normalized: BuildDiffEnforcementMode =
+    mode === 'auto-apply' ? 'auto-apply' : mode === 'approval' ? 'approval' : 'preview-only';
+  appSettingsStore.set('buildDiffEnforcementMode', normalized);
+  return normalized;
+}
+
 /**
  * Get all app settings
  */
@@ -311,6 +327,7 @@ export function getAppSettings(): AppSettingsSchema {
     webhookBindMode: getWebhookBindMode(),
     agentSpeedMode: getAgentSpeedMode(),
     userSkillAssistantModel: getUserSkillAssistantModel(),
+    buildDiffEnforcementMode: getBuildDiffEnforcementMode(),
   };
 }
 

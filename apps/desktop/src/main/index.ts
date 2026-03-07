@@ -25,6 +25,7 @@ import { disposeUserSkillsWatcher, ensureUserSkillsWatcher } from './services/us
 import { startAgentHeartbeatService, stopAgentHeartbeatService } from './services/agent-heartbeat';
 import { maybeHandleAppConnectorOAuthProtocolUrl } from './services/app-connector-oauth';
 import { startAppConnectorOAuthRefreshService, stopAppConnectorOAuthRefreshService } from './services/app-connector-runtimes';
+import { buildDevProcessManager } from './services/build-mode/dev-process-manager';
 import {
   initializeHelpDocs,
   listHelpDocs,
@@ -95,6 +96,136 @@ let canvasApiServer: ReturnType<typeof startCanvasApiServer> | null = null;
 let nodeToolsApiServer: ReturnType<typeof startNodeToolsApiServer> | null = null;
 let unsubscribeHelpDocs: (() => void) | null = null;
 let pendingHelpNavigation: { docId?: string; query?: string } | null = null;
+let shutdownInProgress = false;
+let parentWatchdogTimer: NodeJS.Timeout | null = null;
+
+const SHUTDOWN_TIMEOUT_MS = 8000;
+const SHUTDOWN_STEP_TIMEOUT_MS = 3000;
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    timer.unref?.();
+
+    promise
+      .then((value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      });
+  });
+}
+
+function closeNodeServer(server: { close: (cb?: (err?: Error) => void) => void } | null, label: string): Promise<void> {
+  if (!server) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    try {
+      server.close(() => resolve());
+    } catch (error) {
+      console.warn(`[Main] ${label} close threw:`, error);
+      resolve();
+    }
+  });
+}
+
+async function runShutdownCleanup(): Promise<void> {
+  setQuitting(true);
+  stopDevParentWatchdog();
+
+  const webhook = webhookServer;
+  webhookServer = null;
+  const nodeTools = nodeToolsApiServer;
+  nodeToolsApiServer = null;
+  const hadCanvasApi = Boolean(canvasApiServer);
+  canvasApiServer = null;
+
+  stopAgentHeartbeatService();
+  stopAppConnectorOAuthRefreshService();
+  stopHelpDocsWatcher();
+  if (unsubscribeHelpDocs) {
+    unsubscribeHelpDocs();
+    unsubscribeHelpDocs = null;
+  }
+  disposeUserSkillsWatcher();
+  flushPendingTasks();
+  disposeTaskManager();
+
+  const cleanupTasks: Array<Promise<unknown>> = [
+    withTimeout(closeNodeServer(webhook, 'Webhook server'), SHUTDOWN_STEP_TIMEOUT_MS, 'Webhook server close'),
+    withTimeout(closeNodeServer(nodeTools, 'Node Tools API server'), SHUTDOWN_STEP_TIMEOUT_MS, 'Node Tools API server close'),
+    withTimeout(hadCanvasApi ? stopCanvasApiServer() : Promise.resolve(), SHUTDOWN_STEP_TIMEOUT_MS, 'Canvas API stop'),
+    withTimeout(stopCanvasHost(), SHUTDOWN_STEP_TIMEOUT_MS, 'Canvas host stop'),
+    withTimeout(stopGatewayConnectorRuntimes(), SHUTDOWN_STEP_TIMEOUT_MS, 'Gateway connector runtimes stop'),
+    withTimeout(stopConnectorBridgeRuntime(), SHUTDOWN_STEP_TIMEOUT_MS, 'Connector bridge stop'),
+    withTimeout(stopVoiceWakeService(), SHUTDOWN_STEP_TIMEOUT_MS, 'Voice wake stop'),
+    withTimeout(buildDevProcessManager.disposeAll(), SHUTDOWN_STEP_TIMEOUT_MS, 'Build runtime dispose'),
+  ];
+
+  const results = await Promise.allSettled(cleanupTasks);
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      console.warn('[Main] Shutdown cleanup warning:', result.reason);
+    }
+  }
+}
+
+function triggerSignalShutdown(signal: NodeJS.Signals | 'disconnect'): void {
+  console.log(`[Main] Received ${signal}; starting shutdown.`);
+  if (shutdownInProgress) {
+    app.exit(0);
+    return;
+  }
+  shutdownInProgress = true;
+  void withTimeout(runShutdownCleanup(), SHUTDOWN_TIMEOUT_MS, `Signal shutdown (${signal})`)
+    .catch((error) => {
+      console.warn(`[Main] ${signal} shutdown cleanup failed/timed out; forcing exit.`, error);
+    })
+    .finally(() => {
+      setQuitting(true);
+      app.exit(0);
+    });
+}
+
+process.on('SIGINT', () => triggerSignalShutdown('SIGINT'));
+process.on('SIGTERM', () => triggerSignalShutdown('SIGTERM'));
+process.on('SIGBREAK', () => triggerSignalShutdown('SIGBREAK'));
+process.on('disconnect', () => triggerSignalShutdown('disconnect'));
+
+function startDevParentWatchdog(): void {
+  if (app.isPackaged) return;
+  if (parentWatchdogTimer) return;
+  const parentPid = process.ppid;
+  if (!Number.isFinite(parentPid) || parentPid <= 1) return;
+
+  parentWatchdogTimer = setInterval(() => {
+    if (shutdownInProgress) return;
+    try {
+      process.kill(parentPid, 0);
+    } catch {
+      console.warn('[Main] Parent dev process exited; shutting down Electron.');
+      triggerSignalShutdown('disconnect');
+    }
+  }, 1500);
+  parentWatchdogTimer.unref?.();
+}
+
+function stopDevParentWatchdog(): void {
+  if (!parentWatchdogTimer) return;
+  clearInterval(parentWatchdogTimer);
+  parentWatchdogTimer = null;
+}
 
 function findProtocolUrlInArgv(argv: string[]): string | null {
   for (const entry of argv) {
@@ -369,6 +500,7 @@ if (!gotTheLock) {
 
   app.whenReady().then(async () => {
     console.log('[Main] Electron app ready, version:', app.getVersion());
+    startDevParentWatchdog();
 
     // Check for fresh install and cleanup old data BEFORE initializing stores
     // This ensures users get a clean slate after reinstalling from DMG
@@ -412,6 +544,19 @@ if (!gotTheLock) {
       }
     } catch (err) {
       console.warn('[Main] Failed to reconcile stale tasks on startup:', err);
+    }
+
+    try {
+      const cleanedRuntimeCount = await withTimeout(
+        buildDevProcessManager.cleanupPersistedRuntimeProcessesOnStartup(),
+        SHUTDOWN_STEP_TIMEOUT_MS,
+        'Build runtime stale-process cleanup'
+      );
+      if (cleanedRuntimeCount > 0) {
+        console.log(`[Main] Cleaned up ${cleanedRuntimeCount} stale build runtime process(es) from previous session.`);
+      }
+    } catch (err) {
+      console.warn('[Main] Failed to clean stale build runtime processes on startup:', err);
     }
 
     createWindow();
@@ -462,37 +607,21 @@ app.on('window-all-closed', () => {
   }
 });
 
-// Flush pending task history writes and dispose TaskManager before quitting
-app.on('before-quit', () => {
+// Flush pending task history writes and dispose TaskManager before quitting.
+app.on('before-quit', (event) => {
+  if (shutdownInProgress) return;
+  shutdownInProgress = true;
+  event.preventDefault();
   console.log('[Main] App before-quit event fired');
-  setQuitting(true);
-  if (webhookServer) {
-    webhookServer.close();
-    webhookServer = null;
-  }
-  if (canvasApiServer) {
-    void stopCanvasApiServer();
-    canvasApiServer = null;
-  }
-  if (nodeToolsApiServer) {
-    nodeToolsApiServer.close();
-    nodeToolsApiServer = null;
-  }
-  void stopCanvasHost();
-  void stopGatewayConnectorRuntimes();
-  void stopConnectorBridgeRuntime();
-  void stopVoiceWakeService();
-  stopAgentHeartbeatService();
-  stopAppConnectorOAuthRefreshService();
-  stopHelpDocsWatcher();
-  if (unsubscribeHelpDocs) {
-    unsubscribeHelpDocs();
-    unsubscribeHelpDocs = null;
-  }
-  disposeUserSkillsWatcher();
-  flushPendingTasks();
-  // Dispose all active tasks and cleanup PTY processes
-  disposeTaskManager();
+
+  void withTimeout(runShutdownCleanup(), SHUTDOWN_TIMEOUT_MS, 'Overall shutdown cleanup')
+    .catch((error) => {
+      console.warn('[Main] Shutdown cleanup failed/timed out; forcing exit.', error);
+    })
+    .finally(() => {
+      setQuitting(true);
+      app.exit(0);
+    });
 });
 
 // Handle custom protocol (accomplish://)
