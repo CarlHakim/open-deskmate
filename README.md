@@ -306,6 +306,13 @@ packages/
   shared/           # Shared TypeScript types
 ```
 
+## Contact
+
+Questions, collaborations, or support:
+- Email: [carl.hakim@renewai.nl](mailto:carl.hakim@renewai.nl)
+- Website: https://renewai.nl
+- GitHub: https://github.com/CarlHakim
+
 ---
 
 ## License
