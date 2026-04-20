@@ -37,6 +37,10 @@ export interface TaskConfig {
   speedMode?: 'fast' | 'balanced' | 'deep';
   /** Per-session/task privacy mode */
   privacyMode?: 'normal' | 'incognito';
+  /** Internal helper tasks such as subagents should not appear in normal task history. */
+  hiddenFromHistory?: boolean;
+  /** Parent task id when this task is a spawned helper/subagent. */
+  parentTaskId?: string;
 }
 
 export interface Task {
@@ -55,8 +59,16 @@ export interface Task {
   result?: TaskResult;
   /** Optional folder ID for organizing tasks */
   folderId?: string;
+  /** Working directory used for the task run */
+  workingDirectory?: string;
+  /** File paths attached by the user or inherited into the task */
+  attachedFiles?: string[];
   /** Per-session/task privacy mode */
   privacyMode?: 'normal' | 'incognito';
+  /** Internal helper tasks such as subagents should not appear in normal task history. */
+  hiddenFromHistory?: boolean;
+  /** Parent task id when this task is a spawned helper/subagent. */
+  parentTaskId?: string;
 }
 
 export interface TaskAttachment {

@@ -36,6 +36,9 @@ import type {
   BuildWorkspaceBaselineCaptureResult,
   BuildWorkspaceBaselineResolveResult,
   BuildWorkspaceFileContent,
+  SubagentRunDetail,
+  SubagentRunRecord,
+  SubagentRunTreeNode,
   GatewayConnectorRuntimeDiscoveryItem,
   GatewayConnectorDiscoverySnapshot,
   GatewayConnectorExtensionConfig,
@@ -57,6 +60,11 @@ import type {
   HelpDocsListResponse,
   HelpDocsSearchResponse,
   HelpDocsUpdatedEvent,
+  PluginCommandContribution,
+  PluginDiagnosticsState,
+  PluginDiagnosticsRecord,
+  PluginRecord,
+  PluginRegistryState,
 } from '@accomplish/shared';
 
 // Expose the accomplish API to the renderer
@@ -201,6 +209,40 @@ const accomplishAPI = {
     ipcRenderer.invoke('settings:memory:read', payload),
   saveMemoryFile: (payload: { kind: 'long-term' | 'daily'; date?: string; agentId?: string; content?: string }): Promise<unknown> =>
     ipcRenderer.invoke('settings:memory:save', payload),
+  getRuntimeHooks: (): Promise<unknown> =>
+    ipcRenderer.invoke('settings:runtime-hooks:get'),
+  saveRuntimeHooks: (raw: string): Promise<unknown> =>
+    ipcRenderer.invoke('settings:runtime-hooks:save', raw),
+  getRuntimeHookDiagnostics: (): Promise<unknown> =>
+    ipcRenderer.invoke('settings:runtime-hooks:diagnostics'),
+  clearRuntimeHookDiagnostics: (): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('settings:runtime-hooks:clear-diagnostics'),
+  getPermissionPolicySettings: (): Promise<unknown> =>
+    ipcRenderer.invoke('settings:permission-policy:get'),
+  setPermissionPolicySettings: (settings: unknown): Promise<unknown> =>
+    ipcRenderer.invoke('settings:permission-policy:set', settings),
+  getPermissionPolicyAudit: (): Promise<unknown> =>
+    ipcRenderer.invoke('settings:permission-policy:audit'),
+  getOpenCodePermissionPreview: (agentId?: string): Promise<unknown> =>
+    ipcRenderer.invoke('settings:permission-policy:opencode-preview', agentId),
+  clearPermissionPolicyAudit: (): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('settings:permission-policy:clear-audit'),
+  listPlugins: (): Promise<PluginRegistryState> =>
+    ipcRenderer.invoke('settings:plugins:list'),
+  getPluginDiagnostics: (): Promise<PluginDiagnosticsState> =>
+    ipcRenderer.invoke('settings:plugins:diagnostics'),
+  clearPluginDiagnosticsHistory: (): Promise<{ ok: true }> =>
+    ipcRenderer.invoke('settings:plugins:clear-diagnostics-history'),
+  listPluginCommands: (): Promise<{ commands: PluginCommandContribution[] }> =>
+    ipcRenderer.invoke('plugins:commands:list'),
+  setPluginEnabled: (pluginId: string, enabled: boolean): Promise<PluginRecord> =>
+    ipcRenderer.invoke('settings:plugins:set-enabled', { pluginId, enabled }),
+  installPluginFromDirectory: (sourceDir: string): Promise<PluginRecord> =>
+    ipcRenderer.invoke('settings:plugins:install-from-directory', { sourceDir }),
+  uninstallPlugin: (pluginId: string): Promise<{ ok: true; pluginId: string }> =>
+    ipcRenderer.invoke('settings:plugins:uninstall', { pluginId }),
+  openManagedPluginsRoot: (): Promise<{ ok: boolean; path: string; error?: string }> =>
+    ipcRenderer.invoke('settings:plugins:open-managed-root'),
 
   // Agents
   listAgents: (): Promise<unknown> =>
@@ -527,6 +569,22 @@ const accomplishAPI = {
     ipcRenderer.invoke('build-mode:history:pin', payload),
   deleteBuildTaskHistorySession: (payload: BuildTaskSessionDeleteInput): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('build-mode:history:delete', payload),
+  listSubagents: (payload: { parentTaskId: string }): Promise<{ runs: SubagentRunDetail[]; tree: SubagentRunTreeNode[]; activeCount: number }> =>
+    ipcRenderer.invoke('subagents:list', payload),
+  listAllSubagents: (payload?: { includeArchived?: boolean }): Promise<{ runs: SubagentRunDetail[] }> =>
+    ipcRenderer.invoke('subagents:list-all', payload ?? {}),
+  getSubagent: (payload: { runId: string }): Promise<SubagentRunDetail | null> =>
+    ipcRenderer.invoke('subagents:get', payload),
+  waitSubagent: (payload: { runId: string; timeoutMs?: number; pollIntervalMs?: number }): Promise<{ completed: boolean; waitedMs: number; run: SubagentRunDetail | null }> =>
+    ipcRenderer.invoke('subagents:wait', payload),
+  sendSubagent: (payload: { runId: string; prompt: string; modelProvider?: string; modelId?: string; modelBaseUrl?: string }): Promise<{ ok: boolean; runId: string; childTaskId: string }> =>
+    ipcRenderer.invoke('subagents:send', payload),
+  archiveSubagent: (payload: { runId: string; archived?: boolean }): Promise<SubagentRunDetail> =>
+    ipcRenderer.invoke('subagents:archive', payload),
+  closeSubagent: (payload: { runId: string }): Promise<SubagentRunDetail> =>
+    ipcRenderer.invoke('subagents:close', payload),
+  stopSubagent: (payload: { runId: string }): Promise<{ ok: boolean; runId: string }> =>
+    ipcRenderer.invoke('subagents:stop', payload),
 
   // API Key management (new simplified handlers)
   hasApiKey: (): Promise<boolean> =>

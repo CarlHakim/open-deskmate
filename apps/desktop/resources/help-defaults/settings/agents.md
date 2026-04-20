@@ -1,6 +1,6 @@
 # Settings: Agents
 
-Create and manage agent profiles, behavior, model overrides, and automation controls.
+Create and manage agent profiles, behavior, model overrides, automation controls, and subagent policy.
 
 ## Key Settings
 
@@ -20,6 +20,14 @@ Create and manage agent profiles, behavior, model overrides, and automation cont
   - Scheduled check-ins (depends on Active Automation Mode).
 - **Heartbeat schedule**
   - Interval, daily time, timezone, and optional time window.
+- **Subagents**
+  - Allow or block child-agent spawning for this agent.
+  - Set max child count and max depth.
+  - Restrict allowed target agents.
+  - Control auto-relay of child completions.
+  - Choose default subagent mode (`run` or `session`).
+  - Optionally set a default subagent model override.
+  - Control whether working directory, attached files, and privacy mode are inherited.
 - **Settings Assistants**
   - Model override for settings helpers (for example Skill Assistant).
 
@@ -27,8 +35,14 @@ Create and manage agent profiles, behavior, model overrides, and automation cont
 
 Heartbeat can only be enabled when **Active Automation Mode** is enabled.
 
+## Subagent Rule
+
+If **Allow subagents** is off, that agent cannot spawn child agents from Chat Mode or Build Mode.
+
 ## Related Sections
 
 - [Model & API settings](./model-api-settings.md)
 - [Automations](./automations.md)
 - [Skills](./skills.md)
+- [Runtime Hooks](./runtime-hooks.md)
+- [Subagents](../subagents.md)

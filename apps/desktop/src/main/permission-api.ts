@@ -13,6 +13,12 @@ import type { PermissionRequest, FileOperation } from '@accomplish/shared';
 import { enqueueWebPermissionRequest } from './services/webhook-permissions';
 import path from 'path';
 import { getWorkspaceRoot } from './store/appSettings';
+import { getTask } from './store/taskHistory';
+import {
+  createPermissionPolicyAuditEntry,
+  evaluateFilePermissionPolicy,
+} from './permissions/policy-engine';
+import { recordPermissionPolicyAuditEntry } from './permissions/policy-store';
 
 export const PERMISSION_API_PORT = 9226;
 
@@ -145,8 +151,44 @@ function isWorkspaceAutoAllowOperation(
 
 function shouldAutoAllowFileOperation(taskId: string, operation: FileOperation, filePath: string, targetPath?: string): boolean {
   const policy = taskFilePolicies.get(taskId);
-  if (policy?.allowAllForTask) return true;
-  return isWorkspaceAutoAllowOperation(taskId, operation, filePath, targetPath);
+  const agentId = getTask(taskId)?.agentId;
+  const decision = evaluateFilePermissionPolicy({
+    taskId,
+    agentId,
+    operation,
+    filePath,
+    targetPath,
+    workspaceRoot: resolveTaskWorkspaceRoot(taskId),
+    allowAllForTask: policy?.allowAllForTask,
+  });
+  recordPermissionPolicyAuditEntry(createPermissionPolicyAuditEntry({
+    origin: 'file-permission-api',
+    agentId,
+    request: {
+      taskId,
+      type: 'file',
+      fileOperation: operation,
+      filePath,
+      targetPath,
+    },
+    decision,
+  }));
+  return decision.action === 'allow';
+}
+
+function shouldAutoDenyFileOperation(taskId: string, operation: FileOperation, filePath: string, targetPath?: string): boolean {
+  const policy = taskFilePolicies.get(taskId);
+  const agentId = getTask(taskId)?.agentId;
+  const decision = evaluateFilePermissionPolicy({
+    taskId,
+    agentId,
+    operation,
+    filePath,
+    targetPath,
+    workspaceRoot: resolveTaskWorkspaceRoot(taskId),
+    allowAllForTask: policy?.allowAllForTask,
+  });
+  return decision.action === 'deny';
 }
 
 /**
@@ -237,6 +279,13 @@ export function startPermissionApiServer(): http.Server {
       console.log(`[Permission API] Auto-approving file operation for task ${taskId}: ${data.operation} ${data.filePath}`);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ allowed: true, autoApproved: true }));
+      return;
+    }
+
+    if (shouldAutoDenyFileOperation(taskId, data.operation as FileOperation, data.filePath, data.targetPath)) {
+      console.log(`[Permission API] Auto-denying file operation for task ${taskId}: ${data.operation} ${data.filePath}`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ allowed: false, autoDenied: true }));
       return;
     }
 

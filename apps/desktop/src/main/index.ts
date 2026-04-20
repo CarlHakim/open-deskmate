@@ -27,6 +27,8 @@ import { maybeHandleAppConnectorOAuthProtocolUrl } from './services/app-connecto
 import { startAppConnectorOAuthRefreshService, stopAppConnectorOAuthRefreshService } from './services/app-connector-runtimes';
 import { buildDevProcessManager } from './services/build-mode/dev-process-manager';
 import { buildTerminalManager } from './services/build-mode/terminal-manager';
+import { disposeAllSubagentSessions } from './services/subagents/subagent-control';
+import { recordPluginRegistrationDiagnostics } from './plugins/plugin-diagnostics-store';
 import {
   initializeHelpDocs,
   listHelpDocs,
@@ -176,6 +178,7 @@ async function runShutdownCleanup(): Promise<void> {
     withTimeout(stopGatewayConnectorRuntimes(), SHUTDOWN_STEP_TIMEOUT_MS, 'Gateway connector runtimes stop'),
     withTimeout(stopConnectorBridgeRuntime(), SHUTDOWN_STEP_TIMEOUT_MS, 'Connector bridge stop'),
     withTimeout(stopVoiceWakeService(), SHUTDOWN_STEP_TIMEOUT_MS, 'Voice wake stop'),
+    withTimeout(disposeAllSubagentSessions(), SHUTDOWN_STEP_TIMEOUT_MS, 'Subagent dispose'),
     withTimeout(buildDevProcessManager.disposeAll(), SHUTDOWN_STEP_TIMEOUT_MS, 'Build runtime dispose'),
     Promise.resolve(buildTerminalManager.disposeAll()),
   ];
@@ -573,6 +576,7 @@ if (!gotTheLock) {
     });
 
     await initializeHelpDocs();
+    recordPluginRegistrationDiagnostics('startup');
     startHelpDocsWatcher();
     unsubscribeHelpDocs = onHelpDocsChanged((event) => {
       broadcastHelpDocsUpdated(event);

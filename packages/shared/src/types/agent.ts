@@ -1,4 +1,21 @@
 import type { SelectedModel } from './provider';
+import type { SubagentSpawnMode } from './subagents';
+import type { PermissionPolicyAction } from './permissions';
+
+export interface AgentPermissionProfile {
+  enabled?: boolean;
+  file?: {
+    allowWorkspaceWritesWithoutPrompt?: boolean;
+    allowTaskScopedAllowAll?: boolean;
+    defaultDecision?: PermissionPolicyAction;
+  };
+  runtime?: {
+    defaultToolDecision?: PermissionPolicyAction;
+    defaultQuestionDecision?: PermissionPolicyAction;
+    allowedToolNames?: string[];
+    blockedToolNames?: string[];
+  };
+}
 
 export interface AgentConfig {
   id?: string;
@@ -25,6 +42,18 @@ export interface AgentConfig {
   heartbeatPrompt?: string;
   autoSkillEnabled?: boolean;
   autoSkillAutoPromoteLowRisk?: boolean;
+  subagentsEnabled?: boolean;
+  subagentMaxChildren?: number;
+  subagentMaxDepth?: number;
+  subagentAllowedAgentIds?: string[];
+  subagentAutoRelayCompletions?: boolean;
+  subagentDefaultModel?: SelectedModel | null;
+  subagentRunTimeoutMs?: number;
+  subagentDefaultMode?: SubagentSpawnMode;
+  subagentInheritWorkingDirectory?: boolean;
+  subagentInheritAttachedFiles?: boolean;
+  subagentInheritPrivacyMode?: boolean;
+  permissionProfile?: AgentPermissionProfile | null;
 }
 
 export interface AgentProfile {
@@ -52,6 +81,18 @@ export interface AgentProfile {
   heartbeatPrompt?: string;
   autoSkillEnabled?: boolean;
   autoSkillAutoPromoteLowRisk?: boolean;
+  subagentsEnabled?: boolean;
+  subagentMaxChildren?: number;
+  subagentMaxDepth?: number;
+  subagentAllowedAgentIds?: string[];
+  subagentAutoRelayCompletions?: boolean;
+  subagentDefaultModel?: SelectedModel;
+  subagentRunTimeoutMs?: number;
+  subagentDefaultMode?: SubagentSpawnMode;
+  subagentInheritWorkingDirectory?: boolean;
+  subagentInheritAttachedFiles?: boolean;
+  subagentInheritPrivacyMode?: boolean;
+  permissionProfile?: AgentPermissionProfile;
   createdAt: string;
   updatedAt: string;
 }

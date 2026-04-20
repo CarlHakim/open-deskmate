@@ -72,6 +72,15 @@ import {
 import type {
   ApiKeyConfig,
   BuildDiffEnforcementMode,
+  PermissionPolicyAction,
+  PermissionPolicyAuditEntry,
+  PermissionPolicyAuditOrigin,
+  OpenCodePermissionPreview,
+  PermissionPolicySettings,
+  PluginDiagnosticsHistoryEntry,
+  PluginDiagnosticsRecord,
+  PluginRecord,
+  PluginRegistryState,
   ProviderConfig,
   ProviderType,
   SelectedModel,
@@ -107,6 +116,7 @@ import type {
 import { DEFAULT_PROVIDERS } from '@accomplish/shared';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { notifyPluginCommandsChanged } from '@/hooks/usePluginSlashCommands';
 import appIcon from '../../../../resources/icon.png';
 import { useAgentStore } from '@/stores/agentStore';
 import { useAttachmentStore } from '@/stores/attachmentStore';
@@ -151,6 +161,7 @@ interface SettingsDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onApiKeySaved?: () => void;
+  initialSectionQuery?: string;
 }
 
 const AGENT_LOOP_DEFAULT_MAX_ITERATIONS = 4;
@@ -166,6 +177,266 @@ const AGENT_HEARTBEAT_DEFAULT_PROMPT = [
   '- If there is actionable follow-up work, do it.',
   '- If nothing is needed, briefly report that systems are stable.',
 ].join('\n');
+
+type ListedToolDecision = 'default' | PermissionPolicyAction;
+
+const GLOBAL_EXECUTOR_BUILTIN_RULES: Array<{
+  name: string;
+  label: string;
+  description: string;
+}> = [
+  {
+    name: 'bash',
+    label: 'bash',
+    description: 'Shell command execution inside the OpenCode runtime.',
+  },
+  {
+    name: 'webfetch',
+    label: 'webfetch',
+    description: 'Direct HTTP fetches issued by the runtime.',
+  },
+  {
+    name: 'edit',
+    label: 'edit',
+    description: 'Built-in file editing inside the runtime.',
+  },
+  {
+    name: 'websearch',
+    label: 'websearch',
+    description: 'Web search initiated by the runtime.',
+  },
+  {
+    name: 'codesearch',
+    label: 'codesearch',
+    description: 'Codebase search initiated by the runtime.',
+  },
+  {
+    name: 'skill',
+    label: 'skill',
+    description: 'Built-in skill execution inside the runtime.',
+  },
+  {
+    name: 'lsp',
+    label: 'lsp',
+    description: 'Language-server features used by the runtime.',
+  },
+  {
+    name: 'todoread',
+    label: 'todoread',
+    description: 'Read access to the runtime todo list.',
+  },
+  {
+    name: 'todowrite',
+    label: 'todowrite',
+    description: 'Write access to the runtime todo list.',
+  },
+];
+
+const AGENT_EXECUTOR_OVERRIDE_RULES = GLOBAL_EXECUTOR_BUILTIN_RULES.filter((rule) =>
+  ['bash', 'webfetch', 'edit'].includes(rule.name)
+);
+
+const RUNTIME_DEFAULT_DENY_EXECUTOR_BUILTINS = new Set([
+  'bash',
+  'webfetch',
+  'websearch',
+  'codesearch',
+  'skill',
+  'lsp',
+  'todoread',
+  'todowrite',
+]);
+
+function isRendererHardReadOnlyPolicy(
+  allowWorkspaceWritesWithoutPrompt: boolean,
+  allowTaskScopedAllowAll: boolean,
+  defaultDecision: PermissionPolicyAction
+): boolean {
+  return (
+    allowWorkspaceWritesWithoutPrompt === false
+    && allowTaskScopedAllowAll === false
+    && defaultDecision === 'deny'
+  );
+}
+
+function getListedToolDecision(
+  toolName: string,
+  allowedToolNamesText: string,
+  blockedToolNamesText: string
+): ListedToolDecision {
+  const allowed = new Set(parseAllowlist(allowedToolNamesText));
+  const blocked = new Set(parseAllowlist(blockedToolNamesText));
+  if (blocked.has(toolName)) return 'deny';
+  if (allowed.has(toolName)) return 'allow';
+  return 'default';
+}
+
+function setListedToolDecision(
+  toolName: string,
+  decision: ListedToolDecision,
+  allowedToolNamesText: string,
+  blockedToolNamesText: string
+): { allowed: string; blocked: string } {
+  const allowed = new Set(parseAllowlist(allowedToolNamesText));
+  const blocked = new Set(parseAllowlist(blockedToolNamesText));
+
+  allowed.delete(toolName);
+  blocked.delete(toolName);
+
+  if (decision === 'allow') {
+    allowed.add(toolName);
+  } else if (decision === 'deny') {
+    blocked.add(toolName);
+  }
+
+  return {
+    allowed: formatAllowlist(Array.from(allowed)),
+    blocked: formatAllowlist(Array.from(blocked)),
+  };
+}
+
+function createPermissionPolicySnapshot(input: {
+  allowWorkspaceWritesWithoutPrompt: boolean;
+  allowTaskScopedAllowAll: boolean;
+  fileDefaultDecision: PermissionPolicyAction;
+  runtimeDefaultToolDecision: PermissionPolicyAction;
+  runtimeDefaultQuestionDecision: PermissionPolicyAction;
+  allowedToolNamesText: string;
+  blockedToolNamesText: string;
+  auditMaxEntries: string;
+}): string {
+  const parsedAuditMaxEntries = Number.parseInt(input.auditMaxEntries, 10);
+  return JSON.stringify({
+    file: {
+      allowWorkspaceWritesWithoutPrompt: input.allowWorkspaceWritesWithoutPrompt,
+      allowTaskScopedAllowAll: input.allowTaskScopedAllowAll,
+      defaultDecision: input.fileDefaultDecision,
+    },
+    runtime: {
+      defaultToolDecision: input.runtimeDefaultToolDecision,
+      defaultQuestionDecision: input.runtimeDefaultQuestionDecision,
+      allowedToolNames: parseAllowlist(input.allowedToolNamesText).sort(),
+      blockedToolNames: parseAllowlist(input.blockedToolNamesText).sort(),
+    },
+    audit: {
+      maxEntries: Number.isFinite(parsedAuditMaxEntries) ? parsedAuditMaxEntries : 0,
+    },
+  });
+}
+
+function createAgentPermissionProfileSnapshot(input: {
+  enabled: boolean;
+  fileAllowWorkspaceWritesWithoutPrompt: boolean;
+  fileAllowTaskScopedAllowAll: boolean;
+  fileDefaultDecision: PermissionPolicyAction;
+  runtimeDefaultToolDecision: PermissionPolicyAction;
+  runtimeDefaultQuestionDecision: PermissionPolicyAction;
+  allowedToolNamesText: string;
+  blockedToolNamesText: string;
+}): string {
+  return JSON.stringify(
+    input.enabled
+      ? {
+          enabled: true,
+          file: {
+            allowWorkspaceWritesWithoutPrompt: input.fileAllowWorkspaceWritesWithoutPrompt,
+            allowTaskScopedAllowAll: input.fileAllowTaskScopedAllowAll,
+            defaultDecision: input.fileDefaultDecision,
+          },
+          runtime: {
+            defaultToolDecision: input.runtimeDefaultToolDecision,
+            defaultQuestionDecision: input.runtimeDefaultQuestionDecision,
+            allowedToolNames: parseAllowlist(input.allowedToolNamesText).sort(),
+            blockedToolNames: parseAllowlist(input.blockedToolNamesText).sort(),
+          },
+        }
+      : {
+          enabled: false,
+        }
+  );
+}
+
+function createSkillAssistantModelSnapshot(input: {
+  enabled: boolean;
+  provider: ProviderType;
+  modelId: string;
+  baseUrl: string;
+}): string {
+  if (!input.enabled) {
+    return JSON.stringify({ enabled: false, model: null });
+  }
+  let modelId = input.modelId.trim();
+  if (input.provider === 'ollama' && modelId && !modelId.startsWith('ollama/')) {
+    modelId = `ollama/${modelId}`;
+  }
+  return JSON.stringify({
+    enabled: true,
+    model: {
+      provider: input.provider,
+      model: modelId,
+      baseUrl: input.baseUrl.trim() || undefined,
+    },
+  });
+}
+
+function createModelLimitsSnapshot(
+  overrides: Record<string, { contextWindowTokens?: number }>,
+  edits: Record<string, string> = {}
+): string {
+  const snapshot: Record<string, number | string> = {};
+  const modelIds = Array.from(new Set([...Object.keys(overrides), ...Object.keys(edits)])).sort();
+
+  for (const modelId of modelIds) {
+    if (Object.prototype.hasOwnProperty.call(edits, modelId)) {
+      const raw = (edits[modelId] ?? '').trim();
+      if (!raw) {
+        continue;
+      }
+      const parsed = Number(raw);
+      snapshot[modelId] = Number.isFinite(parsed) ? parsed : `invalid:${raw}`;
+      continue;
+    }
+
+    const override = overrides[modelId]?.contextWindowTokens;
+    if (typeof override === 'number' && Number.isFinite(override)) {
+      snapshot[modelId] = override;
+    }
+  }
+
+  return JSON.stringify(snapshot);
+}
+
+function compareSemverLike(left: string, right: string): number {
+  const parse = (value: string): number[] => value
+    .split(/[.+-]/)
+    .slice(0, 3)
+    .map((part) => Number.parseInt(part, 10))
+    .map((part) => (Number.isFinite(part) ? part : 0));
+  const a = parse(left);
+  const b = parse(right);
+  for (let index = 0; index < 3; index += 1) {
+    const delta = (a[index] || 0) - (b[index] || 0);
+    if (delta !== 0) return delta;
+  }
+  return 0;
+}
+
+type PluginPreviewDialogState = null | {
+  title: string;
+  subtitle?: string;
+  body: string;
+};
+
+function getExecutorDecisionBadgeClass(decision: ListedToolDecision): string {
+  switch (decision) {
+    case 'allow':
+      return 'bg-success/10 text-success';
+    case 'deny':
+      return 'bg-destructive/10 text-destructive';
+    default:
+      return 'bg-muted text-muted-foreground';
+  }
+}
 
 function json5ishToJson(text: string): string {
   let s = text.trim();
@@ -394,7 +665,7 @@ function renderAppConnectorIcon(connectorId: string): ReactNode {
   }
 }
 
-export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: SettingsDialogProps) {
+export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, initialSectionQuery = '' }: SettingsDialogProps) {
   const {
     agents,
     activeAgentId,
@@ -445,9 +716,11 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
   const [modelLimitOverrides, setModelLimitOverrides] = useState<Record<string, { contextWindowTokens?: number }>>({});
   const [modelLimitsLoading, setModelLimitsLoading] = useState(false);
   const [modelLimitsError, setModelLimitsError] = useState<string | null>(null);
+  const [modelLimitsStatus, setModelLimitsStatus] = useState<string | null>(null);
   const [modelLimitsOpen, setModelLimitsOpen] = useState(false);
   const [modelLimitsEdits, setModelLimitsEdits] = useState<Record<string, string>>({});
   const [modelLimitsSaving, setModelLimitsSaving] = useState<Record<string, boolean>>({});
+  const [savedModelLimitsSnapshot, setSavedModelLimitsSnapshot] = useState(() => createModelLimitsSnapshot({}));
   const [activeTab, setActiveTab] = useState<'cloud' | 'local'>('cloud');
   const [ollamaUrl, setOllamaUrl] = useState('http://localhost:11434');
   const [ollamaModels, setOllamaModels] = useState<Array<{ id: string; displayName: string; size: number }>>([]);
@@ -460,6 +733,17 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
   const [skillsStatus, setSkillsStatus] = useState<SkillStatus[]>([]);
   const [loadingSkills, setLoadingSkills] = useState(true);
   const [skillsError, setSkillsError] = useState<string | null>(null);
+  const [pluginRegistryState, setPluginRegistryState] = useState<PluginRegistryState | null>(null);
+  const [pluginDiagnostics, setPluginDiagnostics] = useState<PluginDiagnosticsRecord[]>([]);
+  const [pluginDiagnosticsHistory, setPluginDiagnosticsHistory] = useState<PluginDiagnosticsHistoryEntry[]>([]);
+  const [pluginsLoading, setPluginsLoading] = useState(false);
+  const [pluginsError, setPluginsError] = useState<string | null>(null);
+  const [pluginsStatus, setPluginsStatus] = useState<string | null>(null);
+  const [pluginToggleSaving, setPluginToggleSaving] = useState<Record<string, boolean>>({});
+  const [installingPlugin, setInstallingPlugin] = useState(false);
+  const [pluginPendingUninstall, setPluginPendingUninstall] = useState<PluginRecord | null>(null);
+  const [uninstallingPluginId, setUninstallingPluginId] = useState<string | null>(null);
+  const [pluginPreviewDialog, setPluginPreviewDialog] = useState<PluginPreviewDialogState>(null);
 
   const [userSkillsReport, setUserSkillsReport] = useState<UserSkillsReport | null>(null);
   const [loadingUserSkills, setLoadingUserSkills] = useState(true);
@@ -488,6 +772,12 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
   const [skillAssistantModelSaving, setSkillAssistantModelSaving] = useState(false);
   const [skillAssistantModelError, setSkillAssistantModelError] = useState<string | null>(null);
   const [skillAssistantModelStatus, setSkillAssistantModelStatus] = useState<string | null>(null);
+  const [savedSkillAssistantModelSnapshot, setSavedSkillAssistantModelSnapshot] = useState(() => createSkillAssistantModelSnapshot({
+    enabled: false,
+    provider: AGENT_FALLBACK_MODEL.provider as ProviderType,
+    modelId: AGENT_FALLBACK_MODEL.model,
+    baseUrl: '',
+  }));
   const skillAssistantModeInputRef = useRef<HTMLSelectElement | null>(null);
   const skillAssistantTargetInputRef = useRef<HTMLSelectElement | null>(null);
   const skillAssistantQuestionInputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -533,6 +823,62 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
   const [browserProfileSaving, setBrowserProfileSaving] = useState(false);
   const [workspaceRoot, setWorkspaceRootState] = useState<string | null>(null);
   const [workspaceSaving, setWorkspaceSaving] = useState(false);
+  const [runtimeHooksPath, setRuntimeHooksPath] = useState('');
+  const [runtimeHooksText, setRuntimeHooksText] = useState('{\n  "hooks": []\n}\n');
+  const [runtimeHooksHookCount, setRuntimeHooksHookCount] = useState(0);
+  const [runtimeHooksLoading, setRuntimeHooksLoading] = useState(false);
+  const [runtimeHooksSaving, setRuntimeHooksSaving] = useState(false);
+  const [runtimeHooksError, setRuntimeHooksError] = useState<string | null>(null);
+  const [runtimeHooksStatus, setRuntimeHooksStatus] = useState<string | null>(null);
+  const [runtimeHookDiagnosticsLoading, setRuntimeHookDiagnosticsLoading] = useState(false);
+  const [runtimeHookDiagnosticsQuery, setRuntimeHookDiagnosticsQuery] = useState('');
+  const [runtimeHookDiagnosticsFilter, setRuntimeHookDiagnosticsFilter] = useState<'all' | 'blocked' | 'matched'>('all');
+  const [runtimeHookDiagnostics, setRuntimeHookDiagnostics] = useState<Array<{
+    id: string;
+    timestamp: string;
+    event: string;
+    agentId?: string;
+    taskId?: string;
+    toolName?: string;
+    source?: string;
+    matchedHookIds: string[];
+    ok: boolean;
+    blockReason?: string;
+    notes?: string[];
+    inputPreview?: string;
+    outputPreview?: string;
+  }>>([]);
+  const [savedRuntimeHooksSnapshot, setSavedRuntimeHooksSnapshot] = useState('{\n  "hooks": []\n}\n');
+  const runtimeHooksTextRef = useRef<HTMLTextAreaElement | null>(null);
+  const [permissionPolicyLoading, setPermissionPolicyLoading] = useState(false);
+  const [permissionPolicySaving, setPermissionPolicySaving] = useState(false);
+  const [permissionPolicyError, setPermissionPolicyError] = useState<string | null>(null);
+  const [permissionPolicyStatus, setPermissionPolicyStatus] = useState<string | null>(null);
+  const [permissionPolicyAllowWorkspaceWritesWithoutPrompt, setPermissionPolicyAllowWorkspaceWritesWithoutPrompt] = useState(true);
+  const [permissionPolicyAllowTaskScopedAllowAll, setPermissionPolicyAllowTaskScopedAllowAll] = useState(true);
+  const [permissionPolicyFileDefaultDecision, setPermissionPolicyFileDefaultDecision] = useState<PermissionPolicyAction>('prompt');
+  const [permissionPolicyRuntimeDefaultToolDecision, setPermissionPolicyRuntimeDefaultToolDecision] = useState<PermissionPolicyAction>('prompt');
+  const [permissionPolicyRuntimeDefaultQuestionDecision, setPermissionPolicyRuntimeDefaultQuestionDecision] = useState<PermissionPolicyAction>('prompt');
+  const [permissionPolicyAllowedToolNames, setPermissionPolicyAllowedToolNames] = useState('');
+  const [permissionPolicyBlockedToolNames, setPermissionPolicyBlockedToolNames] = useState('');
+  const [permissionPolicyAuditMaxEntries, setPermissionPolicyAuditMaxEntries] = useState('200');
+  const [permissionPolicyAuditLoading, setPermissionPolicyAuditLoading] = useState(false);
+  const [permissionPolicyAuditQuery, setPermissionPolicyAuditQuery] = useState('');
+  const [permissionPolicyAuditOriginFilter, setPermissionPolicyAuditOriginFilter] = useState<'all' | PermissionPolicyAuditOrigin>('all');
+  const [permissionPolicyAuditDecisionFilter, setPermissionPolicyAuditDecisionFilter] = useState<'all' | PermissionPolicyAction>('all');
+  const [permissionPolicyAuditEntries, setPermissionPolicyAuditEntries] = useState<PermissionPolicyAuditEntry[]>([]);
+  const [permissionPolicyOpenCodePreviewLoading, setPermissionPolicyOpenCodePreviewLoading] = useState(false);
+  const [permissionPolicyOpenCodePreview, setPermissionPolicyOpenCodePreview] = useState<OpenCodePermissionPreview | null>(null);
+  const [savedPermissionPolicySnapshot, setSavedPermissionPolicySnapshot] = useState(() => createPermissionPolicySnapshot({
+    allowWorkspaceWritesWithoutPrompt: true,
+    allowTaskScopedAllowAll: true,
+    fileDefaultDecision: 'prompt',
+    runtimeDefaultToolDecision: 'prompt',
+    runtimeDefaultQuestionDecision: 'prompt',
+    allowedToolNamesText: '',
+    blockedToolNamesText: '',
+    auditMaxEntries: '200',
+  }));
   const [memoryLongTerm, setMemoryLongTerm] = useState('');
   const [memoryDaily, setMemoryDaily] = useState('');
   const [memoryDailyDate, setMemoryDailyDate] = useState('');
@@ -568,6 +914,38 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
   const [agentHeartbeatPrompt, setAgentHeartbeatPrompt] = useState(AGENT_HEARTBEAT_DEFAULT_PROMPT);
   const [agentAutoSkillEnabled, setAgentAutoSkillEnabled] = useState(false);
   const [agentAutoSkillAutoPromoteLowRisk, setAgentAutoSkillAutoPromoteLowRisk] = useState(false);
+  const [agentSubagentsEnabled, setAgentSubagentsEnabled] = useState(false);
+  const [agentSubagentMaxChildren, setAgentSubagentMaxChildren] = useState('3');
+  const [agentSubagentMaxDepth, setAgentSubagentMaxDepth] = useState('1');
+  const [agentSubagentAllowedAgentIds, setAgentSubagentAllowedAgentIds] = useState('');
+  const [agentSubagentAutoRelayCompletions, setAgentSubagentAutoRelayCompletions] = useState(true);
+  const [agentSubagentRunTimeoutSeconds, setAgentSubagentRunTimeoutSeconds] = useState('300');
+  const [agentSubagentDefaultMode, setAgentSubagentDefaultMode] = useState<'run' | 'session'>('run');
+  const [agentSubagentDefaultModelEnabled, setAgentSubagentDefaultModelEnabled] = useState(false);
+  const [agentSubagentDefaultModelProvider, setAgentSubagentDefaultModelProvider] = useState<ProviderType>('anthropic');
+  const [agentSubagentDefaultModelId, setAgentSubagentDefaultModelId] = useState(AGENT_FALLBACK_MODEL.model);
+  const [agentSubagentDefaultModelBaseUrl, setAgentSubagentDefaultModelBaseUrl] = useState('');
+  const [agentSubagentInheritWorkingDirectory, setAgentSubagentInheritWorkingDirectory] = useState(true);
+  const [agentSubagentInheritAttachedFiles, setAgentSubagentInheritAttachedFiles] = useState(true);
+  const [agentSubagentInheritPrivacyMode, setAgentSubagentInheritPrivacyMode] = useState(true);
+  const [agentPermissionProfileEnabled, setAgentPermissionProfileEnabled] = useState(false);
+  const [agentPermissionFileAllowWorkspaceWritesWithoutPrompt, setAgentPermissionFileAllowWorkspaceWritesWithoutPrompt] = useState(true);
+  const [agentPermissionFileAllowTaskScopedAllowAll, setAgentPermissionFileAllowTaskScopedAllowAll] = useState(true);
+  const [agentPermissionFileDefaultDecision, setAgentPermissionFileDefaultDecision] = useState<PermissionPolicyAction>('prompt');
+  const [agentPermissionRuntimeDefaultToolDecision, setAgentPermissionRuntimeDefaultToolDecision] = useState<PermissionPolicyAction>('prompt');
+  const [agentPermissionRuntimeDefaultQuestionDecision, setAgentPermissionRuntimeDefaultQuestionDecision] = useState<PermissionPolicyAction>('prompt');
+  const [agentPermissionAllowedToolNames, setAgentPermissionAllowedToolNames] = useState('');
+  const [agentPermissionBlockedToolNames, setAgentPermissionBlockedToolNames] = useState('');
+  const [savedAgentPermissionProfileSnapshot, setSavedAgentPermissionProfileSnapshot] = useState(() => createAgentPermissionProfileSnapshot({
+    enabled: false,
+    fileAllowWorkspaceWritesWithoutPrompt: true,
+    fileAllowTaskScopedAllowAll: true,
+    fileDefaultDecision: 'prompt',
+    runtimeDefaultToolDecision: 'prompt',
+    runtimeDefaultQuestionDecision: 'prompt',
+    allowedToolNamesText: '',
+    blockedToolNamesText: '',
+  }));
   const [showHeartbeatAutomationModeDialog, setShowHeartbeatAutomationModeDialog] = useState(false);
   const [agentSaving, setAgentSaving] = useState(false);
   const [agentError, setAgentError] = useState<string | null>(null);
@@ -638,6 +1016,12 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
   const [settingsSectionQuery, setSettingsSectionQuery] = useState('');
   const [settingsSectionJumpTarget, setSettingsSectionJumpTarget] = useState('');
   const deferredSettingsSectionQuery = useDeferredValue(settingsSectionQuery);
+
+  useEffect(() => {
+    if (!open) return;
+    setSettingsSectionQuery(initialSectionQuery || '');
+    setSettingsSectionJumpTarget('');
+  }, [initialSectionQuery, open]);
   const settingsSectionRefs = useRef<Record<string, HTMLElement | null>>({});
 
   const [discordStatus, setDiscordStatus] = useState<DiscordConnectorStatus | null>(null);
@@ -737,6 +1121,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
   const [nodeMicBufferUrls, setNodeMicBufferUrls] = useState<Record<string, string>>({});
   const [nodeScreenBufferUrls, setNodeScreenBufferUrls] = useState<Record<string, string>>({});
   const [nodeScreenStreamUrls, setNodeScreenStreamUrls] = useState<Record<string, string>>({});
+
+  const permissionPolicyPreviewTargetAgentId = agentFormId || activeAgentId || undefined;
 
   const refreshMemoryState = async () => {
     const accomplish = getAccomplish();
@@ -1251,6 +1637,14 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
         const selected = (model as SelectedModel | null) ?? null;
         setSkillAssistantModelOverrideEnabled(Boolean(selected));
         applySkillAssistantModelForm(selected ?? AGENT_FALLBACK_MODEL);
+        setSavedSkillAssistantModelSnapshot(
+          createSkillAssistantModelSnapshot({
+            enabled: Boolean(selected),
+            provider: ((selected ?? AGENT_FALLBACK_MODEL).provider || AGENT_FALLBACK_MODEL.provider) as ProviderType,
+            modelId: (selected ?? AGENT_FALLBACK_MODEL).model || AGENT_FALLBACK_MODEL.model,
+            baseUrl: selected?.baseUrl || '',
+          })
+        );
       } catch (err) {
         console.error('Failed to fetch Skill Assistant model:', err);
       }
@@ -1321,6 +1715,126 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
       }
     };
 
+    const fetchRuntimeHooks = async () => {
+      setRuntimeHooksLoading(true);
+      setRuntimeHookDiagnosticsLoading(true);
+      try {
+        const [hooksState, diagnosticsState] = await Promise.all([
+          accomplish.getRuntimeHooks(),
+          accomplish.getRuntimeHookDiagnostics(),
+        ]);
+        setRuntimeHooksPath((hooksState as { path?: string })?.path || '');
+        const rawHooksText = (hooksState as { raw?: string })?.raw || '{\n  "hooks": []\n}\n';
+        setRuntimeHooksText(rawHooksText);
+        setSavedRuntimeHooksSnapshot(rawHooksText);
+        setRuntimeHooksHookCount(
+          typeof (hooksState as { hookCount?: number })?.hookCount === 'number'
+            ? (hooksState as { hookCount: number }).hookCount
+            : 0
+        );
+        setRuntimeHookDiagnostics(
+          Array.isArray((diagnosticsState as { entries?: unknown[] })?.entries)
+            ? ((diagnosticsState as { entries: typeof runtimeHookDiagnostics }).entries)
+            : []
+        );
+        setRuntimeHooksError(null);
+      } catch (err) {
+        console.error('Failed to fetch runtime hooks:', err);
+        setRuntimeHooksError('Unable to load runtime hooks.');
+      } finally {
+        setRuntimeHooksLoading(false);
+        setRuntimeHookDiagnosticsLoading(false);
+      }
+    };
+
+    const fetchPermissionPolicy = async () => {
+      setPermissionPolicyLoading(true);
+      setPermissionPolicyAuditLoading(true);
+      try {
+        const [settingsState, auditState] = await Promise.all([
+          accomplish.getPermissionPolicySettings(),
+          accomplish.getPermissionPolicyAudit(),
+        ]);
+        const settings = settingsState as PermissionPolicySettings;
+        setPermissionPolicyAllowWorkspaceWritesWithoutPrompt(
+          settings?.file?.allowWorkspaceWritesWithoutPrompt !== false
+        );
+        setPermissionPolicyAllowTaskScopedAllowAll(
+          settings?.file?.allowTaskScopedAllowAll !== false
+        );
+        setPermissionPolicyFileDefaultDecision(
+          settings?.file?.defaultDecision === 'allow'
+            ? 'allow'
+            : settings?.file?.defaultDecision === 'deny'
+              ? 'deny'
+              : 'prompt'
+        );
+        setPermissionPolicyRuntimeDefaultToolDecision(
+          settings?.runtime?.defaultToolDecision === 'allow'
+            ? 'allow'
+            : settings?.runtime?.defaultToolDecision === 'deny'
+              ? 'deny'
+              : 'prompt'
+        );
+        setPermissionPolicyRuntimeDefaultQuestionDecision(
+          settings?.runtime?.defaultQuestionDecision === 'allow'
+            ? 'allow'
+            : settings?.runtime?.defaultQuestionDecision === 'deny'
+              ? 'deny'
+              : 'prompt'
+        );
+        setPermissionPolicyAllowedToolNames(formatAllowlist(settings?.runtime?.allowedToolNames || []));
+        setPermissionPolicyBlockedToolNames(formatAllowlist(settings?.runtime?.blockedToolNames || []));
+        setPermissionPolicyAuditMaxEntries(
+          typeof settings?.audit?.maxEntries === 'number'
+            ? String(settings.audit.maxEntries)
+            : '200'
+        );
+        setSavedPermissionPolicySnapshot(
+          createPermissionPolicySnapshot({
+            allowWorkspaceWritesWithoutPrompt: settings?.file?.allowWorkspaceWritesWithoutPrompt !== false,
+            allowTaskScopedAllowAll: settings?.file?.allowTaskScopedAllowAll !== false,
+            fileDefaultDecision:
+              settings?.file?.defaultDecision === 'allow'
+                ? 'allow'
+                : settings?.file?.defaultDecision === 'deny'
+                  ? 'deny'
+                  : 'prompt',
+            runtimeDefaultToolDecision:
+              settings?.runtime?.defaultToolDecision === 'allow'
+                ? 'allow'
+                : settings?.runtime?.defaultToolDecision === 'deny'
+                  ? 'deny'
+                  : 'prompt',
+            runtimeDefaultQuestionDecision:
+              settings?.runtime?.defaultQuestionDecision === 'allow'
+                ? 'allow'
+                : settings?.runtime?.defaultQuestionDecision === 'deny'
+                  ? 'deny'
+                  : 'prompt',
+            allowedToolNamesText: formatAllowlist(settings?.runtime?.allowedToolNames || []),
+            blockedToolNamesText: formatAllowlist(settings?.runtime?.blockedToolNames || []),
+            auditMaxEntries:
+              typeof settings?.audit?.maxEntries === 'number'
+                ? String(settings.audit.maxEntries)
+                : '200',
+          })
+        );
+        setPermissionPolicyAuditEntries(
+          Array.isArray((auditState as { entries?: PermissionPolicyAuditEntry[] })?.entries)
+            ? ((auditState as { entries: PermissionPolicyAuditEntry[] }).entries)
+            : []
+        );
+        setPermissionPolicyError(null);
+      } catch (err) {
+        console.error('Failed to fetch permission policy:', err);
+        setPermissionPolicyError('Unable to load permission policy.');
+      } finally {
+        setPermissionPolicyLoading(false);
+        setPermissionPolicyAuditLoading(false);
+      }
+    };
+
     const fetchUsagePricing = async () => {
       setUsagePricingLoading(true);
       try {
@@ -1354,6 +1868,26 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
         setSkillsError('Unable to load skills status.');
       } finally {
         setLoadingSkills(false);
+      }
+    };
+
+    const fetchPlugins = async () => {
+      setPluginsLoading(true);
+      try {
+      const [state, diagnosticsState] = await Promise.all([
+          accomplish.listPlugins(),
+          accomplish.getPluginDiagnostics(),
+        ]);
+        setPluginRegistryState(state);
+        setPluginDiagnostics(Array.isArray(diagnosticsState?.diagnostics) ? diagnosticsState.diagnostics : []);
+        setPluginDiagnosticsHistory(Array.isArray(diagnosticsState?.history) ? diagnosticsState.history : []);
+        setPluginsError(null);
+        setPluginsStatus(null);
+      } catch (err) {
+        console.error('Failed to load plugins:', err);
+        setPluginsError('Unable to load plugins.');
+      } finally {
+        setPluginsLoading(false);
       }
     };
 
@@ -1642,12 +2176,14 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
     const fetchModelLimits = async () => {
       setModelLimitsLoading(true);
       setModelLimitsError(null);
+      setModelLimitsStatus(null);
       try {
         const res = await accomplish.getModelLimitOverrides();
         const overrides = (res && typeof res === 'object' && 'overrides' in res)
           ? ((res as { overrides: Record<string, { contextWindowTokens?: number }> }).overrides ?? {})
           : {};
         setModelLimitOverrides(overrides);
+        setSavedModelLimitsSnapshot(createModelLimitsSnapshot(overrides));
       } catch (err) {
         console.error('Failed to fetch model limits:', err);
         setModelLimitsError('Unable to load model context limits.');
@@ -1674,6 +2210,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
     fetchVoiceWake();
     fetchNodePairing();
     fetchSkills();
+    fetchPlugins();
     fetchUserSkills();
     fetchUserSkillsDeps();
     fetchOllamaConfig();
@@ -1681,7 +2218,642 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
     fetchGateway();
     fetchGatewayConnectors();
     fetchAppConnectors();
+    fetchRuntimeHooks();
+    fetchPermissionPolicy();
   }, [open, loadAgents, activeAgentId]);
+
+  useEffect(() => {
+    if (!open) return;
+    void refreshPermissionPolicyOpenCodePreview(permissionPolicyPreviewTargetAgentId);
+  }, [open, permissionPolicyPreviewTargetAgentId]);
+
+  const saveRuntimeHooks = async () => {
+    const accomplish = getAccomplish();
+    setRuntimeHooksSaving(true);
+    setRuntimeHooksError(null);
+    setRuntimeHooksStatus(null);
+    try {
+      const result = await accomplish.saveRuntimeHooks(runtimeHooksText);
+      setRuntimeHooksPath(result.path);
+      setRuntimeHooksHookCount(result.hookCount);
+      const refreshed = await accomplish.getRuntimeHooks();
+      const refreshedText = (refreshed as { raw?: string })?.raw || runtimeHooksText;
+      setRuntimeHooksText(refreshedText);
+      setSavedRuntimeHooksSnapshot(refreshedText);
+      setRuntimeHooksStatus(`Saved ${result.hookCount} hook${result.hookCount === 1 ? '' : 's'}.`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to save runtime hooks.';
+      setRuntimeHooksError(message);
+    } finally {
+      setRuntimeHooksSaving(false);
+    }
+  };
+
+  const revertRuntimeHooksChanges = () => {
+    setRuntimeHooksText(savedRuntimeHooksSnapshot);
+    setRuntimeHooksError(null);
+    setRuntimeHooksStatus('Reverted unsaved runtime hook changes.');
+  };
+
+  const refreshRuntimeHookDiagnostics = async () => {
+    const accomplish = getAccomplish();
+    setRuntimeHookDiagnosticsLoading(true);
+    try {
+      const state = await accomplish.getRuntimeHookDiagnostics();
+      setRuntimeHookDiagnostics(Array.isArray(state.entries) ? state.entries : []);
+    } catch (err) {
+      console.error('Failed to refresh runtime hook diagnostics:', err);
+      setRuntimeHooksError('Unable to load runtime hook diagnostics.');
+    } finally {
+      setRuntimeHookDiagnosticsLoading(false);
+    }
+  };
+
+  const clearRuntimeHookDiagnostics = async () => {
+    const accomplish = getAccomplish();
+    setRuntimeHookDiagnosticsLoading(true);
+    try {
+      await accomplish.clearRuntimeHookDiagnostics();
+      setRuntimeHookDiagnostics([]);
+    } catch (err) {
+      console.error('Failed to clear runtime hook diagnostics:', err);
+      setRuntimeHooksError('Unable to clear runtime hook diagnostics.');
+    } finally {
+      setRuntimeHookDiagnosticsLoading(false);
+    }
+  };
+
+  const savePermissionPolicy = async () => {
+    const accomplish = getAccomplish();
+    setPermissionPolicySaving(true);
+    setPermissionPolicyError(null);
+    setPermissionPolicyStatus(null);
+    try {
+      const settings: PermissionPolicySettings = {
+        file: {
+          allowWorkspaceWritesWithoutPrompt: permissionPolicyAllowWorkspaceWritesWithoutPrompt,
+          allowTaskScopedAllowAll: permissionPolicyAllowTaskScopedAllowAll,
+          defaultDecision: permissionPolicyFileDefaultDecision,
+        },
+        runtime: {
+          defaultToolDecision: permissionPolicyRuntimeDefaultToolDecision,
+          defaultQuestionDecision: permissionPolicyRuntimeDefaultQuestionDecision,
+          allowedToolNames: parseAllowlist(permissionPolicyAllowedToolNames),
+          blockedToolNames: parseAllowlist(permissionPolicyBlockedToolNames),
+        },
+        audit: {
+          maxEntries: Number.parseInt(permissionPolicyAuditMaxEntries, 10),
+        },
+      };
+      const saved = await accomplish.setPermissionPolicySettings(settings);
+      setPermissionPolicyAllowWorkspaceWritesWithoutPrompt(saved.file.allowWorkspaceWritesWithoutPrompt);
+      setPermissionPolicyAllowTaskScopedAllowAll(saved.file.allowTaskScopedAllowAll);
+      setPermissionPolicyFileDefaultDecision(saved.file.defaultDecision);
+      setPermissionPolicyRuntimeDefaultToolDecision(saved.runtime.defaultToolDecision);
+      setPermissionPolicyRuntimeDefaultQuestionDecision(saved.runtime.defaultQuestionDecision);
+      setPermissionPolicyAllowedToolNames(formatAllowlist(saved.runtime.allowedToolNames));
+      setPermissionPolicyBlockedToolNames(formatAllowlist(saved.runtime.blockedToolNames));
+      setPermissionPolicyAuditMaxEntries(String(saved.audit.maxEntries));
+      setSavedPermissionPolicySnapshot(
+        createPermissionPolicySnapshot({
+          allowWorkspaceWritesWithoutPrompt: saved.file.allowWorkspaceWritesWithoutPrompt,
+          allowTaskScopedAllowAll: saved.file.allowTaskScopedAllowAll,
+          fileDefaultDecision: saved.file.defaultDecision,
+          runtimeDefaultToolDecision: saved.runtime.defaultToolDecision,
+          runtimeDefaultQuestionDecision: saved.runtime.defaultQuestionDecision,
+          allowedToolNamesText: formatAllowlist(saved.runtime.allowedToolNames),
+          blockedToolNamesText: formatAllowlist(saved.runtime.blockedToolNames),
+          auditMaxEntries: String(saved.audit.maxEntries),
+        })
+      );
+      const auditState = await accomplish.getPermissionPolicyAudit();
+      setPermissionPolicyAuditEntries(Array.isArray(auditState.entries) ? auditState.entries : []);
+      await refreshPermissionPolicyOpenCodePreview(permissionPolicyPreviewTargetAgentId);
+      setPermissionPolicyStatus('Permission policy saved.');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to save permission policy.';
+      setPermissionPolicyError(message);
+    } finally {
+      setPermissionPolicySaving(false);
+    }
+  };
+
+  const revertPermissionPolicyChanges = () => {
+    try {
+      const saved = JSON.parse(savedPermissionPolicySnapshot) as {
+        file?: {
+          allowWorkspaceWritesWithoutPrompt?: boolean;
+          allowTaskScopedAllowAll?: boolean;
+          defaultDecision?: PermissionPolicyAction;
+        };
+        runtime?: {
+          defaultToolDecision?: PermissionPolicyAction;
+          defaultQuestionDecision?: PermissionPolicyAction;
+          allowedToolNames?: string[];
+          blockedToolNames?: string[];
+        };
+        audit?: {
+          maxEntries?: number;
+        };
+      };
+      setPermissionPolicyAllowWorkspaceWritesWithoutPrompt(saved.file?.allowWorkspaceWritesWithoutPrompt !== false);
+      setPermissionPolicyAllowTaskScopedAllowAll(saved.file?.allowTaskScopedAllowAll !== false);
+      setPermissionPolicyFileDefaultDecision(saved.file?.defaultDecision ?? 'prompt');
+      setPermissionPolicyRuntimeDefaultToolDecision(saved.runtime?.defaultToolDecision ?? 'prompt');
+      setPermissionPolicyRuntimeDefaultQuestionDecision(saved.runtime?.defaultQuestionDecision ?? 'prompt');
+      setPermissionPolicyAllowedToolNames(formatAllowlist(saved.runtime?.allowedToolNames || []));
+      setPermissionPolicyBlockedToolNames(formatAllowlist(saved.runtime?.blockedToolNames || []));
+      setPermissionPolicyAuditMaxEntries(String(saved.audit?.maxEntries ?? 200));
+      setPermissionPolicyError(null);
+      setPermissionPolicyStatus('Reverted unsaved permission policy changes.');
+    } catch (err) {
+      console.error('Failed to revert permission policy changes:', err);
+      setPermissionPolicyError('Unable to revert permission policy changes.');
+    }
+  };
+
+  const refreshPermissionPolicyAudit = async () => {
+    const accomplish = getAccomplish();
+    setPermissionPolicyAuditLoading(true);
+    try {
+      const state = await accomplish.getPermissionPolicyAudit();
+      setPermissionPolicyAuditEntries(Array.isArray(state.entries) ? state.entries : []);
+    } catch (err) {
+      console.error('Failed to refresh permission policy audit:', err);
+      setPermissionPolicyError('Unable to load permission policy audit.');
+    } finally {
+      setPermissionPolicyAuditLoading(false);
+    }
+  };
+
+  const clearPermissionPolicyAudit = async () => {
+    const accomplish = getAccomplish();
+    setPermissionPolicyAuditLoading(true);
+    try {
+      await accomplish.clearPermissionPolicyAudit();
+      setPermissionPolicyAuditEntries([]);
+      setPermissionPolicyStatus('Permission policy audit cleared.');
+    } catch (err) {
+      console.error('Failed to clear permission policy audit:', err);
+      setPermissionPolicyError('Unable to clear permission policy audit.');
+    } finally {
+      setPermissionPolicyAuditLoading(false);
+    }
+  };
+
+  const refreshPermissionPolicyOpenCodePreview = async (agentId?: string | null) => {
+    const accomplish = getAccomplish();
+    setPermissionPolicyOpenCodePreviewLoading(true);
+    try {
+      const preview = await accomplish.getOpenCodePermissionPreview(agentId || undefined);
+      setPermissionPolicyOpenCodePreview(preview);
+    } catch (err) {
+      console.error('Failed to refresh OpenCode permission preview:', err);
+      setPermissionPolicyError('Unable to load OpenCode permission preview.');
+    } finally {
+      setPermissionPolicyOpenCodePreviewLoading(false);
+    }
+  };
+
+  const filteredRuntimeHookDiagnostics = useMemo(() => {
+    const query = runtimeHookDiagnosticsQuery.trim().toLowerCase();
+    return runtimeHookDiagnostics.filter((entry) => {
+      if (runtimeHookDiagnosticsFilter === 'blocked' && entry.ok) return false;
+      if (runtimeHookDiagnosticsFilter === 'matched' && entry.matchedHookIds.length === 0) return false;
+      if (!query) return true;
+      const haystack = [
+        entry.event,
+        entry.agentId,
+        entry.taskId,
+        entry.toolName,
+        entry.source,
+        entry.blockReason,
+        ...(entry.notes || []),
+        ...entry.matchedHookIds,
+        entry.inputPreview,
+        entry.outputPreview,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [runtimeHookDiagnostics, runtimeHookDiagnosticsFilter, runtimeHookDiagnosticsQuery]);
+
+  const filteredPermissionPolicyAuditEntries = useMemo(() => {
+    const query = permissionPolicyAuditQuery.trim().toLowerCase();
+    return permissionPolicyAuditEntries.filter((entry) => {
+      if (permissionPolicyAuditOriginFilter !== 'all' && entry.origin !== permissionPolicyAuditOriginFilter) {
+        return false;
+      }
+      if (permissionPolicyAuditDecisionFilter !== 'all' && entry.decision.action !== permissionPolicyAuditDecisionFilter) {
+        return false;
+      }
+      if (!query) return true;
+      const haystack = [
+        entry.origin,
+        entry.agentId,
+        entry.requestType,
+        entry.toolName,
+        entry.fileOperation,
+        entry.filePath,
+        entry.targetPath,
+        entry.question,
+        entry.taskId,
+        entry.decision.action,
+        entry.decision.source,
+        entry.decision.reason,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [
+    permissionPolicyAuditDecisionFilter,
+    permissionPolicyAuditEntries,
+    permissionPolicyAuditOriginFilter,
+    permissionPolicyAuditQuery,
+  ]);
+
+  const agentExecutorPolicyConflicts = useMemo(() => {
+    if (!agentPermissionProfileEnabled) {
+      return [] as Array<{
+        ruleName: string;
+        rule: string;
+        globalDecision: ListedToolDecision;
+        agentDecision: ListedToolDecision;
+      }>;
+    }
+
+    return AGENT_EXECUTOR_OVERRIDE_RULES.flatMap((rule) => {
+      const globalDecision = getListedToolDecision(
+        rule.name,
+        permissionPolicyAllowedToolNames,
+        permissionPolicyBlockedToolNames
+      );
+      const agentDecision = getListedToolDecision(
+        rule.name,
+        agentPermissionAllowedToolNames,
+        agentPermissionBlockedToolNames
+      );
+
+      if (
+        globalDecision === 'default'
+        || agentDecision === 'default'
+        || globalDecision === agentDecision
+      ) {
+        return [];
+      }
+
+      return [{
+        ruleName: rule.name,
+        rule: rule.label,
+        globalDecision,
+        agentDecision,
+      }];
+    });
+  }, [
+    agentPermissionAllowedToolNames,
+    agentPermissionBlockedToolNames,
+    agentPermissionProfileEnabled,
+    permissionPolicyAllowedToolNames,
+    permissionPolicyBlockedToolNames,
+  ]);
+
+  const globalExecutorListConflicts = useMemo(() => {
+    const allowed = new Set(parseAllowlist(permissionPolicyAllowedToolNames));
+    const blocked = new Set(parseAllowlist(permissionPolicyBlockedToolNames));
+
+    return GLOBAL_EXECUTOR_BUILTIN_RULES.flatMap((rule) => (
+      allowed.has(rule.name) && blocked.has(rule.name)
+        ? [{
+            ruleName: rule.name,
+            rule: rule.label,
+          }]
+        : []
+    ));
+  }, [permissionPolicyAllowedToolNames, permissionPolicyBlockedToolNames]);
+
+  const applyAgentExecutorOverrideDecision = (
+    toolName: string,
+    decision: ListedToolDecision
+  ) => {
+    const next = setListedToolDecision(
+      toolName,
+      decision,
+      agentPermissionAllowedToolNames,
+      agentPermissionBlockedToolNames
+    );
+    setAgentPermissionAllowedToolNames(next.allowed);
+    setAgentPermissionBlockedToolNames(next.blocked);
+  };
+
+  const applyGlobalExecutorBuiltInDecision = (
+    toolName: string,
+    decision: ListedToolDecision
+  ) => {
+    const next = setListedToolDecision(
+      toolName,
+      decision,
+      permissionPolicyAllowedToolNames,
+      permissionPolicyBlockedToolNames
+    );
+    setPermissionPolicyAllowedToolNames(next.allowed);
+    setPermissionPolicyBlockedToolNames(next.blocked);
+    setPermissionPolicyStatus(null);
+  };
+
+  const getCurrentGlobalExecutorBuiltInDecision = (toolName: string): ListedToolDecision => {
+    const explicit = getListedToolDecision(
+      toolName,
+      permissionPolicyAllowedToolNames,
+      permissionPolicyBlockedToolNames
+    );
+    if (explicit !== 'default') {
+      return explicit;
+    }
+    if (toolName === 'edit') {
+      return isRendererHardReadOnlyPolicy(
+        permissionPolicyAllowWorkspaceWritesWithoutPrompt,
+        permissionPolicyAllowTaskScopedAllowAll,
+        permissionPolicyFileDefaultDecision
+      ) ? 'deny' : 'default';
+    }
+    return (
+      permissionPolicyRuntimeDefaultToolDecision === 'deny'
+      && RUNTIME_DEFAULT_DENY_EXECUTOR_BUILTINS.has(toolName)
+    )
+      ? 'deny'
+      : 'default';
+  };
+
+  const getCurrentAgentExecutorBuiltInState = (
+    toolName: string
+  ): { decision: ListedToolDecision; source: 'inherit' | 'override' } => {
+    const agentDecision = getListedToolDecision(
+      toolName,
+      agentPermissionAllowedToolNames,
+      agentPermissionBlockedToolNames
+    );
+    if (agentDecision !== 'default') {
+      return {
+        decision: agentDecision,
+        source: 'override',
+      };
+    }
+    return {
+      decision: getCurrentGlobalExecutorBuiltInDecision(toolName),
+      source: 'inherit',
+    };
+  };
+
+  const getGlobalExecutorDefaultReason = (toolName: string): string | null => {
+    const selectedDecision = getListedToolDecision(
+      toolName,
+      permissionPolicyAllowedToolNames,
+      permissionPolicyBlockedToolNames
+    );
+    if (selectedDecision !== 'default') {
+      return null;
+    }
+    if (
+      toolName === 'edit'
+      && isRendererHardReadOnlyPolicy(
+        permissionPolicyAllowWorkspaceWritesWithoutPrompt,
+        permissionPolicyAllowTaskScopedAllowAll,
+        permissionPolicyFileDefaultDecision
+      )
+    ) {
+      return 'Effective because the current file policy is fully read-only.';
+    }
+    if (
+      permissionPolicyRuntimeDefaultToolDecision === 'deny'
+      && RUNTIME_DEFAULT_DENY_EXECUTOR_BUILTINS.has(toolName)
+    ) {
+      return 'Effective because the global default tool decision is set to deny.';
+    }
+    return null;
+  };
+
+  const getAgentExecutorDefaultReason = (toolName: string): string | null => {
+    const selectedDecision = getListedToolDecision(
+      toolName,
+      agentPermissionAllowedToolNames,
+      agentPermissionBlockedToolNames
+    );
+    if (selectedDecision !== 'default') {
+      return null;
+    }
+    const globalSelectedDecision = getListedToolDecision(
+      toolName,
+      permissionPolicyAllowedToolNames,
+      permissionPolicyBlockedToolNames
+    );
+    if (globalSelectedDecision !== 'default') {
+      return null;
+    }
+    if (
+      toolName === 'edit'
+      && isRendererHardReadOnlyPolicy(
+        permissionPolicyAllowWorkspaceWritesWithoutPrompt,
+        permissionPolicyAllowTaskScopedAllowAll,
+        permissionPolicyFileDefaultDecision
+      )
+    ) {
+      return 'Effective because this agent inherits a globally read-only file policy.';
+    }
+    if (
+      permissionPolicyRuntimeDefaultToolDecision === 'deny'
+      && RUNTIME_DEFAULT_DENY_EXECUTOR_BUILTINS.has(toolName)
+    ) {
+      return 'Effective because this agent inherits the global default tool decision of deny.';
+    }
+    return null;
+  };
+
+  const globalExecutorDecisionSummary = useMemo(() => {
+    const summary = { allow: 0, deny: 0, default: 0 };
+    for (const rule of GLOBAL_EXECUTOR_BUILTIN_RULES) {
+      const decision = getCurrentGlobalExecutorBuiltInDecision(rule.name);
+      if (decision === 'allow' || decision === 'deny') {
+        summary[decision] += 1;
+      } else {
+        summary.default += 1;
+      }
+    }
+    return summary;
+  }, [
+    permissionPolicyAllowedToolNames,
+    permissionPolicyAllowTaskScopedAllowAll,
+    permissionPolicyAllowWorkspaceWritesWithoutPrompt,
+    permissionPolicyBlockedToolNames,
+    permissionPolicyFileDefaultDecision,
+    permissionPolicyRuntimeDefaultToolDecision,
+  ]);
+
+  const agentExecutorDecisionSummary = useMemo(() => {
+    const summary = {
+      allow: 0,
+      deny: 0,
+      default: 0,
+      inherit: 0,
+      override: 0,
+    };
+    for (const rule of AGENT_EXECUTOR_OVERRIDE_RULES) {
+      const state = getCurrentAgentExecutorBuiltInState(rule.name);
+      if (state.decision === 'allow' || state.decision === 'deny') {
+        summary[state.decision] += 1;
+      } else {
+        summary.default += 1;
+      }
+      summary[state.source] += 1;
+    }
+    return summary;
+  }, [
+    agentPermissionAllowedToolNames,
+    agentPermissionBlockedToolNames,
+    permissionPolicyAllowedToolNames,
+    permissionPolicyAllowTaskScopedAllowAll,
+    permissionPolicyAllowWorkspaceWritesWithoutPrompt,
+    permissionPolicyBlockedToolNames,
+    permissionPolicyFileDefaultDecision,
+    permissionPolicyRuntimeDefaultToolDecision,
+  ]);
+
+  const permissionPolicyHasUnsavedChanges = useMemo(
+    () => createPermissionPolicySnapshot({
+      allowWorkspaceWritesWithoutPrompt: permissionPolicyAllowWorkspaceWritesWithoutPrompt,
+      allowTaskScopedAllowAll: permissionPolicyAllowTaskScopedAllowAll,
+      fileDefaultDecision: permissionPolicyFileDefaultDecision,
+      runtimeDefaultToolDecision: permissionPolicyRuntimeDefaultToolDecision,
+      runtimeDefaultQuestionDecision: permissionPolicyRuntimeDefaultQuestionDecision,
+      allowedToolNamesText: permissionPolicyAllowedToolNames,
+      blockedToolNamesText: permissionPolicyBlockedToolNames,
+      auditMaxEntries: permissionPolicyAuditMaxEntries,
+    }) !== savedPermissionPolicySnapshot,
+    [
+      permissionPolicyAllowTaskScopedAllowAll,
+      permissionPolicyAllowWorkspaceWritesWithoutPrompt,
+      permissionPolicyAllowedToolNames,
+      permissionPolicyAuditMaxEntries,
+      permissionPolicyBlockedToolNames,
+      permissionPolicyFileDefaultDecision,
+      permissionPolicyRuntimeDefaultQuestionDecision,
+      permissionPolicyRuntimeDefaultToolDecision,
+      savedPermissionPolicySnapshot,
+    ]
+  );
+
+  const runtimeHooksHasUnsavedChanges = useMemo(
+    () => runtimeHooksText !== savedRuntimeHooksSnapshot,
+    [runtimeHooksText, savedRuntimeHooksSnapshot]
+  );
+
+  const skillAssistantModelHasUnsavedChanges = useMemo(
+    () => createSkillAssistantModelSnapshot({
+      enabled: skillAssistantModelOverrideEnabled,
+      provider: skillAssistantModelProvider,
+      modelId: skillAssistantModelId,
+      baseUrl: skillAssistantModelBaseUrl,
+    }) !== savedSkillAssistantModelSnapshot,
+    [
+      savedSkillAssistantModelSnapshot,
+      skillAssistantModelBaseUrl,
+      skillAssistantModelId,
+      skillAssistantModelOverrideEnabled,
+      skillAssistantModelProvider,
+    ]
+  );
+
+  const modelLimitsHasUnsavedChanges = useMemo(
+    () => createModelLimitsSnapshot(modelLimitOverrides, modelLimitsEdits) !== savedModelLimitsSnapshot,
+    [modelLimitOverrides, modelLimitsEdits, savedModelLimitsSnapshot]
+  );
+
+  const modelLimitsHasPendingSave = useMemo(
+    () => Object.values(modelLimitsSaving).some(Boolean),
+    [modelLimitsSaving]
+  );
+
+  const agentPermissionProfileHasUnsavedChanges = useMemo(
+    () => createAgentPermissionProfileSnapshot({
+      enabled: agentPermissionProfileEnabled,
+      fileAllowWorkspaceWritesWithoutPrompt: agentPermissionFileAllowWorkspaceWritesWithoutPrompt,
+      fileAllowTaskScopedAllowAll: agentPermissionFileAllowTaskScopedAllowAll,
+      fileDefaultDecision: agentPermissionFileDefaultDecision,
+      runtimeDefaultToolDecision: agentPermissionRuntimeDefaultToolDecision,
+      runtimeDefaultQuestionDecision: agentPermissionRuntimeDefaultQuestionDecision,
+      allowedToolNamesText: agentPermissionAllowedToolNames,
+      blockedToolNamesText: agentPermissionBlockedToolNames,
+    }) !== savedAgentPermissionProfileSnapshot,
+    [
+      agentPermissionAllowedToolNames,
+      agentPermissionBlockedToolNames,
+      agentPermissionFileAllowTaskScopedAllowAll,
+      agentPermissionFileAllowWorkspaceWritesWithoutPrompt,
+      agentPermissionFileDefaultDecision,
+      agentPermissionProfileEnabled,
+      agentPermissionRuntimeDefaultQuestionDecision,
+      agentPermissionRuntimeDefaultToolDecision,
+      savedAgentPermissionProfileSnapshot,
+    ]
+  );
+
+  const parsedRuntimeHooksState = useMemo(() => {
+    try {
+      const parsed = JSON.parse(runtimeHooksText);
+      const hooks = Array.isArray(parsed)
+        ? parsed
+        : (parsed && typeof parsed === 'object' && Array.isArray((parsed as { hooks?: unknown[] }).hooks)
+          ? (parsed as { hooks: unknown[] }).hooks
+          : []);
+      return {
+        error: null as string | null,
+        hooks: hooks.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry)),
+      };
+    } catch (error) {
+      return {
+        error: error instanceof Error ? error.message : 'Invalid JSON',
+        hooks: [] as Array<Record<string, unknown>>,
+      };
+    }
+  }, [runtimeHooksText]);
+
+  const updateRuntimeHooksJson = (updater: (hooks: Array<Record<string, unknown>>) => Array<Record<string, unknown>>) => {
+    if (parsedRuntimeHooksState.error) return;
+    const nextHooks = updater(parsedRuntimeHooksState.hooks);
+    setRuntimeHooksText(`${JSON.stringify({ hooks: nextHooks }, null, 2)}\n`);
+    setRuntimeHooksStatus(null);
+  };
+
+  const toggleRuntimeHookEnabled = (hookId: string) => {
+    updateRuntimeHooksJson((hooks) =>
+      hooks.map((hook) =>
+        String(hook.id || '') === hookId
+          ? { ...hook, enabled: hook.enabled === false ? true : false }
+          : hook
+      )
+    );
+  };
+
+  const removeRuntimeHook = (hookId: string) => {
+    updateRuntimeHooksJson((hooks) => hooks.filter((hook) => String(hook.id || '') !== hookId));
+  };
+
+  const addRuntimeHookTemplate = () => {
+    const nextId = `hook_${Date.now()}`;
+    updateRuntimeHooksJson((hooks) => [
+      ...hooks,
+      {
+        id: nextId,
+        event: 'before_task_dispatch',
+        enabled: true,
+        action: 'record_note',
+        noteText: 'New runtime hook note',
+      },
+    ]);
+  };
 
   useEffect(() => {
     if (gatewayBindingAgentId) return;
@@ -1894,6 +3066,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
         edits[model.fullId] = typeof override === 'number' ? String(override) : '';
       }
     }
+    setModelLimitsError(null);
+    setModelLimitsStatus(null);
     setModelLimitsEdits(edits);
     setModelLimitsOpen(true);
   };
@@ -1902,6 +3076,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
     const accomplish = getAccomplish();
     setModelLimitsSaving((prev) => ({ ...prev, [fullId]: true }));
     setModelLimitsError(null);
+    setModelLimitsStatus(null);
     try {
       const raw = (modelLimitsEdits[fullId] ?? '').trim();
       const contextWindowTokens = raw ? Number(raw) : null;
@@ -1911,6 +3086,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
         ? ((res as { overrides: Record<string, { contextWindowTokens?: number }> }).overrides ?? {})
         : {};
       setModelLimitOverrides(overrides);
+      setSavedModelLimitsSnapshot(createModelLimitsSnapshot(overrides));
+      setModelLimitsStatus('Saved model context limit.');
     } catch (err) {
       console.error('Failed to save model limit:', err);
       setModelLimitsError(err instanceof Error ? err.message : 'Failed to save model context limit.');
@@ -1923,6 +3100,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
     const accomplish = getAccomplish();
     setModelLimitsSaving((prev) => ({ ...prev, [fullId]: true }));
     setModelLimitsError(null);
+    setModelLimitsStatus(null);
     try {
       await accomplish.setModelContextLimitOverride({ fullId, contextWindowTokens: null });
       setModelLimitsEdits((prev) => ({ ...prev, [fullId]: '' }));
@@ -1931,12 +3109,27 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
         ? ((res as { overrides: Record<string, { contextWindowTokens?: number }> }).overrides ?? {})
         : {};
       setModelLimitOverrides(overrides);
+      setSavedModelLimitsSnapshot(createModelLimitsSnapshot(overrides));
+      setModelLimitsStatus('Reset model context limit.');
     } catch (err) {
       console.error('Failed to reset model limit:', err);
       setModelLimitsError(err instanceof Error ? err.message : 'Failed to reset model context limit.');
     } finally {
       setModelLimitsSaving((prev) => ({ ...prev, [fullId]: false }));
     }
+  };
+
+  const revertModelLimitChanges = () => {
+    const edits: Record<string, string> = {};
+    for (const provider of remoteModelProviders) {
+      for (const model of provider.models) {
+        const override = modelLimitOverrides[model.fullId]?.contextWindowTokens;
+        edits[model.fullId] = typeof override === 'number' ? String(override) : '';
+      }
+    }
+    setModelLimitsEdits(edits);
+    setModelLimitsError(null);
+    setModelLimitsStatus('Reverted unsaved model context limit changes.');
   };
 
   const handleSaveApiKey = async () => {
@@ -2331,6 +3524,178 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
     } finally {
       setLoadingSkills(false);
     }
+  };
+
+  const refreshPlugins = async () => {
+    const accomplish = getAccomplish();
+    setPluginsLoading(true);
+    try {
+      const [state, diagnosticsState] = await Promise.all([
+        accomplish.listPlugins(),
+        accomplish.getPluginDiagnostics(),
+      ]);
+      setPluginRegistryState(state);
+      setPluginDiagnostics(Array.isArray(diagnosticsState?.diagnostics) ? diagnosticsState.diagnostics : []);
+      setPluginDiagnosticsHistory(Array.isArray(diagnosticsState?.history) ? diagnosticsState.history : []);
+      setPluginsError(null);
+      setPluginsStatus(null);
+      notifyPluginCommandsChanged();
+    } catch (err) {
+      console.error('Failed to refresh plugins:', err);
+      setPluginsError('Unable to load plugins.');
+    } finally {
+      setPluginsLoading(false);
+    }
+  };
+
+  const handleClearPluginDiagnosticsHistory = async () => {
+    const accomplish = getAccomplish();
+    setPluginsError(null);
+    setPluginsStatus(null);
+    try {
+      await accomplish.clearPluginDiagnosticsHistory();
+      const diagnosticsState = await accomplish.getPluginDiagnostics();
+      setPluginDiagnostics(Array.isArray(diagnosticsState?.diagnostics) ? diagnosticsState.diagnostics : []);
+      setPluginDiagnosticsHistory(Array.isArray(diagnosticsState?.history) ? diagnosticsState.history : []);
+      setPluginsStatus('Cleared plugin registration activity history.');
+    } catch (err) {
+      console.error('Failed to clear plugin diagnostics history:', err);
+      setPluginsError(err instanceof Error ? err.message : 'Unable to clear plugin registration activity history.');
+    }
+  };
+
+  const handleSetPluginEnabled = async (plugin: PluginRecord, enabled: boolean) => {
+    const accomplish = getAccomplish();
+    setPluginToggleSaving((prev) => ({ ...prev, [plugin.id]: true }));
+    setPluginsError(null);
+    setPluginsStatus(null);
+    try {
+      await accomplish.setPluginEnabled(plugin.id, enabled);
+      await refreshPlugins();
+      setPluginsStatus(`${plugin.manifest?.name || plugin.id} ${enabled ? 'enabled' : 'disabled'}.`);
+    } catch (err) {
+      console.error('Failed to update plugin state:', err);
+      setPluginsError(err instanceof Error ? err.message : 'Unable to update plugin state.');
+    } finally {
+      setPluginToggleSaving((prev) => ({ ...prev, [plugin.id]: false }));
+    }
+  };
+
+  const handleInstallPlugin = async () => {
+    const accomplish = getAccomplish();
+    setPluginsError(null);
+    setPluginsStatus(null);
+    const sourceDir = await accomplish.selectFolder();
+    if (!sourceDir) return;
+
+    setInstallingPlugin(true);
+    try {
+      const plugin = await accomplish.installPluginFromDirectory(sourceDir);
+      await refreshPlugins();
+      setPluginsStatus(`Installed plugin: ${plugin.manifest?.name || plugin.id}.`);
+    } catch (err) {
+      console.error('Failed to install plugin:', err);
+      setPluginsError(err instanceof Error ? err.message : 'Unable to install plugin.');
+    } finally {
+      setInstallingPlugin(false);
+    }
+  };
+
+  const handleOpenManagedPluginsRoot = async () => {
+    const accomplish = getAccomplish();
+    setPluginsError(null);
+    setPluginsStatus(null);
+    try {
+      const result = await accomplish.openManagedPluginsRoot();
+      if (!result.ok) {
+        setPluginsError(result.error || 'Unable to open managed plugins folder.');
+        return;
+      }
+      setPluginsStatus(`Opened managed plugins folder: ${result.path}`);
+    } catch (err) {
+      console.error('Failed to open managed plugins folder:', err);
+      setPluginsError(err instanceof Error ? err.message : 'Unable to open managed plugins folder.');
+    }
+  };
+
+  const handleUninstallPlugin = async () => {
+    const accomplish = getAccomplish();
+    if (!pluginPendingUninstall) return;
+    const plugin = pluginPendingUninstall;
+    setUninstallingPluginId(plugin.id);
+    setPluginsError(null);
+    setPluginsStatus(null);
+    try {
+      await accomplish.uninstallPlugin(plugin.id);
+      await refreshPlugins();
+      setPluginsStatus(`Uninstalled plugin: ${plugin.manifest?.name || plugin.id}.`);
+      setPluginPendingUninstall(null);
+    } catch (err) {
+      console.error('Failed to uninstall plugin:', err);
+      setPluginsError(err instanceof Error ? err.message : 'Unable to uninstall plugin.');
+    } finally {
+      setUninstallingPluginId(null);
+    }
+  };
+
+  const openPluginCommandPreview = (
+    plugin: PluginRecord,
+    diagnostics: PluginDiagnosticsRecord | undefined,
+    command: PluginDiagnosticsRecord['commands'][number]
+  ) => {
+    setPluginPreviewDialog({
+      title: `/${command.command}`,
+      subtitle: `${plugin.manifest?.name || plugin.id} command preview`,
+      body: JSON.stringify({
+        pluginId: plugin.id,
+        title: command.title,
+        description: command.description,
+        group: command.group,
+        intent: command.intent,
+        aliases: command.aliases || [],
+        keywords: command.keywords || [],
+        visibility: command.visibility || ['global'],
+        action: command.action,
+        registrationState: diagnostics?.registrationState || 'disabled',
+      }, null, 2),
+    });
+  };
+
+  const openPluginToolPreview = (
+    plugin: PluginRecord,
+    diagnostics: PluginDiagnosticsRecord | undefined,
+    tool: PluginDiagnosticsRecord['tools'][number]
+  ) => {
+    setPluginPreviewDialog({
+      title: tool.name,
+      subtitle: `${plugin.manifest?.name || plugin.id} tool schema`,
+      body: JSON.stringify({
+        pluginId: plugin.id,
+        description: tool.description,
+        action: tool.action,
+        defaults: tool.defaults || {},
+        inputSchema: tool.inputSchema || { type: 'object', properties: {} },
+        registrationState: diagnostics?.registrationState || 'disabled',
+      }, null, 2),
+    });
+  };
+
+  const openPluginHelpDocPreview = (
+    plugin: PluginRecord,
+    diagnostics: PluginDiagnosticsRecord | undefined,
+    helpDoc: PluginDiagnosticsRecord['helpDocs'][number]
+  ) => {
+    setPluginPreviewDialog({
+      title: helpDoc.title,
+      subtitle: `${plugin.manifest?.name || plugin.id} help doc preview`,
+      body: JSON.stringify({
+        pluginId: plugin.id,
+        helpDocId: helpDoc.id,
+        file: helpDoc.file,
+        description: helpDoc.description,
+        registrationState: diagnostics?.registrationState || 'disabled',
+      }, null, 2),
+    });
   };
 
   const refreshUserSkills = async () => {
@@ -3169,6 +4534,21 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
     setAgentModelBaseUrl(baseModel.baseUrl || providerConfig?.baseUrl || '');
   };
 
+  const applyAgentSubagentDefaultModelForm = (model: SelectedModel | null | undefined) => {
+    const baseModel = model ?? selectedModel ?? AGENT_FALLBACK_MODEL;
+    const providerId = (baseModel.provider || AGENT_FALLBACK_MODEL.provider) as ProviderType;
+    const fallbackModelId = getFirstModelForProvider(providerId);
+    const providerConfig = modelProviders.find((entry) => entry.id === providerId);
+    const modelId = (
+      baseModel.model
+      || fallbackModelId
+      || (providerId === 'custom' ? '' : AGENT_FALLBACK_MODEL.model)
+    ).trim();
+    setAgentSubagentDefaultModelProvider(providerId);
+    setAgentSubagentDefaultModelId(modelId);
+    setAgentSubagentDefaultModelBaseUrl(baseModel.baseUrl || providerConfig?.baseUrl || '');
+  };
+
   const normalizeAgentSelectedModel = (): SelectedModel | null => {
     if (!agentModelOverrideEnabled) return null;
     let modelId = agentModelId.trim();
@@ -3186,6 +4566,36 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
     const trimmedBaseUrl = agentModelBaseUrl.trim();
     const providerConfig = modelProviders.find((entry) => entry.id === agentModelProvider);
     if (trimmedBaseUrl && (agentModelProvider === 'ollama' || agentModelProvider === 'custom' || Boolean(providerConfig?.baseUrl))) {
+      selected.baseUrl = trimmedBaseUrl;
+    }
+
+    return selected;
+  };
+
+  const normalizeAgentSubagentDefaultModel = (): SelectedModel | null => {
+    if (!agentSubagentDefaultModelEnabled) return null;
+    let modelId = agentSubagentDefaultModelId.trim();
+    if (!modelId) return null;
+
+    if (agentSubagentDefaultModelProvider === 'ollama' && !modelId.startsWith('ollama/')) {
+      modelId = `ollama/${modelId}`;
+    }
+
+    const selected: SelectedModel = {
+      provider: agentSubagentDefaultModelProvider,
+      model: modelId,
+    };
+
+    const trimmedBaseUrl = agentSubagentDefaultModelBaseUrl.trim();
+    const providerConfig = modelProviders.find((entry) => entry.id === agentSubagentDefaultModelProvider);
+    if (
+      trimmedBaseUrl
+      && (
+        agentSubagentDefaultModelProvider === 'ollama'
+        || agentSubagentDefaultModelProvider === 'custom'
+        || Boolean(providerConfig?.baseUrl)
+      )
+    ) {
       selected.baseUrl = trimmedBaseUrl;
     }
 
@@ -3227,6 +4637,31 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
     setAgentModelBaseUrl(providerConfig?.baseUrl || '');
     const hasCurrent = available.some((entry) => entry.fullId === currentModel);
     setAgentModelId(hasCurrent ? currentModel : getFirstModelForProvider(providerId));
+  };
+
+  const handleAgentSubagentDefaultModelProviderChange = (providerId: ProviderType) => {
+    setAgentSubagentDefaultModelProvider(providerId);
+    const currentModel = agentSubagentDefaultModelId.trim();
+    if (providerId === 'ollama') {
+      if (!currentModel || !currentModel.startsWith('ollama/')) {
+        setAgentSubagentDefaultModelId(getFirstModelForProvider('ollama'));
+      }
+      if (!agentSubagentDefaultModelBaseUrl.trim()) {
+        setAgentSubagentDefaultModelBaseUrl((selectedModel?.provider === 'ollama' ? selectedModel.baseUrl : '') || ollamaUrl || '');
+      }
+      return;
+    }
+    const providerConfig = modelProviders.find((entry) => entry.id === providerId);
+    const available = providerConfig?.models ?? [];
+    if (providerId === 'custom') {
+      if (!currentModel) {
+        setAgentSubagentDefaultModelId('');
+      }
+      return;
+    }
+    setAgentSubagentDefaultModelBaseUrl(providerConfig?.baseUrl || '');
+    const hasCurrent = available.some((entry) => entry.fullId === currentModel);
+    setAgentSubagentDefaultModelId(hasCurrent ? currentModel : getFirstModelForProvider(providerId));
   };
 
   const applySkillAssistantModelForm = (model: SelectedModel | null | undefined) => {
@@ -3304,12 +4739,36 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
         throw new Error('Select a model for Skill Assistant override.');
       }
       await accomplish.setUserSkillAssistantModel(skillAssistantModelOverrideEnabled ? nextModel : null);
+      setSavedSkillAssistantModelSnapshot(
+        createSkillAssistantModelSnapshot({
+          enabled: skillAssistantModelOverrideEnabled,
+          provider: skillAssistantModelProvider,
+          modelId: skillAssistantModelId,
+          baseUrl: skillAssistantModelBaseUrl,
+        })
+      );
       setSkillAssistantModelStatus(skillAssistantModelOverrideEnabled ? 'Skill Assistant model override saved.' : 'Skill Assistant now uses global model.');
     } catch (err) {
       console.error('Failed to save skill assistant model:', err);
       setSkillAssistantModelError(err instanceof Error ? err.message : 'Failed to save Skill Assistant model.');
     } finally {
       setSkillAssistantModelSaving(false);
+    }
+  };
+
+  const revertSkillAssistantModelChanges = () => {
+    try {
+      const saved = JSON.parse(savedSkillAssistantModelSnapshot) as {
+        enabled?: boolean;
+        model?: SelectedModel | null;
+      };
+      setSkillAssistantModelOverrideEnabled(Boolean(saved.enabled));
+      applySkillAssistantModelForm(saved.model ?? selectedModel ?? AGENT_FALLBACK_MODEL);
+      setSkillAssistantModelError(null);
+      setSkillAssistantModelStatus('Reverted unsaved Skill Assistant model changes.');
+    } catch (err) {
+      console.error('Failed to revert Skill Assistant model changes:', err);
+      setSkillAssistantModelError('Unable to revert Skill Assistant model changes.');
     }
   };
 
@@ -3378,6 +4837,38 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
     setAgentHeartbeatPrompt(AGENT_HEARTBEAT_DEFAULT_PROMPT);
     setAgentAutoSkillEnabled(false);
     setAgentAutoSkillAutoPromoteLowRisk(false);
+    setAgentSubagentsEnabled(false);
+    setAgentSubagentMaxChildren('3');
+    setAgentSubagentMaxDepth('1');
+    setAgentSubagentAllowedAgentIds('');
+    setAgentSubagentAutoRelayCompletions(true);
+    setAgentSubagentRunTimeoutSeconds('300');
+    setAgentSubagentDefaultMode('run');
+    setAgentSubagentDefaultModelEnabled(false);
+    applyAgentSubagentDefaultModelForm(selectedModel ?? AGENT_FALLBACK_MODEL);
+    setAgentSubagentInheritWorkingDirectory(true);
+    setAgentSubagentInheritAttachedFiles(true);
+    setAgentSubagentInheritPrivacyMode(true);
+    setAgentPermissionProfileEnabled(false);
+    setAgentPermissionFileAllowWorkspaceWritesWithoutPrompt(true);
+    setAgentPermissionFileAllowTaskScopedAllowAll(true);
+    setAgentPermissionFileDefaultDecision('prompt');
+    setAgentPermissionRuntimeDefaultToolDecision('prompt');
+    setAgentPermissionRuntimeDefaultQuestionDecision('prompt');
+    setAgentPermissionAllowedToolNames('');
+    setAgentPermissionBlockedToolNames('');
+    setSavedAgentPermissionProfileSnapshot(
+      createAgentPermissionProfileSnapshot({
+        enabled: false,
+        fileAllowWorkspaceWritesWithoutPrompt: true,
+        fileAllowTaskScopedAllowAll: true,
+        fileDefaultDecision: 'prompt',
+        runtimeDefaultToolDecision: 'prompt',
+        runtimeDefaultQuestionDecision: 'prompt',
+        allowedToolNamesText: '',
+        blockedToolNamesText: '',
+      })
+    );
     setAgentError(null);
     setAgentFormVersion((prev) => prev + 1);
   };
@@ -3410,8 +4901,81 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
     setAgentHeartbeatPrompt(agent.heartbeatPrompt || AGENT_HEARTBEAT_DEFAULT_PROMPT);
     setAgentAutoSkillEnabled(Boolean(agent.autoSkillEnabled));
     setAgentAutoSkillAutoPromoteLowRisk(Boolean(agent.autoSkillAutoPromoteLowRisk));
+    setAgentSubagentsEnabled(Boolean(agent.subagentsEnabled));
+    setAgentSubagentMaxChildren(String(agent.subagentMaxChildren ?? 3));
+    setAgentSubagentMaxDepth(String(agent.subagentMaxDepth ?? 1));
+    setAgentSubagentAllowedAgentIds((agent.subagentAllowedAgentIds || []).join(', '));
+    setAgentSubagentAutoRelayCompletions(agent.subagentAutoRelayCompletions ?? true);
+    setAgentSubagentRunTimeoutSeconds(String(Math.max(15, Math.round((agent.subagentRunTimeoutMs ?? (5 * 60 * 1000)) / 1000))));
+    setAgentSubagentDefaultMode(agent.subagentDefaultMode === 'session' ? 'session' : 'run');
+    setAgentSubagentDefaultModelEnabled(Boolean(agent.subagentDefaultModel));
+    applyAgentSubagentDefaultModelForm(agent.subagentDefaultModel ?? selectedModel ?? AGENT_FALLBACK_MODEL);
+    setAgentSubagentInheritWorkingDirectory(agent.subagentInheritWorkingDirectory ?? true);
+    setAgentSubagentInheritAttachedFiles(agent.subagentInheritAttachedFiles ?? true);
+    setAgentSubagentInheritPrivacyMode(agent.subagentInheritPrivacyMode ?? true);
+    setAgentPermissionProfileEnabled(Boolean(agent.permissionProfile?.enabled));
+    setAgentPermissionFileAllowWorkspaceWritesWithoutPrompt(
+      agent.permissionProfile?.file?.allowWorkspaceWritesWithoutPrompt ?? true
+    );
+    setAgentPermissionFileAllowTaskScopedAllowAll(
+      agent.permissionProfile?.file?.allowTaskScopedAllowAll ?? true
+    );
+    setAgentPermissionFileDefaultDecision(agent.permissionProfile?.file?.defaultDecision ?? 'prompt');
+    setAgentPermissionRuntimeDefaultToolDecision(agent.permissionProfile?.runtime?.defaultToolDecision ?? 'prompt');
+    setAgentPermissionRuntimeDefaultQuestionDecision(agent.permissionProfile?.runtime?.defaultQuestionDecision ?? 'prompt');
+    setAgentPermissionAllowedToolNames(formatAllowlist(agent.permissionProfile?.runtime?.allowedToolNames || []));
+    setAgentPermissionBlockedToolNames(formatAllowlist(agent.permissionProfile?.runtime?.blockedToolNames || []));
+    setSavedAgentPermissionProfileSnapshot(
+      createAgentPermissionProfileSnapshot({
+        enabled: Boolean(agent.permissionProfile?.enabled),
+        fileAllowWorkspaceWritesWithoutPrompt:
+          agent.permissionProfile?.file?.allowWorkspaceWritesWithoutPrompt ?? true,
+        fileAllowTaskScopedAllowAll:
+          agent.permissionProfile?.file?.allowTaskScopedAllowAll ?? true,
+        fileDefaultDecision: agent.permissionProfile?.file?.defaultDecision ?? 'prompt',
+        runtimeDefaultToolDecision: agent.permissionProfile?.runtime?.defaultToolDecision ?? 'prompt',
+        runtimeDefaultQuestionDecision: agent.permissionProfile?.runtime?.defaultQuestionDecision ?? 'prompt',
+        allowedToolNamesText: formatAllowlist(agent.permissionProfile?.runtime?.allowedToolNames || []),
+        blockedToolNamesText: formatAllowlist(agent.permissionProfile?.runtime?.blockedToolNames || []),
+      })
+    );
     setAgentError(null);
     setAgentFormVersion((prev) => prev + 1);
+  };
+
+  const revertAgentPermissionProfileChanges = () => {
+    try {
+      const saved = JSON.parse(savedAgentPermissionProfileSnapshot) as {
+        enabled?: boolean;
+        file?: {
+          allowWorkspaceWritesWithoutPrompt?: boolean;
+          allowTaskScopedAllowAll?: boolean;
+          defaultDecision?: PermissionPolicyAction;
+        };
+        runtime?: {
+          defaultToolDecision?: PermissionPolicyAction;
+          defaultQuestionDecision?: PermissionPolicyAction;
+          allowedToolNames?: string[];
+          blockedToolNames?: string[];
+        };
+      };
+      setAgentPermissionProfileEnabled(Boolean(saved.enabled));
+      setAgentPermissionFileAllowWorkspaceWritesWithoutPrompt(
+        saved.file?.allowWorkspaceWritesWithoutPrompt ?? true
+      );
+      setAgentPermissionFileAllowTaskScopedAllowAll(
+        saved.file?.allowTaskScopedAllowAll ?? true
+      );
+      setAgentPermissionFileDefaultDecision(saved.file?.defaultDecision ?? 'prompt');
+      setAgentPermissionRuntimeDefaultToolDecision(saved.runtime?.defaultToolDecision ?? 'prompt');
+      setAgentPermissionRuntimeDefaultQuestionDecision(saved.runtime?.defaultQuestionDecision ?? 'prompt');
+      setAgentPermissionAllowedToolNames(formatAllowlist(saved.runtime?.allowedToolNames || []));
+      setAgentPermissionBlockedToolNames(formatAllowlist(saved.runtime?.blockedToolNames || []));
+      setAgentError(null);
+    } catch (err) {
+      console.error('Failed to revert agent permission profile changes:', err);
+      setAgentError('Unable to revert permission profile changes.');
+    }
   };
 
   const handleSelectAgentWorkspace = async () => {
@@ -3447,6 +5011,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
     let heartbeatTimeZoneValue = AGENT_HEARTBEAT_DEFAULT_TIME_ZONE;
     let heartbeatWindowStartValue = AGENT_HEARTBEAT_DEFAULT_WINDOW_START_TIME;
     let heartbeatWindowEndValue = AGENT_HEARTBEAT_DEFAULT_WINDOW_END_TIME;
+    let subagentMaxChildrenValue = 3;
+    let subagentMaxDepthValue = 1;
+    let subagentRunTimeoutSecondsValue = 300;
     try {
       loopMaxIterationsValue = parseIntegerSetting(
         agentLoopMaxIterationsInputRef.current?.value ?? agentLoopMaxIterations,
@@ -3489,6 +5056,27 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
         'Heartbeat window end',
         AGENT_HEARTBEAT_DEFAULT_WINDOW_END_TIME
       );
+      subagentMaxChildrenValue = parseIntegerSetting(
+        agentSubagentMaxChildren,
+        3,
+        1,
+        12,
+        'Subagent max children'
+      );
+      subagentMaxDepthValue = parseIntegerSetting(
+        agentSubagentMaxDepth,
+        1,
+        1,
+        4,
+        'Subagent max depth'
+      );
+      subagentRunTimeoutSecondsValue = parseIntegerSetting(
+        agentSubagentRunTimeoutSeconds,
+        300,
+        15,
+        3600,
+        'Subagent timeout (seconds)'
+      );
     } catch (error) {
       setAgentError(error instanceof Error ? error.message : 'Invalid numeric agent settings.');
       return;
@@ -3506,15 +5094,43 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
     setAgentHeartbeatWindowStartTime(heartbeatWindowStartValue);
     setAgentHeartbeatWindowEndTime(heartbeatWindowEndValue);
     setAgentHeartbeatPrompt(heartbeatPromptValue || AGENT_HEARTBEAT_DEFAULT_PROMPT);
+    setAgentSubagentMaxChildren(String(subagentMaxChildrenValue));
+    setAgentSubagentMaxDepth(String(subagentMaxDepthValue));
+    setAgentSubagentRunTimeoutSeconds(String(subagentRunTimeoutSecondsValue));
     const heartbeatEnabledForSave = agentLoopEnabled ? agentHeartbeatEnabled : false;
     if (!agentLoopEnabled && agentHeartbeatEnabled) {
       setAgentHeartbeatEnabled(false);
     }
     const selectedModelOverride = normalizeAgentSelectedModel();
+    const subagentDefaultModel = normalizeAgentSubagentDefaultModel();
     if (agentModelOverrideEnabled && !selectedModelOverride) {
       setAgentError('Model is required when agent override is enabled.');
       return;
     }
+    if (agentSubagentDefaultModelEnabled && !subagentDefaultModel) {
+      setAgentError('Default subagent model is required when subagent model override is enabled.');
+      return;
+    }
+    const subagentAllowedAgentIds = agentSubagentAllowedAgentIds
+      .split(/[\s,]+/)
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean);
+    const permissionProfile = agentPermissionProfileEnabled
+      ? {
+        enabled: true,
+        file: {
+          allowWorkspaceWritesWithoutPrompt: agentPermissionFileAllowWorkspaceWritesWithoutPrompt,
+          allowTaskScopedAllowAll: agentPermissionFileAllowTaskScopedAllowAll,
+          defaultDecision: agentPermissionFileDefaultDecision,
+        },
+        runtime: {
+          defaultToolDecision: agentPermissionRuntimeDefaultToolDecision,
+          defaultQuestionDecision: agentPermissionRuntimeDefaultQuestionDecision,
+          allowedToolNames: parseAllowlist(agentPermissionAllowedToolNames),
+          blockedToolNames: parseAllowlist(agentPermissionBlockedToolNames),
+        },
+      }
+      : null;
     setAgentSaving(true);
     setAgentError(null);
     try {
@@ -3543,7 +5159,20 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
         heartbeatPrompt: (heartbeatPromptValue || AGENT_HEARTBEAT_DEFAULT_PROMPT),
         autoSkillEnabled: agentAutoSkillEnabled,
         autoSkillAutoPromoteLowRisk: agentAutoSkillEnabled ? agentAutoSkillAutoPromoteLowRisk : false,
+        subagentsEnabled: agentSubagentsEnabled,
+        subagentMaxChildren: subagentMaxChildrenValue,
+        subagentMaxDepth: subagentMaxDepthValue,
+        subagentAllowedAgentIds,
+        subagentAutoRelayCompletions: agentSubagentAutoRelayCompletions,
+        subagentDefaultModel,
+        subagentRunTimeoutMs: subagentRunTimeoutSecondsValue * 1000,
+        subagentDefaultMode: agentSubagentDefaultMode,
+        subagentInheritWorkingDirectory: agentSubagentInheritWorkingDirectory,
+        subagentInheritAttachedFiles: agentSubagentInheritAttachedFiles,
+        subagentInheritPrivacyMode: agentSubagentInheritPrivacyMode,
+        permissionProfile,
       });
+      await refreshPermissionPolicyOpenCodePreview(agentFormId || activeAgentId || undefined);
       resetAgentForm();
     } catch (err) {
       setAgentError(err instanceof Error ? err.message : 'Unable to save agent.');
@@ -6473,6 +8102,11 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
         const userSkillCount = userSkillsReport?.skills?.length ?? 0;
         return `${installedCount}/${totalCount} bundled skills installed • ${userSkillCount} user skill${userSkillCount === 1 ? '' : 's'}`;
       }
+      case 'Plugins': {
+        const totalCount = pluginRegistryState?.plugins?.length ?? 0;
+        const enabledCount = pluginRegistryState?.plugins?.filter((plugin) => plugin.valid && plugin.enabled).length ?? 0;
+        return `${enabledCount}/${totalCount} enabled • ${pluginRegistryState?.roots?.managed ? 'managed root ready' : 'managed root unavailable'}`;
+      }
       case 'Automations': {
         const bindLabel = webhookBindMode === 'all' ? 'all interfaces' : 'localhost only';
         return `${schedules.length} schedule${schedules.length === 1 ? '' : 's'} • ${gatewayAuthMode} auth • ${bindLabel}`;
@@ -6526,6 +8160,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
       }
       case 'Browser Profile':
         return browserProfile === 'default' ? 'Using default profile' : `Profile: ${browserProfile}`;
+      case 'Permission Policy':
+        return `${permissionPolicyAllowWorkspaceWritesWithoutPrompt ? 'Workspace writes auto-allow' : 'Workspace writes prompt'} • tool default ${permissionPolicyRuntimeDefaultToolDecision} • ${permissionPolicyAuditEntries.length} audit entr${permissionPolicyAuditEntries.length === 1 ? 'y' : 'ies'}`;
       case 'Developer':
         return debugMode ? 'Debug mode enabled' : 'Debug mode disabled';
       case 'Doctor': {
@@ -7007,8 +8643,31 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
           {modelLimitsOpen && (
           <Dialog open={modelLimitsOpen} onOpenChange={setModelLimitsOpen}>
             <DialogContent className="w-[92vw] max-w-3xl max-h-[80vh] overflow-hidden flex flex-col">
-              <DialogHeader>
-                <DialogTitle>Model context limits</DialogTitle>
+              <DialogHeader className="gap-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <DialogTitle>Model context limits</DialogTitle>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span
+                      className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                        modelLimitsHasUnsavedChanges
+                          ? 'bg-warning/10 text-warning'
+                          : 'bg-success/10 text-success'
+                      }`}
+                    >
+                      {modelLimitsHasUnsavedChanges ? 'Unsaved changes' : 'Saved'}
+                    </span>
+                    <ButtonTip text="Restore only the Model context limits section to its saved values.">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={revertModelLimitChanges}
+                        disabled={modelLimitsHasPendingSave || !modelLimitsHasUnsavedChanges}
+                      >
+                        Revert changes
+                      </Button>
+                    </ButtonTip>
+                  </div>
+                </div>
               </DialogHeader>
 
               <div className="flex-1 overflow-auto space-y-4">
@@ -7078,6 +8737,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
 
                 {modelLimitsError && (
                   <div className="text-xs text-destructive">{modelLimitsError}</div>
+                )}
+                {modelLimitsStatus && !modelLimitsError && (
+                  <div className="text-xs text-success">{modelLimitsStatus}</div>
                 )}
               </div>
 
@@ -8387,6 +10049,478 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
             </>
             )}
           </section>
+
+          <section>
+            <h2 className="mb-4 text-base font-medium text-foreground">
+              Plugins
+              <InfoTip text="Plugins are versioned extension bundles with a plugin.json manifest. Enabled plugins can now contribute commands, hooks, tools, and help docs through the app-managed registration boundary." />
+            </h2>
+            {isSettingsSectionExpandedByHeading('Plugins') && (
+            <div className="rounded-lg border border-border bg-card p-5 space-y-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="font-medium text-foreground">Plugin registry</div>
+                    <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
+                    Open Deskmate discovers bundled and managed plugins through a shared manifest registry. This section controls lifecycle state and shows what each plugin contributes through the app-managed boundary.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={handleOpenManagedPluginsRoot}>
+                    Open managed root
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => void handleInstallPlugin()} disabled={installingPlugin}>
+                    {installingPlugin ? 'Installing…' : 'Install from folder'}
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => void refreshPlugins()} disabled={pluginsLoading}>
+                    {pluginsLoading ? 'Refreshing…' : 'Refresh'}
+                  </Button>
+                </div>
+              </div>
+
+              <div className="grid gap-3 xl:grid-cols-2">
+                <div className="rounded-lg border border-border/60 bg-background/40 p-3">
+                  <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Bundled root</div>
+                  <code className="mt-2 block break-all rounded bg-muted px-2 py-1 text-xs text-foreground">
+                    {pluginRegistryState?.roots?.bundled || 'Unavailable'}
+                  </code>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-3">
+                  <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Managed root</div>
+                  <code className="mt-2 block break-all rounded bg-muted px-2 py-1 text-xs text-foreground">
+                    {pluginRegistryState?.roots?.managed || 'Unavailable'}
+                  </code>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-border/60 bg-background/40 p-3 space-y-3">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Registration activity</div>
+                    <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                      Startup and lifecycle registration diagnostics are persisted here so warnings and blocked states can be traced over time.
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void handleClearPluginDiagnosticsHistory()}
+                    disabled={pluginDiagnosticsHistory.length === 0}
+                  >
+                    Clear history
+                  </Button>
+                </div>
+                {pluginDiagnosticsHistory.length === 0 ? (
+                  <div className="rounded border border-dashed border-border px-3 py-2 text-[11px] text-muted-foreground">
+                    No registration activity recorded yet.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {pluginDiagnosticsHistory.slice(0, 8).map((entry) => (
+                      <div key={entry.id} className="rounded border border-border/50 px-3 py-2 text-[11px]">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-medium text-foreground">{entry.pluginId}</span>
+                          <span className="rounded-full border border-border px-1.5 py-0.5 uppercase tracking-wide text-[10px] text-muted-foreground">
+                            {entry.reason}
+                          </span>
+                          <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
+                            entry.registrationState === 'active'
+                              ? 'bg-success/10 text-success'
+                              : entry.registrationState === 'warning' || entry.registrationState === 'incompatible'
+                                ? 'bg-amber-500/10 text-amber-700 dark:text-amber-400'
+                                : entry.registrationState === 'invalid'
+                                  ? 'bg-destructive/10 text-destructive'
+                                  : 'bg-muted text-muted-foreground'
+                          }`}>
+                            {entry.registrationState}
+                          </span>
+                          <span className="text-muted-foreground">{formatIsoDateTime(entry.recordedAt)}</span>
+                        </div>
+                        {entry.blockedReasons.length > 0 && (
+                          <div className="mt-1 text-destructive">
+                            Blocked: {entry.blockedReasons.join(' • ')}
+                          </div>
+                        )}
+                        {entry.warnings.length > 0 && (
+                          <div className="mt-1 text-amber-700 dark:text-amber-400">
+                            Warnings: {entry.warnings.join(' • ')}
+                          </div>
+                        )}
+                        {entry.issues.length > 0 && (
+                          <div className="mt-1 text-muted-foreground">
+                            Issues: {entry.issues.map((issue) => `${issue.kind}${issue.entryLabel ? ` ${issue.entryLabel}` : ''}: ${issue.message}`).join(' • ')}
+                          </div>
+                        )}
+                        {entry.blockedReasons.length === 0 && entry.warnings.length === 0 && entry.issues.length === 0 && (
+                          <div className="mt-1 text-muted-foreground">
+                            Ready: {entry.ready ? 'yes' : 'no'} • Compatible: {entry.compatible ? 'yes' : 'no'}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {pluginsLoading ? (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Loading plugins...
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {(pluginRegistryState?.plugins || []).length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
+                      No plugins discovered yet. Add plugin folders under the managed root with a <code className="rounded bg-muted px-1 py-0.5">plugin.json</code> manifest.
+                    </div>
+                  ) : (
+                    (pluginRegistryState?.plugins || []).map((plugin) => {
+                      const diagnostics = pluginDiagnostics.find((entry) => entry.pluginId === plugin.id);
+                      const capabilities = plugin.manifest?.capabilities;
+                      const contributions = plugin.manifest?.contributes;
+                      const metadata = plugin.manifest?.metadata;
+                      const minimumAppVersion = metadata?.minimumAppVersion;
+                      const minimumAppVersionMismatch = Boolean(
+                        minimumAppVersion
+                        && appVersion
+                        && compareSemverLike(appVersion, minimumAppVersion) < 0
+                      );
+                      const capabilityBits = [
+                        capabilities?.commands?.length ? `${capabilities.commands.length} command${capabilities.commands.length === 1 ? '' : 's'}` : null,
+                        capabilities?.hooks?.length ? `${capabilities.hooks.length} hook${capabilities.hooks.length === 1 ? '' : 's'}` : null,
+                        capabilities?.tools?.length ? `${capabilities.tools.length} tool${capabilities.tools.length === 1 ? '' : 's'}` : null,
+                        capabilities?.mcpServers?.length ? `${capabilities.mcpServers.length} MCP server${capabilities.mcpServers.length === 1 ? '' : 's'}` : null,
+                        capabilities?.connectors?.length ? `${capabilities.connectors.length} connector${capabilities.connectors.length === 1 ? '' : 's'}` : null,
+                      ].filter(Boolean);
+                      const contributionBits = [
+                        contributions?.commands?.length ? `${contributions.commands.length} command${contributions.commands.length === 1 ? '' : 's'}` : null,
+                        contributions?.hooks?.length ? `${contributions.hooks.length} hook${contributions.hooks.length === 1 ? '' : 's'}` : null,
+                        contributions?.tools?.length ? `${contributions.tools.length} tool${contributions.tools.length === 1 ? '' : 's'}` : null,
+                        contributions?.helpDocs?.length ? `${contributions.helpDocs.length} help page${contributions.helpDocs.length === 1 ? '' : 's'}` : null,
+                      ].filter(Boolean);
+                      const controlledActionBits = Array.from(new Set([
+                        ...(contributions?.commands || []).map((entry) => (
+                          entry.action.type === 'dispatch_app_command'
+                            ? `command:${entry.action.commandId}`
+                            : `command:${entry.action.type}`
+                        )),
+                        ...(contributions?.tools || []).map((entry) => `tool:${entry.action}`),
+                      ]));
+                      const metadataBits = [
+                        metadata?.categories?.length ? `Categories: ${metadata.categories.join(', ')}` : null,
+                        metadata?.permissions?.length ? `Permissions: ${metadata.permissions.join(', ')}` : null,
+                        minimumAppVersion ? `Minimum app version: ${minimumAppVersion}` : null,
+                      ].filter(Boolean);
+                      const toggling = Boolean(pluginToggleSaving[plugin.id]);
+                      return (
+                        <div key={`${plugin.source}:${plugin.id}:${plugin.dir}`} className="rounded-xl border border-border/60 p-4">
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <div className="text-sm font-medium text-foreground">
+                                  {plugin.manifest?.name || plugin.id}
+                                </div>
+                                <span className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                                  {plugin.source}
+                                </span>
+                                <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                                  !plugin.valid
+                                    ? 'bg-destructive/10 text-destructive'
+                                    : plugin.enabled
+                                      ? 'bg-success/10 text-success'
+                                      : 'bg-muted text-muted-foreground'
+                                }`}>
+                                  {!plugin.valid ? 'Invalid' : plugin.enabled ? 'Enabled' : 'Disabled'}
+                                </span>
+                                {diagnostics && (
+                                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                                    diagnostics.registrationState === 'active'
+                                      ? 'bg-success/10 text-success'
+                                      : diagnostics.registrationState === 'warning'
+                                        ? 'bg-amber-500/10 text-amber-700 dark:text-amber-400'
+                                        : diagnostics.registrationState === 'incompatible'
+                                          ? 'bg-amber-500/10 text-amber-700 dark:text-amber-400'
+                                          : diagnostics.registrationState === 'invalid'
+                                            ? 'bg-destructive/10 text-destructive'
+                                            : 'bg-muted text-muted-foreground'
+                                  }`}>
+                                    {diagnostics.registrationState === 'active'
+                                      ? 'Ready'
+                                      : diagnostics.registrationState === 'warning'
+                                        ? 'Warnings'
+                                        : diagnostics.registrationState === 'incompatible'
+                                          ? 'Incompatible'
+                                          : diagnostics.registrationState === 'invalid'
+                                            ? 'Blocked'
+                                            : 'Inactive'}
+                                  </span>
+                                )}
+                                {plugin.manifest?.version && (
+                                  <span className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
+                                    v{plugin.manifest.version}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                {plugin.manifest?.description || 'Plugin manifest loaded.'}
+                              </p>
+                              <p className="mt-2 text-[11px] text-muted-foreground">
+                                ID: <code className="rounded bg-muted px-1 py-0.5">{plugin.id}</code>
+                              </p>
+                              <p className="mt-1 text-[11px] text-muted-foreground">
+                                Path: <code className="rounded bg-muted px-1 py-0.5 break-all">{plugin.dir}</code>
+                              </p>
+                              {capabilityBits.length > 0 && (
+                                <p className="mt-2 text-[11px] text-muted-foreground">
+                                  Declared capabilities: {capabilityBits.join(' • ')}
+                                </p>
+                              )}
+                              {contributionBits.length > 0 && (
+                                <p className="mt-1 text-[11px] text-muted-foreground">
+                                  Runtime contributions: {contributionBits.join(' • ')}
+                                </p>
+                              )}
+                              {metadataBits.length > 0 && (
+                                <p className="mt-1 text-[11px] text-muted-foreground">
+                                  Metadata: {metadataBits.join(' • ')}
+                                </p>
+                              )}
+                              {controlledActionBits.length > 0 && (
+                                <p className="mt-1 text-[11px] text-muted-foreground">
+                                  Controlled actions: {controlledActionBits.join(' • ')}
+                                </p>
+                              )}
+                              {contributions?.helpDocs?.length ? (
+                                <p className="mt-1 text-[11px] text-muted-foreground">
+                                  Help docs: {contributions.helpDocs.map((entry) => entry.title).join(' • ')}
+                                </p>
+                              ) : null}
+                              {minimumAppVersionMismatch && (
+                                <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">
+                                  This plugin targets app version {minimumAppVersion} or newer. Current app version: {appVersion}.
+                                </p>
+                              )}
+                              {plugin.valid && (
+                                <p className="mt-1 text-[11px] text-muted-foreground">
+                                  Registration: {plugin.enabled ? 'active through the app-managed plugin boundary' : 'available but inactive while disabled'}
+                                </p>
+                              )}
+                              {diagnostics?.blockedReasons?.length ? (
+                                <div className="mt-2 rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-[11px] text-destructive">
+                                  <div className="font-medium">Blocked reasons</div>
+                                  <div className="mt-1 space-y-1">
+                                    {diagnostics.blockedReasons.map((reason) => (
+                                      <div key={reason}>{reason}</div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : null}
+                              {diagnostics?.warnings?.length ? (
+                                <div className="mt-2 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-400">
+                                  <div className="font-medium">Warnings</div>
+                                  <div className="mt-1 space-y-1">
+                                    {diagnostics.warnings.map((warning, index) => (
+                                      <div key={`${plugin.id}-warning-${index}`}>{warning}</div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : null}
+                              {diagnostics?.issues?.length ? (
+                                <div className="mt-2 rounded-lg border border-border/60 bg-background/40 px-3 py-2 text-[11px]">
+                                  <div className="font-medium text-foreground">Contribution issues</div>
+                                  <div className="mt-1 space-y-1.5">
+                                    {diagnostics.issues.map((issue, index) => (
+                                      <div key={`${plugin.id}-issue-${index}`} className="rounded border border-border/50 px-2 py-1.5">
+                                        <div className="flex flex-wrap items-center gap-2">
+                                          <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
+                                            issue.severity === 'error'
+                                              ? 'bg-destructive/10 text-destructive'
+                                              : 'bg-amber-500/10 text-amber-700 dark:text-amber-400'
+                                          }`}>
+                                            {issue.severity}
+                                          </span>
+                                          <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                                            {issue.kind.replace('_', ' ')}
+                                          </span>
+                                          {issue.entryLabel && (
+                                            <span className="font-medium text-foreground">{issue.entryLabel}</span>
+                                          )}
+                                        </div>
+                                        <div className="mt-1 text-muted-foreground">{issue.message}</div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : null}
+                              {plugin.error && (
+                                <p className="mt-2 text-[11px] text-destructive">{plugin.error}</p>
+                              )}
+                              {diagnostics && (diagnostics.commands.length > 0 || diagnostics.tools.length > 0 || diagnostics.helpDocs.length > 0) ? (
+                                <div className="mt-3 space-y-2 rounded-lg border border-border/60 bg-background/40 p-3">
+                                  <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                                    Contribution previews
+                                  </div>
+                                  {diagnostics.commands.length > 0 && (
+                                    <div className="space-y-1.5">
+                                      <div className="text-[11px] font-medium text-foreground">Commands</div>
+                                      {diagnostics.commands.map((command) => (
+                                        <div key={command.id} className="flex flex-wrap items-center justify-between gap-2 rounded border border-border/50 px-2 py-1.5">
+                                          <div className="min-w-0">
+                                            <div className="text-[11px] font-medium text-foreground">/{command.command}</div>
+                                            <div className="text-[11px] text-muted-foreground">{command.description}</div>
+                                          </div>
+                                          <Button
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() => openPluginCommandPreview(plugin, diagnostics, command)}
+                                          >
+                                            Preview
+                                          </Button>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                  {diagnostics.tools.length > 0 && (
+                                    <div className="space-y-1.5">
+                                      <div className="text-[11px] font-medium text-foreground">Tools</div>
+                                      {diagnostics.tools.map((tool) => (
+                                        <div key={tool.id} className="flex flex-wrap items-center justify-between gap-2 rounded border border-border/50 px-2 py-1.5">
+                                          <div className="min-w-0">
+                                            <div className="text-[11px] font-medium text-foreground">{tool.name}</div>
+                                            <div className="text-[11px] text-muted-foreground">{tool.description}</div>
+                                          </div>
+                                          <Button
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() => openPluginToolPreview(plugin, diagnostics, tool)}
+                                          >
+                                            Inspect schema
+                                          </Button>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                  {diagnostics.helpDocs.length > 0 && (
+                                    <div className="space-y-1.5">
+                                      <div className="text-[11px] font-medium text-foreground">Help docs</div>
+                                      {diagnostics.helpDocs.map((helpDoc) => (
+                                        <div key={helpDoc.id} className="flex flex-wrap items-center justify-between gap-2 rounded border border-border/50 px-2 py-1.5">
+                                          <div className="min-w-0">
+                                            <div className="text-[11px] font-medium text-foreground">{helpDoc.title}</div>
+                                            <div className="text-[11px] text-muted-foreground">{helpDoc.file}</div>
+                                          </div>
+                                          <Button
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() => openPluginHelpDocPreview(plugin, diagnostics, helpDoc)}
+                                          >
+                                            Preview
+                                          </Button>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              ) : null}
+                            </div>
+                            <div className="shrink-0">
+                              <div className="flex items-center gap-2">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  disabled={!plugin.valid || toggling}
+                                  onClick={() => void handleSetPluginEnabled(plugin, !plugin.enabled)}
+                                >
+                                  {toggling ? 'Saving…' : plugin.enabled ? 'Disable' : 'Enable'}
+                                </Button>
+                                {plugin.source === 'managed' && (
+                                  <Button
+                                    size="sm"
+                                    variant="destructive"
+                                    disabled={uninstallingPluginId === plugin.id}
+                                    onClick={() => setPluginPendingUninstall(plugin)}
+                                  >
+                                    {uninstallingPluginId === plugin.id ? 'Removing…' : 'Uninstall'}
+                                  </Button>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              )}
+
+              {pluginsError && <p className="text-xs text-destructive">{pluginsError}</p>}
+              {pluginsStatus && !pluginsError && <p className="text-xs text-success">{pluginsStatus}</p>}
+            </div>
+            )}
+          </section>
+
+          {pluginPendingUninstall && (
+            <Dialog open={Boolean(pluginPendingUninstall)} onOpenChange={(open) => { if (!open) setPluginPendingUninstall(null); }}>
+              <DialogContent className="sm:max-w-[460px]">
+                <DialogHeader>
+                  <DialogTitle>Uninstall managed plugin</DialogTitle>
+                </DialogHeader>
+                <div className="py-2">
+                  <p className="text-sm text-muted-foreground">
+                    This will permanently remove the managed plugin folder for{' '}
+                    <span className="font-medium text-foreground">
+                      {pluginPendingUninstall.manifest?.name || pluginPendingUninstall.id}
+                    </span>
+                    .
+                  </p>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Path:{' '}
+                    <code className="rounded bg-muted px-1 py-0.5 break-all">
+                      {pluginPendingUninstall.dir}
+                    </code>
+                  </p>
+                </div>
+                <DialogFooter>
+                  <Button
+                    variant="outline"
+                    onClick={() => setPluginPendingUninstall(null)}
+                    disabled={uninstallingPluginId === pluginPendingUninstall.id}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    onClick={() => void handleUninstallPlugin()}
+                    disabled={uninstallingPluginId === pluginPendingUninstall.id}
+                  >
+                    {uninstallingPluginId === pluginPendingUninstall.id ? 'Removing…' : 'Uninstall'}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          )}
+
+          {pluginPreviewDialog && (
+            <Dialog open={Boolean(pluginPreviewDialog)} onOpenChange={(open) => { if (!open) setPluginPreviewDialog(null); }}>
+              <DialogContent className="sm:max-w-[720px]">
+                <DialogHeader>
+                  <DialogTitle>{pluginPreviewDialog.title}</DialogTitle>
+                </DialogHeader>
+                {pluginPreviewDialog.subtitle && (
+                  <p className="text-sm text-muted-foreground">{pluginPreviewDialog.subtitle}</p>
+                )}
+                <div className="max-h-[60vh] overflow-auto rounded-lg border border-border/60 bg-background/60 p-3">
+                  <pre className="whitespace-pre-wrap break-words text-xs leading-relaxed text-foreground">
+                    {pluginPreviewDialog.body}
+                  </pre>
+                </div>
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => setPluginPreviewDialog(null)}>
+                    Close
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          )}
 
           <section>
             <h2 className="mb-4 text-base font-medium text-foreground">
@@ -11922,6 +14056,24 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
                             >
                               Auto-promote low risk: {agent.autoSkillAutoPromoteLowRisk ? 'Enabled' : 'Disabled'}
                             </span>
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                                agent.subagentsEnabled
+                                  ? 'bg-violet-500/10 text-violet-700 dark:text-violet-300'
+                                  : 'bg-muted text-muted-foreground'
+                              }`}
+                            >
+                              Subagents: {agent.subagentsEnabled ? 'Enabled' : 'Disabled'}
+                            </span>
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                                agent.permissionProfile?.enabled
+                                  ? 'bg-amber-500/10 text-amber-700 dark:text-amber-300'
+                                  : 'bg-muted text-muted-foreground'
+                              }`}
+                            >
+                              Permission profile: {agent.permissionProfile?.enabled ? 'Override active' : 'Global'}
+                            </span>
                           </div>
                           <p className="text-xs text-muted-foreground mt-1">{agent.description || 'No description'}</p>
                           {agent.workspaceRoot && (
@@ -11992,10 +14144,19 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
 
               <div className="rounded-lg border border-border/70 bg-background/70 p-3 space-y-3">
                 <div className="flex items-center justify-between">
-                  <label className="text-xs text-muted-foreground">
-                    Assistant model routing
-                    <InfoTip text="Choose which model settings assistants use. Disable override to use the global model." />
-                  </label>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label className="text-xs text-muted-foreground">
+                      Assistant model routing
+                      <InfoTip text="Choose which model settings assistants use. Disable override to use the global model." />
+                    </label>
+                    <span className={`rounded-full px-2 py-0.5 text-[11px] ${
+                      skillAssistantModelHasUnsavedChanges
+                        ? 'bg-warning/10 text-warning'
+                        : 'bg-success/10 text-success'
+                    }`}>
+                      {skillAssistantModelHasUnsavedChanges ? 'Unsaved changes' : 'Saved'}
+                    </span>
+                  </div>
                   <label className="flex items-center gap-2 text-xs text-foreground">
                     <input
                       type="checkbox"
@@ -12110,6 +14271,16 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
                   </div>
                 )}
                 <div className="flex items-center gap-2">
+                  <ButtonTip text="Restore only the Skill Assistant model routing section to its saved values. This does not reset other Settings sections.">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => revertSkillAssistantModelChanges()}
+                      disabled={skillAssistantModelSaving || !skillAssistantModelHasUnsavedChanges}
+                    >
+                      Revert changes
+                    </Button>
+                  </ButtonTip>
                   <Button size="sm" onClick={() => void handleSaveSkillAssistantModel()} disabled={skillAssistantModelSaving}>
                     {skillAssistantModelSaving ? 'Saving...' : 'Save assistant model'}
                   </Button>
@@ -12377,6 +14548,545 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
                   ) : (
                     <p className="text-xs text-muted-foreground">
                       Loop disabled. Agent runs one pass per request.
+                    </p>
+                  )}
+                </div>
+                <div className="rounded-lg border border-border bg-background/60 p-3 space-y-2">
+                  <div className="text-xs text-muted-foreground">
+                    Subagent controls
+                    <InfoTip text="Allow this agent to spawn tracked helper agents during Chat Mode and Build Mode. Use limits to control fan-out and recursion." />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs text-muted-foreground">
+                      Allow subagents
+                      <InfoTip text="When enabled, this agent can delegate bounded work to other agents. When disabled, subagent spawn requests are rejected." />
+                    </label>
+                    <label className="flex items-center gap-2 text-xs text-foreground">
+                      <input
+                        type="checkbox"
+                        checked={agentSubagentsEnabled}
+                        onChange={(e) => setAgentSubagentsEnabled(e.target.checked)}
+                      />
+                      Enable subagents
+                    </label>
+                  </div>
+                  {agentSubagentsEnabled ? (
+                    <div className="grid gap-3">
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div className="grid gap-1">
+                          <label className="text-xs text-muted-foreground">
+                            Max child subagents
+                            <InfoTip text="Maximum concurrently active child agents this parent agent can keep running for one task." />
+                          </label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={12}
+                            value={agentSubagentMaxChildren}
+                            onChange={(e) => setAgentSubagentMaxChildren(e.target.value)}
+                            className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                          />
+                        </div>
+                        <div className="grid gap-1">
+                          <label className="text-xs text-muted-foreground">
+                            Max spawn depth
+                            <InfoTip text="How many levels deep subagent spawning may go. Use 1 to allow only top-level agents to spawn helpers." />
+                          </label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={4}
+                            value={agentSubagentMaxDepth}
+                            onChange={(e) => setAgentSubagentMaxDepth(e.target.value)}
+                            className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                          />
+                        </div>
+                      </div>
+                      <div className="grid gap-1">
+                        <label className="text-xs text-muted-foreground">
+                          Allowed target agent IDs (optional)
+                          <InfoTip text="Comma or space separated agent IDs. Leave empty to allow any agent to be used as a child helper." />
+                        </label>
+                        <input
+                          type="text"
+                          value={agentSubagentAllowedAgentIds}
+                          onChange={(e) => setAgentSubagentAllowedAgentIds(e.target.value)}
+                          placeholder="researcher, developer"
+                          className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                        />
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div className="grid gap-1">
+                          <label className="text-xs text-muted-foreground">
+                            Child timeout seconds
+                            <InfoTip text="Default timeout for each child run unless a narrower value is passed when the subagent is spawned." />
+                          </label>
+                          <input
+                            type="number"
+                            min={15}
+                            max={3600}
+                            value={agentSubagentRunTimeoutSeconds}
+                            onChange={(e) => setAgentSubagentRunTimeoutSeconds(e.target.value)}
+                            className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                          />
+                        </div>
+                        <div className="grid gap-1">
+                          <label className="text-xs text-muted-foreground">
+                            Default subagent mode
+                            <InfoTip text="Run creates a fresh child run each time. Session reuses a persistent child session per workspace parent/agent/label when one already exists." />
+                          </label>
+                          <select
+                            value={agentSubagentDefaultMode}
+                            onChange={(e) => setAgentSubagentDefaultMode(e.target.value === 'session' ? 'session' : 'run')}
+                            className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                          >
+                            <option value="run">Run</option>
+                            <option value="session">Session</option>
+                          </select>
+                        </div>
+                        <div className="flex items-center justify-between rounded-md border border-border/50 bg-muted/20 px-3 py-2">
+                          <label className="text-xs text-muted-foreground">
+                            Auto-relay child completions
+                            <InfoTip text="When enabled, child completion summaries are injected back into the parent task transcript automatically." />
+                          </label>
+                          <input
+                            type="checkbox"
+                            checked={agentSubagentAutoRelayCompletions}
+                            onChange={(e) => setAgentSubagentAutoRelayCompletions(e.target.checked)}
+                          />
+                        </div>
+                      </div>
+                      <div className="grid gap-2 rounded-md border border-border/50 bg-muted/20 px-3 py-3">
+                        <div className="flex items-center justify-between">
+                          <label className="text-xs text-muted-foreground">
+                            Default subagent model
+                            <InfoTip text="Optional default model override for child agents spawned by this parent agent. Leave disabled to let child agents use their usual model routing." />
+                          </label>
+                          <label className="flex items-center gap-2 text-xs text-foreground">
+                            <input
+                              type="checkbox"
+                              checked={agentSubagentDefaultModelEnabled}
+                              onChange={(e) => {
+                                const enabled = e.target.checked;
+                                setAgentSubagentDefaultModelEnabled(enabled);
+                                if (enabled && !agentSubagentDefaultModelId.trim()) {
+                                  applyAgentSubagentDefaultModelForm(selectedModel ?? AGENT_FALLBACK_MODEL);
+                                }
+                              }}
+                            />
+                            Override child model
+                          </label>
+                        </div>
+                        {!agentSubagentDefaultModelEnabled && (
+                          <p className="text-xs text-muted-foreground">
+                            Using each child agent&apos;s normal model routing.
+                          </p>
+                        )}
+                        {agentSubagentDefaultModelEnabled && (
+                          <div className="grid gap-3">
+                            <div className="grid gap-1">
+                              <label className="text-xs text-muted-foreground">Provider</label>
+                              <select
+                                value={agentSubagentDefaultModelProvider}
+                                onChange={(e) => handleAgentSubagentDefaultModelProviderChange(e.target.value as ProviderType)}
+                                className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                              >
+                                {modelProviders
+                                  .filter((entry) => entry.id !== 'ollama')
+                                  .map((entry) => (
+                                    <option key={entry.id} value={entry.id}>
+                                      {entry.name} (Subagent)
+                                    </option>
+                                  ))}
+                                {!modelProviders.some((entry) => entry.id === agentSubagentDefaultModelProvider)
+                                  && agentSubagentDefaultModelProvider !== 'ollama'
+                                  && agentSubagentDefaultModelProvider !== 'custom' && (
+                                    <option value={agentSubagentDefaultModelProvider}>{agentSubagentDefaultModelProvider}</option>
+                                  )}
+                                <option value="ollama">Ollama</option>
+                                <option value="custom">Custom (manual)</option>
+                              </select>
+                            </div>
+                            {agentSubagentDefaultModelProvider !== 'ollama'
+                              && (modelProviders.find((entry) => entry.id === agentSubagentDefaultModelProvider)?.models?.length ?? 0) > 0 && (
+                              <div className="grid gap-1">
+                                <label className="text-xs text-muted-foreground">Model</label>
+                                <select
+                                  value={agentSubagentDefaultModelId}
+                                  onChange={(e) => setAgentSubagentDefaultModelId(e.target.value)}
+                                  className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                                >
+                                  {(modelProviders.find((entry) => entry.id === agentSubagentDefaultModelProvider)?.models ?? []).map((model) => (
+                                    <option key={model.fullId} value={model.fullId}>
+                                      {model.displayName}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                            )}
+                            {(agentSubagentDefaultModelProvider === 'custom'
+                              || (agentSubagentDefaultModelProvider !== 'ollama'
+                                && (modelProviders.find((entry) => entry.id === agentSubagentDefaultModelProvider)?.models?.length ?? 0) === 0)) && (
+                              <div className="grid gap-1">
+                                <label className="text-xs text-muted-foreground">Model ID</label>
+                                <input
+                                  type="text"
+                                  value={agentSubagentDefaultModelId}
+                                  onChange={(e) => setAgentSubagentDefaultModelId(e.target.value)}
+                                  placeholder="provider/model-name"
+                                  className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                                />
+                              </div>
+                            )}
+                            {agentSubagentDefaultModelProvider === 'ollama' && (
+                              <>
+                                <div className="grid gap-1">
+                                  <label className="text-xs text-muted-foreground">Ollama model</label>
+                                  {ollamaModels.length > 0 ? (
+                                    <select
+                                      value={agentSubagentDefaultModelId.replace(/^ollama\//, '')}
+                                      onChange={(e) => setAgentSubagentDefaultModelId(`ollama/${e.target.value}`)}
+                                      className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                                    >
+                                      {ollamaModels.map((model) => (
+                                        <option key={model.id} value={model.id}>
+                                          {model.displayName}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  ) : (
+                                    <input
+                                      type="text"
+                                      value={agentSubagentDefaultModelId.replace(/^ollama\//, '')}
+                                      onChange={(e) => setAgentSubagentDefaultModelId(e.target.value)}
+                                      placeholder="llama3.1:8b"
+                                      className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                                    />
+                                  )}
+                                </div>
+                                <div className="grid gap-1">
+                                  <label className="text-xs text-muted-foreground">Ollama base URL (optional)</label>
+                                  <input
+                                    type="text"
+                                    value={agentSubagentDefaultModelBaseUrl}
+                                    onChange={(e) => setAgentSubagentDefaultModelBaseUrl(e.target.value)}
+                                    placeholder={ollamaUrl || 'http://localhost:11434'}
+                                    className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                                  />
+                                </div>
+                              </>
+                            )}
+                            {(agentSubagentDefaultModelProvider === 'custom'
+                              || (agentSubagentDefaultModelProvider !== 'ollama'
+                                && Boolean(modelProviders.find((entry) => entry.id === agentSubagentDefaultModelProvider)?.baseUrl))) && (
+                              <div className="grid gap-1">
+                                <label className="text-xs text-muted-foreground">Base URL (optional)</label>
+                                <input
+                                  type="text"
+                                  value={agentSubagentDefaultModelBaseUrl}
+                                  onChange={(e) => setAgentSubagentDefaultModelBaseUrl(e.target.value)}
+                                  placeholder="https://api.example.com"
+                                  className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                                />
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      <div className="grid gap-2 rounded-md border border-border/50 bg-muted/20 px-3 py-3">
+                        <div className="text-xs text-muted-foreground">
+                          Inheritance policy
+                          <InfoTip text="Control which parts of the parent task context are passed down to newly spawned child agents." />
+                        </div>
+                        <label className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                          <span>
+                            Inherit working directory
+                            <InfoTip text="Pass the parent task folder/workspace path to the child task." />
+                          </span>
+                          <input
+                            type="checkbox"
+                            checked={agentSubagentInheritWorkingDirectory}
+                            onChange={(e) => setAgentSubagentInheritWorkingDirectory(e.target.checked)}
+                          />
+                        </label>
+                        <label className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                          <span>
+                            Inherit attached files
+                            <InfoTip text="Pass the parent task attached files to the child task." />
+                          </span>
+                          <input
+                            type="checkbox"
+                            checked={agentSubagentInheritAttachedFiles}
+                            onChange={(e) => setAgentSubagentInheritAttachedFiles(e.target.checked)}
+                          />
+                        </label>
+                        <label className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                          <span>
+                            Inherit privacy mode
+                            <InfoTip text="Pass the parent task privacy mode to the child task. If disabled, child tasks run in normal mode." />
+                          </span>
+                          <input
+                            type="checkbox"
+                            checked={agentSubagentInheritPrivacyMode}
+                            onChange={(e) => setAgentSubagentInheritPrivacyMode(e.target.checked)}
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      Disabled. This agent will not be allowed to spawn helper agents in Chat Mode or Build Mode.
+                    </p>
+                  )}
+                </div>
+                <div className="rounded-lg border border-border bg-background/60 p-3 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <label className="text-xs text-muted-foreground">
+                        Permission profile
+                        <InfoTip text="Override the global permission policy for this agent. Useful when one agent should be more autonomous or more locked down than the rest of the app." />
+                      </label>
+                      <span className={`rounded-full px-2 py-0.5 text-[11px] ${
+                        agentPermissionProfileHasUnsavedChanges
+                          ? 'bg-warning/10 text-warning'
+                          : 'bg-success/10 text-success'
+                      }`}>
+                        {agentPermissionProfileHasUnsavedChanges ? 'Unsaved changes' : 'Saved'}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <ButtonTip text="Restore only this agent permission profile section to its saved values. This does not reset the rest of the agent form or the wider Settings dialog.">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={revertAgentPermissionProfileChanges}
+                          disabled={agentSaving || !agentPermissionProfileHasUnsavedChanges}
+                        >
+                          Revert changes
+                        </Button>
+                      </ButtonTip>
+                      <label className="flex items-center gap-2 text-xs text-foreground">
+                        <input
+                          type="checkbox"
+                          checked={agentPermissionProfileEnabled}
+                          onChange={(e) => setAgentPermissionProfileEnabled(e.target.checked)}
+                        />
+                        Enable override
+                      </label>
+                    </div>
+                  </div>
+                  {agentPermissionProfileEnabled ? (
+                    <div className="grid gap-3">
+                      <div className="grid gap-3 xl:grid-cols-2">
+                        <div className="rounded-md border border-border/50 bg-muted/20 px-3 py-3 space-y-3">
+                          <div className="font-medium text-foreground text-sm">File policy</div>
+                          <label className="flex items-start gap-3 text-sm text-foreground">
+                            <input
+                              type="checkbox"
+                              checked={agentPermissionFileAllowWorkspaceWritesWithoutPrompt}
+                              onChange={(e) => setAgentPermissionFileAllowWorkspaceWritesWithoutPrompt(e.target.checked)}
+                              className="mt-0.5 h-4 w-4 rounded border-input bg-background"
+                            />
+                            <span>
+                              Auto-allow writes inside the workspace
+                              <div className="mt-1 text-xs text-muted-foreground">
+                                If disabled, this agent will prompt or use the fallback file decision even for normal workspace edits.
+                              </div>
+                            </span>
+                          </label>
+                          <label className="flex items-start gap-3 text-sm text-foreground">
+                            <input
+                              type="checkbox"
+                              checked={agentPermissionFileAllowTaskScopedAllowAll}
+                              onChange={(e) => setAgentPermissionFileAllowTaskScopedAllowAll(e.target.checked)}
+                              className="mt-0.5 h-4 w-4 rounded border-input bg-background"
+                            />
+                            <span>
+                              Honor task-scoped allow-all
+                              <div className="mt-1 text-xs text-muted-foreground">
+                                Controls whether this agent can suppress later file prompts after one allow-all decision.
+                              </div>
+                            </span>
+                          </label>
+                          <div className="grid gap-1">
+                            <label className="text-xs text-muted-foreground">Fallback file decision</label>
+                            <select
+                              value={agentPermissionFileDefaultDecision}
+                              onChange={(e) => setAgentPermissionFileDefaultDecision(e.target.value as PermissionPolicyAction)}
+                              className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                            >
+                              <option value="prompt">Prompt</option>
+                              <option value="allow">Allow</option>
+                              <option value="deny">Deny</option>
+                            </select>
+                          </div>
+                        </div>
+                        <div className="rounded-md border border-border/50 bg-muted/20 px-3 py-3 space-y-3">
+                          <div className="font-medium text-foreground text-sm">Runtime policy</div>
+                          <div className="grid gap-3 sm:grid-cols-2">
+                            <div className="grid gap-1">
+                              <label className="text-xs text-muted-foreground">Default tool decision</label>
+                              <select
+                                value={agentPermissionRuntimeDefaultToolDecision}
+                                onChange={(e) => setAgentPermissionRuntimeDefaultToolDecision(e.target.value as PermissionPolicyAction)}
+                                className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                              >
+                                <option value="prompt">Prompt</option>
+                                <option value="allow">Allow</option>
+                                <option value="deny">Deny</option>
+                              </select>
+                            </div>
+                            <div className="grid gap-1">
+                              <label className="text-xs text-muted-foreground">Default question decision</label>
+                              <select
+                                value={agentPermissionRuntimeDefaultQuestionDecision}
+                                onChange={(e) => setAgentPermissionRuntimeDefaultQuestionDecision(e.target.value as PermissionPolicyAction)}
+                                className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                              >
+                                <option value="prompt">Prompt</option>
+                                <option value="allow">Allow</option>
+                                <option value="deny">Deny</option>
+                              </select>
+                            </div>
+                          </div>
+                          <div className="grid gap-1">
+                            <label className="text-xs text-muted-foreground">Allowed tool names</label>
+                            <textarea
+                              value={agentPermissionAllowedToolNames}
+                              onChange={(e) => setAgentPermissionAllowedToolNames(e.target.value)}
+                              className="min-h-[84px] rounded-md border border-input bg-background px-3 py-2 font-mono text-xs"
+                              placeholder="subagent_spawn&#10;build_mode_runtime_start"
+                              spellCheck={false}
+                            />
+                          </div>
+                          <div className="rounded-md border border-border/50 bg-background/60 p-3">
+                            <div className="flex items-center gap-2 text-xs font-medium text-foreground">
+                              Executor override built-ins
+                              <InfoTip text="Agent-level OpenCode permission overrides only project for the built-ins the runtime can safely override per agent today." />
+                            </div>
+                            <div className="mt-1 text-[11px] text-muted-foreground">
+                              Other tool names here still affect app policy decisions, but executor-level per-agent overrides currently project only for these built-ins.
+                            </div>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <span className="rounded-full bg-success/10 px-2.5 py-1 text-[11px] text-success">
+                                Allow: {agentExecutorDecisionSummary.allow}
+                              </span>
+                              <span className="rounded-full bg-destructive/10 px-2.5 py-1 text-[11px] text-destructive">
+                                Deny: {agentExecutorDecisionSummary.deny}
+                              </span>
+                              <span className="rounded-full bg-muted px-2.5 py-1 text-[11px] text-muted-foreground">
+                                Default: {agentExecutorDecisionSummary.default}
+                              </span>
+                              <span className="rounded-full bg-muted px-2.5 py-1 text-[11px] text-muted-foreground">
+                                Inherit: {agentExecutorDecisionSummary.inherit}
+                              </span>
+                              <span className="rounded-full border border-border/60 bg-background px-2.5 py-1 text-[11px] text-foreground">
+                                Override: {agentExecutorDecisionSummary.override}
+                              </span>
+                            </div>
+                            <div className="mt-3 grid gap-3">
+                              {AGENT_EXECUTOR_OVERRIDE_RULES.map((rule) => {
+                                const selectedDecision = getListedToolDecision(
+                                  rule.name,
+                                  agentPermissionAllowedToolNames,
+                                  agentPermissionBlockedToolNames
+                                );
+                                const effectiveState = getCurrentAgentExecutorBuiltInState(rule.name);
+                                const defaultReason =
+                                  selectedDecision === 'default' && effectiveState.decision === 'deny'
+                                    ? getAgentExecutorDefaultReason(rule.name)
+                                    : null;
+                                return (
+                                  <div key={`agent-executor-${rule.name}`} className="flex items-start justify-between gap-3 rounded-md border border-border/50 bg-muted/20 px-3 py-2.5">
+                                    <div>
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <div className="text-xs font-medium text-foreground">{rule.label}</div>
+                                        <span className={`rounded-full px-2 py-0.5 text-[11px] ${getExecutorDecisionBadgeClass(effectiveState.decision)}`}>
+                                          {effectiveState.decision}
+                                        </span>
+                                        <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                                          {effectiveState.source}
+                                        </span>
+                                      </div>
+                                      <div className="mt-1 text-[11px] text-muted-foreground">{rule.description}</div>
+                                      <div className="mt-1 text-[11px] text-muted-foreground">
+                                        Selector: {selectedDecision === 'default' ? 'inherit' : selectedDecision}
+                                      </div>
+                                      {defaultReason && (
+                                        <div className="mt-1 text-[11px] text-muted-foreground">
+                                          Effective because: {defaultReason}
+                                        </div>
+                                      )}
+                                    </div>
+                                    <select
+                                      value={selectedDecision}
+                                      onChange={(e) => applyAgentExecutorOverrideDecision(rule.name, e.target.value as ListedToolDecision)}
+                                      className="h-8 min-w-[92px] rounded-md border border-input bg-background px-2.5 text-xs"
+                                    >
+                                      <option value="default">Inherit</option>
+                                      <option value="allow">Allow</option>
+                                      <option value="deny">Deny</option>
+                                    </select>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                            {agentExecutorPolicyConflicts.length > 0 && (
+                              <div className="mt-3 rounded-md border border-warning/30 bg-warning/10 px-3 py-2.5">
+                                <div className="text-xs font-medium text-foreground">
+                                  Conflicting executor overrides
+                                </div>
+                                <div className="mt-1 text-[11px] text-muted-foreground">
+                                  These agent overrides disagree with explicit global built-in rules. The agent override will win for this agent at executor level.
+                                </div>
+                                <div className="mt-2 space-y-2 text-[11px] text-muted-foreground">
+                                  {agentExecutorPolicyConflicts.map((conflict) => (
+                                    <div key={`agent-executor-conflict-${conflict.rule}`} className="rounded-md border border-warning/20 bg-background/50 px-2.5 py-2">
+                                      <div>
+                                        <span className="font-medium text-foreground">{conflict.rule}</span>
+                                        {' '}global: <span className="font-medium">{conflict.globalDecision}</span>
+                                        {' '}• agent: <span className="font-medium">{conflict.agentDecision}</span>
+                                      </div>
+                                      <div className="mt-2 flex flex-wrap gap-2">
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          className="h-7 text-[11px]"
+                                          onClick={() => applyAgentExecutorOverrideDecision(conflict.ruleName, conflict.globalDecision)}
+                                        >
+                                          Match global
+                                        </Button>
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          className="h-7 text-[11px]"
+                                          onClick={() => applyAgentExecutorOverrideDecision(conflict.ruleName, 'default')}
+                                        >
+                                          Reset to inherit
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                          <div className="grid gap-1">
+                            <label className="text-xs text-muted-foreground">Blocked tool names</label>
+                            <textarea
+                              value={agentPermissionBlockedToolNames}
+                              onChange={(e) => setAgentPermissionBlockedToolNames(e.target.value)}
+                              className="min-h-[84px] rounded-md border border-input bg-background px-3 py-2 font-mono text-xs"
+                              placeholder="subagent_send"
+                              spellCheck={false}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      This agent inherits the global permission policy defaults.
                     </p>
                   )}
                 </div>
@@ -12933,6 +15643,691 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved }: Se
                     {browserProfileSaving ? 'Saving...' : 'Save'}
                   </Button>
                 </ButtonTip>
+              </div>
+            </div>
+            )}
+          </section>
+
+          <section>
+            <h2 className="mb-4 text-base font-medium text-foreground">
+              Runtime Hooks
+              <InfoTip text="Edit the JSON-backed runtime hook registry, inspect the registry path, and review recent hook matches and blocks." />
+            </h2>
+            {isSettingsSectionExpandedByHeading('Runtime Hooks') && (
+            <div className="rounded-lg border border-border bg-card p-5 space-y-4">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex-1 min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="font-medium text-foreground">Registry</div>
+                    <span className={`rounded-full px-2 py-0.5 text-[11px] ${
+                      runtimeHooksHasUnsavedChanges
+                        ? 'bg-warning/10 text-warning'
+                        : 'bg-success/10 text-success'
+                    }`}>
+                      {runtimeHooksHasUnsavedChanges ? 'Unsaved changes' : 'Saved'}
+                    </span>
+                  </div>
+                  <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
+                    Hooks can block, patch, or annotate runtime actions before task dispatch, task resume, and node-tool execution.
+                  </p>
+                  <div className="mt-2 text-xs text-muted-foreground break-all">
+                    {runtimeHooksPath || 'Loading registry path…'}
+                  </div>
+                </div>
+                <div className="text-xs text-muted-foreground whitespace-nowrap">
+                  {runtimeHooksLoading ? 'Loading…' : `${runtimeHooksHookCount} hook${runtimeHooksHookCount === 1 ? '' : 's'}`}
+                </div>
+              </div>
+              <textarea
+                ref={runtimeHooksTextRef}
+                value={runtimeHooksText}
+                onChange={(e) => {
+                  setRuntimeHooksText(e.target.value);
+                  setRuntimeHooksStatus(null);
+                }}
+                className="min-h-[220px] w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-xs"
+                spellCheck={false}
+                placeholder='{\n  "hooks": []\n}'
+              />
+              {parsedRuntimeHooksState.error && (
+                <div className="rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning">
+                  JSON parse error: {parsedRuntimeHooksState.error}
+                </div>
+              )}
+              {runtimeHooksError && (
+                <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  {runtimeHooksError}
+                </div>
+              )}
+              {runtimeHooksStatus && !runtimeHooksError && (
+                <div className="rounded-xl border border-success/30 bg-success/10 px-3 py-2 text-sm text-success">
+                  {runtimeHooksStatus}
+                </div>
+              )}
+              <div className="flex flex-wrap items-center gap-2">
+                <ButtonTip text="Insert a new hook template into the registry JSON.">
+                  <Button size="sm" variant="outline" onClick={addRuntimeHookTemplate} disabled={Boolean(parsedRuntimeHooksState.error)}>
+                    Add hook template
+                  </Button>
+                </ButtonTip>
+                <ButtonTip text="Restore only the Runtime Hooks section to its saved registry text. This does not reset other Settings sections.">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={revertRuntimeHooksChanges}
+                    disabled={runtimeHooksSaving || !runtimeHooksHasUnsavedChanges}
+                  >
+                    Revert changes
+                  </Button>
+                </ButtonTip>
+                <ButtonTip text="Validate and save the runtime hooks registry JSON.">
+                  <Button size="sm" onClick={saveRuntimeHooks} disabled={runtimeHooksSaving}>
+                    {runtimeHooksSaving ? 'Saving…' : 'Save hooks'}
+                  </Button>
+                </ButtonTip>
+                <ButtonTip text="Refresh recent hook matches, blocks, and notes captured during this app session.">
+                  <Button size="sm" variant="outline" onClick={refreshRuntimeHookDiagnostics} disabled={runtimeHookDiagnosticsLoading}>
+                    Refresh diagnostics
+                  </Button>
+                </ButtonTip>
+                <ButtonTip text="Clear the in-memory runtime hook diagnostics captured during this app session.">
+                  <Button size="sm" variant="outline" onClick={clearRuntimeHookDiagnostics} disabled={runtimeHookDiagnosticsLoading || runtimeHookDiagnostics.length === 0}>
+                    Clear diagnostics
+                  </Button>
+                </ButtonTip>
+              </div>
+              <div className="space-y-2">
+                <div className="font-medium text-foreground">Hooks</div>
+                {parsedRuntimeHooksState.hooks.length === 0 ? (
+                  <div className="text-sm text-muted-foreground">No hooks defined yet.</div>
+                ) : (
+                  <div className="space-y-2">
+                    {parsedRuntimeHooksState.hooks.slice(0, 20).map((hook) => {
+                      const hookId = String(hook.id || '');
+                      const hookEnabled = hook.enabled !== false;
+                      const hookEvent = String(hook.event || '');
+                      const hookAction = String(hook.action || '');
+                      return (
+                        <div key={hookId} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/60 p-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-medium text-foreground">{hookId || 'unnamed-hook'}</span>
+                              <span className="text-xs text-muted-foreground">{hookEvent}</span>
+                              <span className="text-xs text-muted-foreground">{hookAction}</span>
+                            </div>
+                            <div className="mt-1 text-xs text-muted-foreground">
+                              {hookEnabled ? 'Enabled' : 'Disabled'}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Button size="sm" variant="outline" onClick={() => toggleRuntimeHookEnabled(hookId)} disabled={!hookId}>
+                              {hookEnabled ? 'Disable' : 'Enable'}
+                            </Button>
+                            <Button size="sm" variant="outline" onClick={() => removeRuntimeHook(hookId)} disabled={!hookId}>
+                              Remove
+                            </Button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="font-medium text-foreground">Recent diagnostics</div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      type="text"
+                      value={runtimeHookDiagnosticsQuery}
+                      onChange={(e) => setRuntimeHookDiagnosticsQuery(e.target.value)}
+                      className="h-8 w-[220px] rounded-md border border-input bg-background px-2.5 text-xs"
+                      placeholder="Search diagnostics"
+                    />
+                    <select
+                      value={runtimeHookDiagnosticsFilter}
+                      onChange={(e) => setRuntimeHookDiagnosticsFilter(e.target.value as 'all' | 'blocked' | 'matched')}
+                      className="h-8 rounded-md border border-input bg-background px-2.5 text-xs"
+                    >
+                      <option value="all">All</option>
+                      <option value="blocked">Blocked</option>
+                      <option value="matched">Matched</option>
+                    </select>
+                  </div>
+                </div>
+                {runtimeHookDiagnosticsLoading ? (
+                  <div className="text-sm text-muted-foreground">Loading diagnostics…</div>
+                ) : filteredRuntimeHookDiagnostics.length === 0 ? (
+                  <div className="text-sm text-muted-foreground">No hook activity recorded in this app session yet.</div>
+                ) : (
+                  <div className="space-y-2">
+                    {filteredRuntimeHookDiagnostics.slice(0, 10).map((entry) => (
+                      <div key={entry.id} className="rounded-xl border border-border/60 p-3">
+                        <div className="flex flex-wrap items-center gap-2 text-sm">
+                          <span className={`font-medium ${entry.ok ? 'text-foreground' : 'text-destructive'}`}>
+                            {entry.event}
+                          </span>
+                          {entry.toolName && <span className="text-muted-foreground">{entry.toolName}</span>}
+                          {entry.agentId && <span className="text-muted-foreground">agent:{entry.agentId}</span>}
+                          <span className="text-xs text-muted-foreground">{formatIsoDateTime(entry.timestamp)}</span>
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          Hooks: {entry.matchedHookIds.join(', ') || 'none'}
+                        </div>
+                        {entry.blockReason && (
+                          <div className="mt-1 text-xs text-destructive">{entry.blockReason}</div>
+                        )}
+                        {entry.notes && entry.notes.length > 0 && (
+                          <div className="mt-1 text-xs text-muted-foreground">{entry.notes.join(' | ')}</div>
+                        )}
+                        {(entry.inputPreview || entry.outputPreview) && (
+                          <details className="mt-2 text-xs text-muted-foreground">
+                            <summary className="cursor-pointer select-none">Payload preview</summary>
+                            {entry.inputPreview && (
+                              <pre className="mt-2 overflow-auto rounded-md border border-border/60 bg-background p-2 whitespace-pre-wrap break-all">
+                                input: {entry.inputPreview}
+                              </pre>
+                            )}
+                            {entry.outputPreview && (
+                              <pre className="mt-2 overflow-auto rounded-md border border-border/60 bg-background p-2 whitespace-pre-wrap break-all">
+                                output: {entry.outputPreview}
+                              </pre>
+                            )}
+                          </details>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+            )}
+          </section>
+
+          <section>
+            <h2 className="mb-4 text-base font-medium text-foreground">
+              Permission Policy
+              <InfoTip text="Control default file and runtime permission behavior, then inspect the recent policy decisions the app recorded." />
+            </h2>
+            {isSettingsSectionExpandedByHeading('Permission Policy') && (
+            <div className="rounded-lg border border-border bg-card p-5 space-y-4">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex-1 min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="font-medium text-foreground">Policy defaults</div>
+                    <span className={`rounded-full px-2 py-0.5 text-[11px] ${
+                      permissionPolicyHasUnsavedChanges
+                        ? 'bg-warning/10 text-warning'
+                        : 'bg-success/10 text-success'
+                    }`}>
+                      {permissionPolicyHasUnsavedChanges ? 'Unsaved changes' : 'Saved'}
+                    </span>
+                  </div>
+                  <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
+                    This policy layer decides whether file requests and runtime permission prompts are auto-allowed, denied, or still shown for approval.
+                  </p>
+                </div>
+                <div className="text-xs text-muted-foreground whitespace-nowrap">
+                  {permissionPolicyLoading ? 'Loading…' : `${permissionPolicyAuditEntries.length} audit entr${permissionPolicyAuditEntries.length === 1 ? 'y' : 'ies'}`}
+                </div>
+              </div>
+              {permissionPolicyError && (
+                <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  {permissionPolicyError}
+                </div>
+              )}
+              {permissionPolicyStatus && !permissionPolicyError && (
+                <div className="rounded-xl border border-success/30 bg-success/10 px-3 py-2 text-sm text-success">
+                  {permissionPolicyStatus}
+                </div>
+              )}
+              <div className="grid gap-4 xl:grid-cols-2">
+                <div className="rounded-xl border border-border/60 p-4 space-y-3">
+                  <div>
+                    <div className="font-medium text-foreground">File permissions</div>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Decide when workspace file operations should skip the permission prompt.
+                    </p>
+                  </div>
+                  <label className="flex items-start gap-3 text-sm text-foreground">
+                    <input
+                      type="checkbox"
+                      checked={permissionPolicyAllowWorkspaceWritesWithoutPrompt}
+                      onChange={(e) => {
+                        setPermissionPolicyAllowWorkspaceWritesWithoutPrompt(e.target.checked);
+                        setPermissionPolicyStatus(null);
+                      }}
+                      className="mt-0.5 h-4 w-4 rounded border-input bg-background"
+                    />
+                    <span>
+                      Auto-allow writes inside the active workspace
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        Keeps current behavior for normal Build and Chat file edits inside the workspace root.
+                      </div>
+                    </span>
+                  </label>
+                  <label className="flex items-start gap-3 text-sm text-foreground">
+                    <input
+                      type="checkbox"
+                      checked={permissionPolicyAllowTaskScopedAllowAll}
+                      onChange={(e) => {
+                        setPermissionPolicyAllowTaskScopedAllowAll(e.target.checked);
+                        setPermissionPolicyStatus(null);
+                      }}
+                      className="mt-0.5 h-4 w-4 rounded border-input bg-background"
+                    />
+                    <span>
+                      Honor per-task &quot;allow all&quot; for file operations
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        If disabled, even tasks that previously allowed all file operations still follow the default decision below.
+                      </div>
+                    </span>
+                  </label>
+                  <div className="grid gap-1.5">
+                    <label className="text-xs text-muted-foreground">Fallback file decision</label>
+                    <select
+                      value={permissionPolicyFileDefaultDecision}
+                      onChange={(e) => {
+                        setPermissionPolicyFileDefaultDecision(e.target.value as PermissionPolicyAction);
+                        setPermissionPolicyStatus(null);
+                      }}
+                      className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    >
+                      <option value="prompt">Prompt</option>
+                      <option value="allow">Allow</option>
+                      <option value="deny">Deny</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-border/60 p-4 space-y-3">
+                  <div>
+                    <div className="font-medium text-foreground">Runtime permissions</div>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Control how tool calls and interactive runtime questions are handled before the UI prompt appears.
+                    </p>
+                  </div>
+                  <div className="grid gap-3">
+                    <div className="grid gap-1.5">
+                      <label className="text-xs text-muted-foreground">Default tool decision</label>
+                      <select
+                        value={permissionPolicyRuntimeDefaultToolDecision}
+                        onChange={(e) => {
+                          setPermissionPolicyRuntimeDefaultToolDecision(e.target.value as PermissionPolicyAction);
+                          setPermissionPolicyStatus(null);
+                        }}
+                        className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      >
+                        <option value="prompt">Prompt</option>
+                        <option value="allow">Allow</option>
+                        <option value="deny">Deny</option>
+                      </select>
+                    </div>
+                    <div className="grid gap-1.5">
+                      <label className="text-xs text-muted-foreground">Default question decision</label>
+                      <select
+                        value={permissionPolicyRuntimeDefaultQuestionDecision}
+                        onChange={(e) => {
+                          setPermissionPolicyRuntimeDefaultQuestionDecision(e.target.value as PermissionPolicyAction);
+                          setPermissionPolicyStatus(null);
+                        }}
+                        className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      >
+                        <option value="prompt">Prompt</option>
+                        <option value="allow">Allow</option>
+                        <option value="deny">Deny</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="rounded-md border border-border/60 bg-background/60 p-3">
+                    <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+                      Executor built-ins
+                      <InfoTip text="Explicit OpenCode built-in rules that can be projected safely into executor config without relying on internal permission prompts the app cannot surface." />
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      These controls directly shape the built-in executor rules shown in the preview below.
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <span className="rounded-full bg-success/10 px-2.5 py-1 text-[11px] text-success">
+                        Allow: {globalExecutorDecisionSummary.allow}
+                      </span>
+                      <span className="rounded-full bg-destructive/10 px-2.5 py-1 text-[11px] text-destructive">
+                        Deny: {globalExecutorDecisionSummary.deny}
+                      </span>
+                      <span className="rounded-full bg-muted px-2.5 py-1 text-[11px] text-muted-foreground">
+                        Default: {globalExecutorDecisionSummary.default}
+                      </span>
+                    </div>
+                    <div className="mt-3 grid gap-3">
+                      {GLOBAL_EXECUTOR_BUILTIN_RULES.map((rule) => {
+                        const selectedDecision = getListedToolDecision(
+                          rule.name,
+                          permissionPolicyAllowedToolNames,
+                          permissionPolicyBlockedToolNames
+                        );
+                        const effectiveDecision = getCurrentGlobalExecutorBuiltInDecision(rule.name);
+                        const defaultReason =
+                          selectedDecision === 'default' && effectiveDecision === 'deny'
+                            ? getGlobalExecutorDefaultReason(rule.name)
+                            : null;
+                        return (
+                          <div key={`global-executor-${rule.name}`} className="rounded-md border border-border/50 bg-muted/20 px-3 py-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <div className="text-sm font-medium text-foreground">{rule.label}</div>
+                                  <span className={`rounded-full px-2 py-0.5 text-[11px] ${getExecutorDecisionBadgeClass(effectiveDecision)}`}>
+                                    {effectiveDecision}
+                                  </span>
+                                </div>
+                                <div className="mt-1 text-xs text-muted-foreground">{rule.description}</div>
+                                <div className="mt-1 text-[11px] text-muted-foreground">
+                                  Selector: {selectedDecision}
+                                </div>
+                                {defaultReason && (
+                                  <div className="mt-1 text-[11px] text-muted-foreground">
+                                    Effective because: {defaultReason}
+                                  </div>
+                                )}
+                              </div>
+                              <select
+                                value={selectedDecision}
+                                onChange={(e) => applyGlobalExecutorBuiltInDecision(rule.name, e.target.value as ListedToolDecision)}
+                                className="h-8 min-w-[92px] rounded-md border border-input bg-background px-2.5 text-xs"
+                              >
+                                <option value="default">Default</option>
+                                <option value="allow">Allow</option>
+                                <option value="deny">Deny</option>
+                              </select>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="mt-3 rounded-md border border-border/50 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                      Fixed executor rules:
+                      {' '}<span className="font-medium text-foreground">task</span> is always denied so helper-agent work stays in OpenDeskmate&apos;s tracked subagent system.
+                      {' '}<span className="font-medium text-foreground">external_directory</span> is denied automatically when file policy is fully read-only.
+                    </div>
+                    {globalExecutorListConflicts.length > 0 && (
+                      <div className="mt-3 rounded-md border border-warning/30 bg-warning/10 px-3 py-2.5">
+                        <div className="text-xs font-medium text-foreground">
+                          Conflicting raw built-in entries
+                        </div>
+                        <div className="mt-1 text-[11px] text-muted-foreground">
+                          These built-ins appear in both the global allowlist and blocklist text areas. The selector resolves that conflict as <span className="font-medium text-foreground">deny</span> because blocked entries win.
+                        </div>
+                        <div className="mt-2 space-y-2 text-[11px] text-muted-foreground">
+                          {globalExecutorListConflicts.map((conflict) => (
+                            <div key={`global-executor-conflict-${conflict.ruleName}`} className="rounded-md border border-warning/20 bg-background/50 px-2.5 py-2">
+                              <div>
+                                <span className="font-medium text-foreground">{conflict.rule}</span>
+                                {' '}appears in both raw lists.
+                              </div>
+                              <div className="mt-2 flex flex-wrap gap-2">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-7 text-[11px]"
+                                  onClick={() => applyGlobalExecutorBuiltInDecision(conflict.ruleName, 'deny')}
+                                >
+                                  Keep deny
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-7 text-[11px]"
+                                  onClick={() => applyGlobalExecutorBuiltInDecision(conflict.ruleName, 'allow')}
+                                >
+                                  Keep allow
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-7 text-[11px]"
+                                  onClick={() => applyGlobalExecutorBuiltInDecision(conflict.ruleName, 'default')}
+                                >
+                                  Reset to default
+                                </Button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  <div className="grid gap-3">
+                    <div className="grid gap-1.5">
+                      <label className="text-xs text-muted-foreground">Allowed tool names</label>
+                      <textarea
+                        value={permissionPolicyAllowedToolNames}
+                        onChange={(e) => {
+                          setPermissionPolicyAllowedToolNames(e.target.value);
+                          setPermissionPolicyStatus(null);
+                        }}
+                        className="min-h-[96px] rounded-md border border-input bg-background px-3 py-2 font-mono text-xs"
+                        spellCheck={false}
+                        placeholder="subagent_spawn&#10;build_mode_runtime_start"
+                      />
+                    </div>
+                    <div className="grid gap-1.5">
+                      <label className="text-xs text-muted-foreground">Blocked tool names</label>
+                      <textarea
+                        value={permissionPolicyBlockedToolNames}
+                        onChange={(e) => {
+                          setPermissionPolicyBlockedToolNames(e.target.value);
+                          setPermissionPolicyStatus(null);
+                        }}
+                        className="min-h-[96px] rounded-md border border-input bg-background px-3 py-2 font-mono text-xs"
+                        spellCheck={false}
+                        placeholder="subagent_send"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-border/60 p-4 space-y-3 xl:col-span-2">
+                  <div>
+                    <div className="font-medium text-foreground">Audit retention</div>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Keep a short in-memory log of recent decisions so policy changes can be verified without opening debug logs.
+                    </p>
+                  </div>
+                  <div className="grid gap-1.5">
+                    <label className="text-xs text-muted-foreground">Maximum audit entries</label>
+                    <input
+                      type="number"
+                      min={10}
+                      max={1000}
+                      step={10}
+                      value={permissionPolicyAuditMaxEntries}
+                      onChange={(e) => {
+                        setPermissionPolicyAuditMaxEntries(e.target.value);
+                        setPermissionPolicyStatus(null);
+                      }}
+                      className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    />
+                  </div>
+                  <div className="rounded-md border border-border/60 bg-background/60 px-3 py-2 text-xs text-muted-foreground">
+                    File policy currently routes file permission API requests. Runtime policy currently routes surfaced runtime permission callbacks.
+                  </div>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <ButtonTip text="Restore only the Permission Policy section to its saved values. This does not reset other Settings sections.">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={revertPermissionPolicyChanges}
+                    disabled={permissionPolicySaving || !permissionPolicyHasUnsavedChanges}
+                  >
+                    Revert changes
+                  </Button>
+                </ButtonTip>
+                <ButtonTip text="Save the current permission policy settings.">
+                  <Button size="sm" onClick={savePermissionPolicy} disabled={permissionPolicySaving}>
+                    {permissionPolicySaving ? 'Saving…' : 'Save policy'}
+                  </Button>
+                </ButtonTip>
+                <ButtonTip text="Refresh the recent permission policy decisions captured during this app session.">
+                  <Button size="sm" variant="outline" onClick={refreshPermissionPolicyAudit} disabled={permissionPolicyAuditLoading}>
+                    Refresh audit
+                  </Button>
+                </ButtonTip>
+                <ButtonTip text="Clear the in-memory permission policy audit list for this app session.">
+                  <Button size="sm" variant="outline" onClick={clearPermissionPolicyAudit} disabled={permissionPolicyAuditLoading || permissionPolicyAuditEntries.length === 0}>
+                    Clear audit
+                  </Button>
+                </ButtonTip>
+              </div>
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="font-medium text-foreground">OpenCode executor preview</div>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Read-only preview of the built-in OpenCode permission rules generated from the saved global policy and the saved active or edited agent profile.
+                    </p>
+                  </div>
+                  <Button size="sm" variant="outline" onClick={() => void refreshPermissionPolicyOpenCodePreview(permissionPolicyPreviewTargetAgentId)} disabled={permissionPolicyOpenCodePreviewLoading}>
+                    {permissionPolicyOpenCodePreviewLoading ? 'Refreshing…' : 'Refresh preview'}
+                  </Button>
+                </div>
+                <div className="rounded-md border border-border/60 bg-background/60 px-3 py-2 text-xs text-muted-foreground">
+                  Preview target: {permissionPolicyOpenCodePreview?.targetAgentName
+                    ? `${permissionPolicyOpenCodePreview.targetAgentName} (${permissionPolicyOpenCodePreview.targetAgentId})`
+                    : (permissionPolicyPreviewTargetAgentId || 'Global only')}
+                </div>
+                <div className="grid gap-3 xl:grid-cols-3">
+                  <div className="rounded-xl border border-border/60 p-3">
+                    <div className="font-medium text-foreground">Global rules</div>
+                    <pre className="mt-2 overflow-auto rounded-md border border-border/60 bg-background p-2 text-xs whitespace-pre-wrap break-all">
+                      {JSON.stringify(permissionPolicyOpenCodePreview?.globalRules ?? {}, null, 2)}
+                    </pre>
+                  </div>
+                  <div className="rounded-xl border border-border/60 p-3">
+                    <div className="font-medium text-foreground">Agent override</div>
+                    <pre className="mt-2 overflow-auto rounded-md border border-border/60 bg-background p-2 text-xs whitespace-pre-wrap break-all">
+                      {JSON.stringify(permissionPolicyOpenCodePreview?.targetAgentOverride ?? {}, null, 2)}
+                    </pre>
+                  </div>
+                  <div className="rounded-xl border border-border/60 p-3">
+                    <div className="font-medium text-foreground">Effective rules</div>
+                    <pre className="mt-2 overflow-auto rounded-md border border-border/60 bg-background p-2 text-xs whitespace-pre-wrap break-all">
+                      {JSON.stringify(permissionPolicyOpenCodePreview?.effectiveRules ?? {}, null, 2)}
+                    </pre>
+                  </div>
+                </div>
+                <div className="rounded-xl border border-border/60 p-3">
+                  <div className="font-medium text-foreground">Effective rule sources</div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Shows why each effective executor rule exists so you can distinguish defaults, explicit built-in overrides, agent overrides, and fixed app rules.
+                  </p>
+                  <div className="mt-3 space-y-2">
+                    {(permissionPolicyOpenCodePreview?.effectiveRuleSources ?? []).length === 0 ? (
+                      <div className="text-xs text-muted-foreground">No effective executor rules available.</div>
+                    ) : (
+                      permissionPolicyOpenCodePreview?.effectiveRuleSources.map((entry) => (
+                        <div key={`permission-preview-source-${entry.rule}`} className="rounded-md border border-border/50 bg-background/60 px-3 py-2.5">
+                          <div className="flex flex-wrap items-center gap-2 text-xs">
+                            <span className="font-mono font-medium text-foreground">{entry.rule}</span>
+                            <span className={`rounded-full px-2 py-0.5 ${
+                              entry.action === 'deny'
+                                ? 'bg-destructive/10 text-destructive'
+                                : entry.action === 'allow'
+                                  ? 'bg-success/10 text-success'
+                                  : 'bg-muted text-muted-foreground'
+                            }`}>
+                              {entry.action}
+                            </span>
+                            <span className="rounded-full bg-muted px-2 py-0.5 text-muted-foreground">
+                              {entry.source.replace(/_/g, ' ')}
+                            </span>
+                          </div>
+                          <div className="mt-1 text-xs text-muted-foreground">{entry.reason}</div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="font-medium text-foreground">Recent decisions</div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      type="text"
+                      value={permissionPolicyAuditQuery}
+                      onChange={(e) => setPermissionPolicyAuditQuery(e.target.value)}
+                      className="h-8 w-[220px] rounded-md border border-input bg-background px-2.5 text-xs"
+                      placeholder="Search audit"
+                    />
+                    <select
+                      value={permissionPolicyAuditOriginFilter}
+                      onChange={(e) => setPermissionPolicyAuditOriginFilter(e.target.value as 'all' | PermissionPolicyAuditOrigin)}
+                      className="h-8 rounded-md border border-input bg-background px-2.5 text-xs"
+                    >
+                      <option value="all">All origins</option>
+                      <option value="file-permission-api">File API</option>
+                      <option value="task-runtime">Task runtime</option>
+                      <option value="desktop-runtime">Desktop runtime</option>
+                    </select>
+                    <select
+                      value={permissionPolicyAuditDecisionFilter}
+                      onChange={(e) => setPermissionPolicyAuditDecisionFilter(e.target.value as 'all' | PermissionPolicyAction)}
+                      className="h-8 rounded-md border border-input bg-background px-2.5 text-xs"
+                    >
+                      <option value="all">All actions</option>
+                      <option value="allow">Allow</option>
+                      <option value="prompt">Prompt</option>
+                      <option value="deny">Deny</option>
+                    </select>
+                  </div>
+                </div>
+                {permissionPolicyAuditLoading ? (
+                  <div className="text-sm text-muted-foreground">Loading permission policy audit…</div>
+                ) : filteredPermissionPolicyAuditEntries.length === 0 ? (
+                  <div className="text-sm text-muted-foreground">No permission policy decisions recorded in this app session yet.</div>
+                ) : (
+                  <div className="space-y-2">
+                    {filteredPermissionPolicyAuditEntries.slice(0, 12).map((entry) => (
+                      <div key={entry.id} className="rounded-xl border border-border/60 p-3">
+                        <div className="flex flex-wrap items-center gap-2 text-sm">
+                          <span className={`font-medium ${
+                            entry.decision.action === 'deny'
+                              ? 'text-destructive'
+                              : entry.decision.action === 'allow'
+                                ? 'text-success'
+                                : 'text-foreground'
+                          }`}>
+                            {entry.decision.action.toUpperCase()}
+                          </span>
+                          <span className="text-muted-foreground">{entry.origin}</span>
+                          <span className="text-muted-foreground">{entry.requestType}</span>
+                          <span className="text-xs text-muted-foreground">{formatIsoDateTime(entry.createdAt)}</span>
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          Source: {entry.decision.source} • {entry.decision.reason}
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {entry.agentId && <span>agent: {entry.agentId} • </span>}
+                          {entry.toolName && <span>tool: {entry.toolName} • </span>}
+                          {entry.fileOperation && <span>file op: {entry.fileOperation} • </span>}
+                          {entry.filePath && <span>path: {entry.filePath} • </span>}
+                          {entry.targetPath && <span>target: {entry.targetPath} • </span>}
+                          {entry.taskId && <span>task: {entry.taskId}</span>}
+                          {!entry.toolName && !entry.fileOperation && !entry.filePath && !entry.targetPath && !entry.taskId && !entry.question && (
+                            <span>No extra context recorded.</span>
+                          )}
+                        </div>
+                        {entry.question && (
+                          <div className="mt-2 rounded-md border border-border/60 bg-background p-2 text-xs text-muted-foreground">
+                            {entry.question}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
             )}

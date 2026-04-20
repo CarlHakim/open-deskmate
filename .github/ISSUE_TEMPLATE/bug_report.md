@@ -21,7 +21,7 @@ What you expected to happen.
 What actually happened.
 
 ## Environment
-- OS: [e.g., macOS 14.0]
+- OS: [e.g., Windows, macOS 14.0]
 - Open Deskmate Version: [e.g., 0.1.0]
 
 ## Screenshots

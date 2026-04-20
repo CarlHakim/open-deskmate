@@ -9,22 +9,30 @@ import {
   isOpenCodeCliInstalled,
   getOpenCodeCliVersion,
 } from '../opencode/adapter';
+import { getOpenCodePermissionPreview } from '../opencode/config-generator';
 import {
-  getTaskManager,
-  disposeTaskManager,
-  type TaskCallbacks,
-} from '../opencode/task-manager';
+  cleanupDesktopEphemeralSessionFilesOnQuit,
+  ensureDesktopRuntimeServices,
+  dropAndCleanupDesktopBatcher,
+  markDesktopTaskIgnored,
+  maybeStartDesktopMockTask,
+  resumeDesktopSessionRequest,
+  resolveDesktopTaskWorkspaceRoot,
+  startDesktopTaskRequest,
+} from '../runtime/desktop-agent-engine';
+import {
+  cancelAgentEngineTask,
+  sendAgentEngineTaskResponse,
+  hasActiveAgentEngineTask,
+  stopAgentEngineTask,
+} from '../runtime/agent-engine';
+import { disposeTaskManager } from '../opencode/task-manager';
 import {
   getTasks,
   getTask,
   saveTask,
   updateTaskStatus,
-  updateTaskSessionId,
-  updateTaskSummary,
-  getLatestTask,
-  updateTaskSessionMemorySaved,
   updateTaskSessionFilePath,
-  addTaskMessage,
   deleteTask,
   clearHistory,
 } from '../store/taskHistory';
@@ -42,8 +50,7 @@ import {
   setTaskFolder,
 } from '../store/folderStore';
 import type { FolderConfig, FolderUpdateConfig } from '@accomplish/shared';
-import { generateTaskSummary } from '../services/summarizer';
-import { getMemoryState, readMemoryFile, saveMemoryFile, saveSessionMemorySnapshot, initSessionLog } from '../services/memory';
+import { getMemoryState, readMemoryFile, saveMemoryFile } from '../services/memory';
 import { planNextJobs } from '../services/proactive-planner';
 import { generateUserSkillFromTask } from '../services/skill-workflow-generator';
 import { buildDevProcessManager } from '../services/build-mode/dev-process-manager';
@@ -81,14 +88,47 @@ import {
   setPinnedBuildTaskSession,
   updateBuildTaskSession,
 } from '../store/buildTaskHistory';
+import {
+  archiveSubagentRun,
+  closeSubagentSession,
+  getActiveSubagentCount,
+  getSubagentRunForUi,
+  listSubagentRunsForParentTask,
+  listSubagentRunTreeForParentTask,
+  sendSubagentPrompt,
+  waitForSubagentRun,
+} from '../services/subagents/subagent-control';
+import {
+  getSubagentRun,
+  listSubagentRuns,
+  patchSubagentRun,
+} from '../store/subagentRegistry';
 import { preparePayloadForSend } from '../services/context/prepare-payload';
-import { normalizeOpenCodeUsage } from '../services/context/usage-normalize';
-import { appendSessionLogMessage } from '../services/context/session-log';
-import { addTurnLog, updateTurnUsage } from '../store/tokenUsage';
 import { getUsagePricingSettings, setUsagePricingSettings } from '../store/usagePricing';
 import { getUsageSummary } from '../services/usage-summary';
 import { listModelsUsed } from '../services/usage-models';
 import { suggestPricingFromInternet } from '../services/usage-pricing-autofill';
+import { clearHookDiagnostics, listHookDiagnostics } from '../hooks/hook-diagnostics';
+import { readRuntimeHooksRegistryRaw, saveRuntimeHooksRegistryRaw } from '../hooks/hook-registry';
+import {
+  clearPermissionPolicyAuditEntries,
+  getPermissionPolicySettings,
+  listPermissionPolicyAuditEntries,
+  setPermissionPolicySettings,
+} from '../permissions/policy-store';
+import {
+  clearPluginDiagnosticsHistory,
+  getPluginDiagnosticsState,
+  recordPluginRegistrationDiagnostics,
+} from '../plugins/plugin-diagnostics-store';
+import {
+  getManagedPluginsRootPath,
+  installManagedPluginFromDirectory,
+  listPluginRegistry,
+  setPluginEnabled,
+  uninstallManagedPlugin,
+} from '../plugins/plugin-registry';
+import { listRegisteredPluginCommands } from '../plugins/plugin-runtime';
 import {
   storeApiKey,
   getApiKey,
@@ -158,7 +198,6 @@ import {
   installUserSkillDependency,
   installUserSkillFromZip,
   listUserSkills,
-  recordUserSkillRunBatch,
   recordUserSkillPerformance,
   readUserSkillFile,
   rollbackUserSkill,
@@ -172,21 +211,14 @@ import { getUserSkillConfig, setUserSkillConfig } from '../store/userSkillsConfi
 import { buildAttachmentsPrefix } from '../utils/file-attachments';
 import { getDesktopConfig } from '../config';
 import {
-  startPermissionApiServer,
-  initPermissionApi,
   resolvePermission,
   isFilePermissionRequest,
   applyAllowAllForFileRequest,
-  clearTaskFilePermissionPolicy,
 } from '../permission-api';
-import { startNodeToolsApiServer } from '../node-tools-api';
 import type {
   Task,
   TaskConfig,
   PermissionResponse,
-  OpenCodeMessage,
-  TaskMessage,
-  TaskResult,
   TaskStatus,
   ContextWindowEstimateResponse,
   UsagePeriod,
@@ -218,6 +250,7 @@ import type {
   BuildProjectPresetInput,
   BuildStartRequest,
   BuildWorkspaceBaselineDecision,
+  PermissionPolicySettings,
 } from '@accomplish/shared';
 import {
   DEFAULT_PROVIDERS,
@@ -230,12 +263,7 @@ import {
   taskConfigSchema,
   validate,
 } from './validation';
-import {
-  isMockTaskEventsEnabled,
-  createMockTask,
-  executeMockTaskFlow,
-  detectScenarioFromPrompt,
-} from '../test-utils/mock-task-flow';
+import { isMockTaskEventsEnabled } from '../test-utils/mock-task-flow';
 import { listSchedules } from '../store/schedules';
 import { upsertSchedule, removeSchedule, toggleSchedule, runScheduleNow } from '../services/scheduler';
 import {
@@ -332,6 +360,7 @@ import { transcribeWithWhisper } from '../services/whisper';
 import {
   getHelpAssetDataUrl,
   listHelpDocs,
+  notifyHelpDocsChanged,
   openHelpAssetExternally,
   openHelpDocInEditor,
   openHelpDocsFolder,
@@ -344,45 +373,9 @@ const ALLOWED_API_KEY_PROVIDERS = new Set(['anthropic', 'openai', 'google', 'xai
 const ALLOWED_SELECTED_MODEL_PROVIDERS = new Set(['anthropic', 'openai', 'google', 'xai', 'ollama', 'custom']);
 const PROVIDER_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const API_KEY_VALIDATION_TIMEOUT_MS = 15000;
-const WARM_SESSION_WINDOW_MS = Number(process.env.OPENDESKMATE_WARM_SESSION_WINDOW_MS || 5 * 60 * 1000);
-const INCOGNITO_SESSION_LOG_TTL_MS = Number(process.env.OPENDESKMATE_INCOGNITO_SESSION_LOG_TTL_MS || 30 * 60 * 1000);
-const ephemeralSessionFiles = new Set<string>();
-
-function scheduleEphemeralFileCleanup(filePath: string, ttlMs = INCOGNITO_SESSION_LOG_TTL_MS): void {
-  ephemeralSessionFiles.add(filePath);
-  const timer = setTimeout(() => {
-    ephemeralSessionFiles.delete(filePath);
-    cleanupTempFile(filePath);
-  }, Math.max(5_000, ttlMs));
-  timer.unref?.();
-}
-
-function initEphemeralSessionLog(taskId: string): string {
-  const dir = path.join(os.tmpdir(), 'opendeskmate-incognito-sessions');
-  fs.mkdirSync(dir, { recursive: true });
-  const filePath = path.join(dir, `session-${taskId}-${Date.now()}.jsonl`);
-  scheduleEphemeralFileCleanup(filePath);
-  return filePath;
-}
-
 app.once('before-quit', () => {
-  for (const filePath of ephemeralSessionFiles) {
-    cleanupTempFile(filePath);
-  }
-  ephemeralSessionFiles.clear();
+  cleanupDesktopEphemeralSessionFilesOnQuit();
 });
-
-/**
- * Write extracted file content to a temp .txt file so the CLI can read it
- * via --file flag. This handles binary files (DOCX, PDF) that the CLI
- * cannot read directly, and avoids Windows command-line length limits.
- */
-function writeAttachmentsTempFile(content: string): string {
-  const tempDir = app.getPath('temp');
-  const tempFile = path.join(tempDir, `opencode-attachments-${Date.now()}.txt`);
-  fs.writeFileSync(tempFile, content, 'utf-8');
-  return tempFile;
-}
 
 function saveDataUrlToTempFile(dataUrl: string, baseName: string): string {
   const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
@@ -400,16 +393,6 @@ function saveDataUrlToTempFile(dataUrl: string, baseName: string): string {
   const filePath = path.join(dir, filename);
   fs.writeFileSync(filePath, buffer);
   return filePath;
-}
-
-/** Silently delete a temp file (ignores errors if already gone). */
-function cleanupTempFile(filePath: string | null): void {
-  if (!filePath) return;
-  try {
-    fs.unlinkSync(filePath);
-  } catch {
-    // Ignore — file may already be gone
-  }
 }
 
 interface OllamaModel {
@@ -434,112 +417,6 @@ async function fetchWithTimeout(
     return response;
   } finally {
     clearTimeout(timeoutId);
-  }
-}
-
-// Message batching configuration
-const MESSAGE_BATCH_DELAY_MS = 50;
-const IGNORED_TASK_TTL_MS = 30_000;
-
-// Per-task message batching state
-interface MessageBatcher {
-  pendingMessages: TaskMessage[];
-  timeout: NodeJS.Timeout | null;
-  taskId: string;
-  flush: () => void;
-}
-
-const messageBatchers = new Map<string, MessageBatcher>();
-const ignoredTaskIds = new Set<string>();
-
-function markTaskIgnored(taskId: string): void {
-  ignoredTaskIds.add(taskId);
-  activeTurnByTaskId.delete(taskId);
-  activeSkillRunByTaskId.delete(taskId);
-  setTimeout(() => {
-    ignoredTaskIds.delete(taskId);
-  }, IGNORED_TASK_TTL_MS);
-}
-
-function isTaskIgnored(taskId: string): boolean {
-  return ignoredTaskIds.has(taskId);
-}
-
-function createMessageBatcher(
-  taskId: string,
-  forwardToRenderer: (channel: string, data: unknown) => void,
-  addTaskMessage: (taskId: string, message: TaskMessage) => void
-): MessageBatcher {
-  const batcher: MessageBatcher = {
-    pendingMessages: [],
-    timeout: null,
-    taskId,
-    flush: () => {
-      if (batcher.pendingMessages.length === 0) return;
-
-      // Send all pending messages in one IPC call
-      forwardToRenderer('task:update:batch', {
-        taskId,
-        messages: batcher.pendingMessages,
-      });
-
-      // Also persist each message to history
-      for (const msg of batcher.pendingMessages) {
-        addTaskMessage(taskId, msg);
-      }
-
-      batcher.pendingMessages = [];
-      if (batcher.timeout) {
-        clearTimeout(batcher.timeout);
-        batcher.timeout = null;
-      }
-    },
-  };
-
-  messageBatchers.set(taskId, batcher);
-  return batcher;
-}
-
-function queueMessage(
-  taskId: string,
-  message: TaskMessage,
-  forwardToRenderer: (channel: string, data: unknown) => void,
-  addTaskMessage: (taskId: string, message: TaskMessage) => void
-): void {
-  let batcher = messageBatchers.get(taskId);
-  if (!batcher) {
-    batcher = createMessageBatcher(taskId, forwardToRenderer, addTaskMessage);
-  }
-
-  batcher.pendingMessages.push(message);
-
-  // Set up or reset the batch timer
-  if (batcher.timeout) {
-    clearTimeout(batcher.timeout);
-  }
-
-  batcher.timeout = setTimeout(() => {
-    batcher.flush();
-  }, MESSAGE_BATCH_DELAY_MS);
-}
-
-function flushAndCleanupBatcher(taskId: string): void {
-  const batcher = messageBatchers.get(taskId);
-  if (batcher) {
-    batcher.flush();
-    messageBatchers.delete(taskId);
-  }
-}
-
-function dropAndCleanupBatcher(taskId: string): void {
-  const batcher = messageBatchers.get(taskId);
-  if (batcher) {
-    if (batcher.timeout) {
-      clearTimeout(batcher.timeout);
-    }
-    batcher.pendingMessages = [];
-    batcher.timeout = null;
-    messageBatchers.delete(taskId);
   }
 }
 
@@ -1208,122 +1085,6 @@ function isE2ESkipAuthEnabled(): boolean {
   );
 }
 
-type TurnUsageAccumulator = {
-  inputTokens: number;
-  outputTokens: number;
-  cachedInputTokens?: number;
-};
-
-const activeTurnByTaskId = new Map<
-  string,
-  {
-    turnId: string;
-    promptTokensEst: number;
-    acc: TurnUsageAccumulator;
-    outputTokensEst: number;
-    textLensByMessageId: Record<string, number>;
-  }
->();
-const activeSkillRunByTaskId = new Map<
-  string,
-  {
-    agentId?: string;
-    skillIds: string[];
-    startedAtMs: number;
-  }
->();
-
-function createTurnId(): string {
-  // Separate from message IDs to avoid React key collisions.
-  return `turn_${Date.now()}_${randomBytes(6).toString('hex')}`;
-}
-
-function trackTaskSkillRun(taskId: string, params: { agentId?: string; skillIds?: string[] }): void {
-  const ids = Array.from(new Set((params.skillIds || []).map((id) => String(id || '').trim()).filter(Boolean)));
-  if (!ids.length) {
-    activeSkillRunByTaskId.delete(taskId);
-    return;
-  }
-  activeSkillRunByTaskId.set(taskId, {
-    agentId: params.agentId,
-    skillIds: ids,
-    startedAtMs: Date.now(),
-  });
-}
-
-function finalizeTaskSkillRun(
-  taskId: string,
-  params: {
-    success: boolean;
-    inputTokens?: number;
-    outputTokens?: number;
-    error?: string;
-  }
-): void {
-  const tracked = activeSkillRunByTaskId.get(taskId);
-  if (!tracked) return;
-  activeSkillRunByTaskId.delete(taskId);
-  const latencyMs = Math.max(0, Date.now() - tracked.startedAtMs);
-  void recordUserSkillRunBatch({
-    agentId: tracked.agentId,
-    skillIds: tracked.skillIds,
-    success: params.success,
-    latencyMs,
-    inputTokens: params.inputTokens,
-    outputTokens: params.outputTokens,
-    error: params.error,
-  });
-}
-
-function reconcileUsageFromOpenCodeMessage(taskId: string, message: OpenCodeMessage): void {
-  const active = activeTurnByTaskId.get(taskId);
-  if (!active) return;
-
-  const approxTokensForChars = (chars: number) => Math.max(0, Math.ceil(chars / 4));
-
-  if (message.type === 'text') {
-    const textMsg = message as import('@accomplish/shared').OpenCodeTextMessage;
-    const messageId = textMsg.part.messageID || 'unknown';
-    const nextLen = (textMsg.part.text || '').length;
-    const prevLen = active.textLensByMessageId[messageId] ?? 0;
-    const deltaChars = nextLen >= prevLen ? (nextLen - prevLen) : nextLen;
-    active.textLensByMessageId[messageId] = nextLen;
-    active.outputTokensEst += approxTokensForChars(deltaChars);
-    return;
-  }
-
-  if (message.type !== 'step_finish') return;
-  const usage = normalizeOpenCodeUsage(message as import('@accomplish/shared').OpenCodeStepFinishMessage);
-  if (!usage) return;
-
-  active.acc.inputTokens += usage.inputTokens;
-  active.acc.outputTokens += usage.outputTokens;
-  if (typeof usage.cachedInputTokens === 'number') {
-    active.acc.cachedInputTokens = (active.acc.cachedInputTokens ?? 0) + usage.cachedInputTokens;
-  }
-
-  // Update continuously when provider-reported usage is available.
-  updateTurnUsage(active.turnId, {
-    inputTokens: active.acc.inputTokens,
-    outputTokens: active.acc.outputTokens,
-    totalTokens: active.acc.inputTokens + active.acc.outputTokens,
-    cachedInputTokens: active.acc.cachedInputTokens,
-    estimated: false,
-  });
-
-  const reason = (message as import('@accomplish/shared').OpenCodeStepFinishMessage).part.reason;
-  if (reason === 'end_turn' || reason === 'stop' || reason === 'error') {
-    console.log('[ContextIndicator] Reconciled usage', {
-      taskId,
-      turnId: active.turnId,
-      inputTokens: active.acc.inputTokens,
-      outputTokens: active.acc.outputTokens,
-      cachedInputTokens: active.acc.cachedInputTokens ?? 0,
-      reason,
-    });
-  }
-}
-
 function handle<Args extends unknown[], ReturnType = unknown>(
   channel: string,
   handler: (event: IpcMainInvokeEvent, ...args: Args) => ReturnType
@@ -1342,411 +1103,31 @@ function handle<Args extends unknown[], ReturnType = unknown>(
  * Register all IPC handlers
  */
 export function registerIPCHandlers(): void {
-  const taskManager = getTaskManager();
+  const resolveDesktopRuntimeWorkspaceRoot = (taskId: string) =>
+    resolveDesktopTaskWorkspaceRoot(taskId, (agentId?: string) =>
+      agentId ? (getAgentContext(agentId).workspaceRoot || '') : ''
+    );
 
-  // Start the permission API server for file-permission MCP
-  // Initialize when we have a window (deferred until first task:start)
-let permissionApiInitialized = false;
-let nodeToolsApiInitialized = false;
-
+  // Desktop runtime services initialize lazily when the first desktop task starts or resumes.
   // Task: Start a new task
   handle('task:start', async (event: IpcMainInvokeEvent, config: TaskConfig) => {
     const window = assertTrustedWindow(BrowserWindow.fromWebContents(event.sender));
-    const sender = event.sender;
     const validatedConfig = applyAgentContext(validateTaskConfig(config));
-    const privacyMode = validatedConfig.privacyMode ?? 'normal';
-    const isIncognito = privacyMode === 'incognito';
+    ensureDesktopRuntimeServices({
+      window,
+      resolveTaskWorkspaceRoot: resolveDesktopRuntimeWorkspaceRoot,
+    });
 
-    // Process attached files: extract text from binary formats (DOCX, PDF),
-    // write the extracted content to a temp .txt file, and pass that via --file
-    // to the CLI. This avoids:
-    //  1. CLI rejecting binary files ("Cannot read binary file" error)
-    //  2. Windows command-line length limits (~32K chars)
-    const userVisiblePrompt = validatedConfig.prompt;
-    let attachmentMeta: import('../utils/file-attachments').FileAttachmentMeta[] = [];
-    let attachmentTempFile: string | null = null;
-    let attachmentContentForEstimate = '';
-    if (validatedConfig.attachedFiles && validatedConfig.attachedFiles.length > 0) {
-      const { prompt: attachmentContent, meta } = await buildAttachmentsPrefix(validatedConfig.attachedFiles);
-      attachmentMeta = meta;
-      attachmentContentForEstimate = attachmentContent;
-      // Write extracted content to a temp text file and pass via --file.
-      // The CLI can always read .txt files, unlike binary DOCX/PDF originals.
-      if (attachmentContent.trim().length > 0) {
-        attachmentTempFile = writeAttachmentsTempFile(attachmentContent);
-        validatedConfig.attachedFiles = [attachmentTempFile];
-      } else {
-        // No content extracted — don't pass any files
-        validatedConfig.attachedFiles = undefined;
-      }
-    }
-
-    // Initialize permission API server (once, when we have a window)
-    if (!permissionApiInitialized) {
-      initPermissionApi(window, {
-        resolveTaskId: (requestedTaskId?: string) => {
-          if (requestedTaskId && taskManager.hasActiveTask(requestedTaskId)) {
-            return requestedTaskId;
-          }
-          if (taskManager.getActiveTaskCount() === 1) {
-            return taskManager.getActiveTaskId();
-          }
-          return null;
-        },
-        resolveTaskWorkspaceRoot: (taskId: string) => {
-          const taskConfig = taskManager.getTaskConfig(taskId);
-          const agentWorkspace = taskConfig?.agentId
-            ? (getAgentContext(taskConfig.agentId).workspaceRoot || '').trim()
-            : '';
-          if (agentWorkspace) {
-            return agentWorkspace;
-          }
-          const fallbackWorkingDir = String(taskConfig?.workingDirectory || '').trim();
-          return fallbackWorkingDir || null;
-        },
-      });
-      startPermissionApiServer();
-      permissionApiInitialized = true;
-    }
-    // Initialize node tools API server (once)
-    if (!nodeToolsApiInitialized) {
-      startNodeToolsApiServer();
-      nodeToolsApiInitialized = true;
-    }
-
-    const taskId = validatedConfig.taskId || createTaskId();
-    const sessionFilePath = isIncognito
-      ? initEphemeralSessionLog(taskId)
-      : initSessionLog(validatedConfig.agentId, taskId);
-    const previousTask = getLatestTask(validatedConfig.agentId);
-    if (!validatedConfig.sessionId && previousTask && previousTask.id !== taskId && previousTask.sessionId) {
-      const terminalStatuses = new Set<TaskStatus>(['completed', 'interrupted', 'failed', 'cancelled']);
-      if (terminalStatuses.has(previousTask.status)) {
-        const completedAtMs = Date.parse(previousTask.completedAt || previousTask.createdAt || '');
-        if (Number.isFinite(completedAtMs) && (Date.now() - completedAtMs) <= WARM_SESSION_WINDOW_MS) {
-          validatedConfig.sessionId = previousTask.sessionId;
-          console.log('[IPC] Reusing warm session for task start', {
-            fromTaskId: previousTask.id,
-            sessionId: previousTask.sessionId,
-            ageMs: Date.now() - completedAtMs,
-          });
-        }
-      }
-    }
-    if (
-      !isIncognito &&
-      previousTask &&
-      previousTask.privacyMode !== 'incognito' &&
-      previousTask.id !== taskId &&
-      !previousTask.sessionMemorySavedAt &&
-      previousTask.messages?.length
-    ) {
-      try {
-        const memoryPath = await saveSessionMemorySnapshot(previousTask, validatedConfig.agentId, 'desktop');
-        if (memoryPath) {
-          updateTaskSessionMemorySaved(previousTask.id, new Date().toISOString());
-        }
-      } catch (error) {
-        console.warn('[IPC] Failed to save session memory snapshot:', error);
-      }
-    }
-
-    // E2E Mock Mode: Return mock task and emit simulated events
-    if (isMockTaskEventsEnabled()) {
-      const mockTask = createMockTask(taskId, validatedConfig.prompt, validatedConfig.agentId);
-      const scenario = detectScenarioFromPrompt(validatedConfig.prompt);
-
-      // Save task to history so Execution page can load it
-      saveTask(mockTask);
-
-      // Execute mock flow asynchronously (sends IPC events)
-      void executeMockTaskFlow(window, {
-        taskId,
-        prompt: validatedConfig.prompt,
-        scenario,
-        delayMs: 50,
-      });
-
+    const mockTask = maybeStartDesktopMockTask(window, validatedConfig);
+    if (mockTask) {
       return mockTask;
     }
 
-    // Prepare EXACT OpenCode payload: add memory + trimmed conversation snapshot into systemPromptAppend.
-    // This is the source of truth for both send and UI token estimation.
-    const prepared = await preparePayloadForSend({
-      agentId: validatedConfig.agentId,
-      taskId,
-      sessionFilePath,
-      userMessage: validatedConfig.prompt,
-      retrievedText: attachmentContentForEstimate,
-      baseSystemPromptAppend: validatedConfig.systemPromptAppend,
-      requireApiKey: true,
+    return await startDesktopTaskRequest({
+      window,
+      sender: event.sender,
+      validatedConfig,
     });
-    validatedConfig.systemPromptAppend = prepared.systemPromptAppend;
-    trackTaskSkillRun(taskId, {
-      agentId: validatedConfig.agentId,
-      skillIds: prepared.selectedSkillIds,
-    });
-
-    // Add the user's prompt to the session snapshot BEFORE OpenCode starts emitting assistant messages,
-    // so future context windows keep correct chronological order.
-    let sessionLogUserContent = userVisiblePrompt;
-    if (attachmentMeta.length > 0) {
-      const fileLines = attachmentMeta.map((m) => `  ${m.fileName} (${m.status})`);
-      sessionLogUserContent = `${userVisiblePrompt}\n\n📎 Attached files:\n${fileLines.join('\n')}`;
-    }
-    appendSessionLogMessage({
-      sessionFilePath,
-      role: 'user',
-      content: sessionLogUserContent,
-    });
-
-    const turnId = createTurnId();
-    activeTurnByTaskId.set(taskId, {
-      turnId,
-      promptTokensEst: prepared.estimate.promptTokensEst,
-      acc: { inputTokens: 0, outputTokens: 0 },
-      outputTokensEst: 0,
-      textLensByMessageId: {},
-    });
-    addTurnLog({
-      id: turnId,
-      taskId,
-      createdAt: new Date().toISOString(),
-      provider: prepared.provider,
-      model: prepared.model,
-      contextLimitTokens: prepared.context.contextLimitTokens,
-      maxOutputTokens: prepared.context.maxOutputTokens,
-      headroomSafetyTokens: prepared.context.headroomSafetyTokens,
-      promptTokensEst: prepared.estimate.promptTokensEst,
-      estimated: prepared.estimate.estimated,
-      breakdown: prepared.estimate.breakdown,
-      trimmed: prepared.trimmed,
-      droppedMessages: prepared.droppedMessages,
-      summaryInserted: prepared.summaryInserted,
-      shouldResetSession: prepared.shouldResetSession,
-      usage: {
-        inputTokens: prepared.estimate.promptTokensEst,
-        outputTokens: 0,
-        totalTokens: prepared.estimate.promptTokensEst,
-        estimated: true,
-      },
-    });
-
-    // Setup event forwarding to renderer
-    const forwardToRenderer = (channel: string, data: unknown) => {
-      if (!window.isDestroyed() && !sender.isDestroyed()) {
-        sender.send(channel, data);
-      }
-    };
-
-    // Create task-scoped callbacks for the TaskManager
-    const callbacks: TaskCallbacks = {
-      onMessage: (message: OpenCodeMessage) => {
-        if (isTaskIgnored(taskId)) return;
-        reconcileUsageFromOpenCodeMessage(taskId, message);
-        const taskMessage = toTaskMessage(message);
-        if (!taskMessage) return;
-
-        // Queue message for batching instead of immediate send
-        queueMessage(taskId, taskMessage, forwardToRenderer, addTaskMessage);
-      },
-
-      onProgress: (progress: { stage: string; message?: string }) => {
-        if (isTaskIgnored(taskId)) return;
-        forwardToRenderer('task:progress', {
-          taskId,
-          ...progress,
-        });
-      },
-
-      onPermissionRequest: (request: unknown) => {
-        if (isTaskIgnored(taskId)) return;
-        // Flush pending messages before showing permission request
-        flushAndCleanupBatcher(taskId);
-        forwardToRenderer('permission:request', request);
-      },
-
-      onComplete: (result: TaskResult) => {
-        if (isTaskIgnored(taskId)) return;
-        // Flush any pending messages before completing
-        flushAndCleanupBatcher(taskId);
-        cleanupTempFile(attachmentTempFile);
-        clearTaskFilePermissionPolicy(taskId);
-
-        // Finalize turn usage even if OpenCode didn't emit an end_turn/stop step_finish.
-        let finalInputTokens: number | undefined;
-        let finalOutputTokens: number | undefined;
-        const active = activeTurnByTaskId.get(taskId);
-        if (active) {
-          if (active.acc.inputTokens > 0 || active.acc.outputTokens > 0 || typeof active.acc.cachedInputTokens === 'number') {
-            updateTurnUsage(active.turnId, {
-              inputTokens: active.acc.inputTokens,
-              outputTokens: active.acc.outputTokens,
-              totalTokens: active.acc.inputTokens + active.acc.outputTokens,
-              cachedInputTokens: active.acc.cachedInputTokens,
-              estimated: false,
-            });
-            finalInputTokens = active.acc.inputTokens;
-            finalOutputTokens = active.acc.outputTokens;
-          } else {
-            updateTurnUsage(active.turnId, {
-              inputTokens: active.promptTokensEst,
-              outputTokens: active.outputTokensEst,
-              totalTokens: active.promptTokensEst + active.outputTokensEst,
-              estimated: true,
-            });
-            finalInputTokens = active.promptTokensEst;
-            finalOutputTokens = active.outputTokensEst;
-          }
-          activeTurnByTaskId.delete(taskId);
-        }
-
-        const wasSuccess = result.status === 'success';
-        finalizeTaskSkillRun(taskId, {
-          success: wasSuccess,
-          inputTokens: finalInputTokens,
-          outputTokens: finalOutputTokens,
-          error: wasSuccess ? undefined : (result.status === 'interrupted' ? 'Task interrupted' : 'Task failed'),
-        });
-
-        forwardToRenderer('task:update', {
-          taskId,
-          type: 'complete',
-          result,
-        });
-
-        // Map result status to task status
-        let taskStatus: TaskStatus;
-        if (result.status === 'success') {
-          taskStatus = 'completed';
-        } else if (result.status === 'interrupted') {
-          taskStatus = 'interrupted';
-        } else {
-          taskStatus = 'failed';
-        }
-
-        // Update task status in history
-        updateTaskStatus(taskId, taskStatus, new Date().toISOString());
-
-        // Update session ID if available (important for interrupted tasks to allow continuation)
-        const sessionId = result.sessionId || taskManager.getSessionId(taskId);
-        if (sessionId) {
-          updateTaskSessionId(taskId, sessionId);
-        }
-      },
-
-      onError: (error: Error) => {
-        if (isTaskIgnored(taskId)) return;
-        // Flush any pending messages before error
-        flushAndCleanupBatcher(taskId);
-        cleanupTempFile(attachmentTempFile);
-        clearTaskFilePermissionPolicy(taskId);
-
-        let finalInputTokens: number | undefined;
-        let finalOutputTokens: number | undefined;
-        const active = activeTurnByTaskId.get(taskId);
-        if (active) {
-          finalInputTokens = active.acc.inputTokens > 0 ? active.acc.inputTokens : active.promptTokensEst;
-          finalOutputTokens = active.acc.outputTokens > 0 ? active.acc.outputTokens : active.outputTokensEst;
-          activeTurnByTaskId.delete(taskId);
-        }
-        finalizeTaskSkillRun(taskId, {
-          success: false,
-          inputTokens: finalInputTokens,
-          outputTokens: finalOutputTokens,
-          error: error.message,
-        });
-
-        forwardToRenderer('task:update', {
-          taskId,
-          type: 'error',
-          error: error.message,
-        });
-
-        // Update task status in history
-        updateTaskStatus(taskId, 'failed', new Date().toISOString());
-      },
-
-      onDebug: (log: { type: string; message: string; data?: unknown }) => {
-        if (isTaskIgnored(taskId)) return;
-        if (getDebugMode()) {
-          forwardToRenderer('debug:log', {
-            taskId,
-            timestamp: new Date().toISOString(),
-            ...log,
-          });
-        }
-      },
-
-      onStatusChange: (status: TaskStatus) => {
-        if (isTaskIgnored(taskId)) return;
-        // Notify renderer of status change (e.g., queued -> running)
-        forwardToRenderer('task:status-change', {
-          taskId,
-          status,
-        });
-        // Update task status in history
-        updateTaskStatus(taskId, status, new Date().toISOString());
-      },
-    };
-
-    // Start the task via TaskManager (creates isolated adapter or queues if busy)
-    let task: Task;
-    try {
-      task = await taskManager.startTask(taskId, validatedConfig, callbacks);
-    } catch (error) {
-      activeTurnByTaskId.delete(taskId);
-      activeSkillRunByTaskId.delete(taskId);
-      throw error;
-    }
-    task.agentId = validatedConfig.agentId;
-    task.privacyMode = privacyMode;
-    (task as Task & { sessionFilePath?: string }).sessionFilePath = sessionFilePath;
-
-    // Add initial user message with the prompt to the chat
-    // Show the user's original prompt (without inlined file contents) plus file status
-    let displayContent = userVisiblePrompt;
-    if (attachmentMeta.length > 0) {
-      const fileLines = attachmentMeta.map((m) => `  ${m.fileName} (${m.status})`);
-      displayContent = `${userVisiblePrompt}\n\n📎 Attached files:\n${fileLines.join('\n')}`;
-    }
-    const initialUserMessage: TaskMessage = {
-      id: createMessageId(),
-      type: 'user',
-      content: displayContent,
-      timestamp: new Date().toISOString(),
-      // Store attachment meta for debugging/auditing (what the model actually received)
-      ...(attachmentMeta.length > 0 && {
-        attachments: [{
-          type: 'json' as const,
-          data: JSON.stringify(attachmentMeta),
-          label: 'File attachment processing results',
-        }],
-      }),
-    };
-    task.messages = [initialUserMessage];
-
-    // Store the user-visible prompt in task history — NOT the expanded one
-    // which contains inlined file contents (avoids persisting file data to disk)
-    task.prompt = userVisiblePrompt;
-
-    // Save task to history (includes the initial user message)
-    saveTask(task);
-    updateTaskSessionFilePath(taskId, sessionFilePath);
-
-    // Generate AI summary asynchronously (don't block task execution)
-    if (!isIncognito) {
-      generateTaskSummary(userVisiblePrompt, validatedConfig.agentId)
-        .then((summary) => {
-          updateTaskSummary(taskId, summary);
-          forwardToRenderer('task:summary', { taskId, summary });
-        })
-        .catch((err) => {
-          console.warn('[IPC] Failed to generate task summary:', err);
-        });
-    }
-
-    return task;
   });
 
   handle('assistant:plan-next-jobs', async (_event: IpcMainInvokeEvent, agentId?: string) => {
@@ -1829,16 +1210,8 @@ let nodeToolsApiInitialized = false;
   handle('task:cancel', async (_event: IpcMainInvokeEvent, taskId?: string) => {
     if (!taskId) return;
 
-    // Check if it's a queued task first
-    if (taskManager.isTaskQueued(taskId)) {
-      taskManager.cancelQueuedTask(taskId);
-      updateTaskStatus(taskId, 'cancelled', new Date().toISOString());
-      return;
-    }
-
-    // Otherwise cancel the running task
-    if (taskManager.hasActiveTask(taskId)) {
-      await taskManager.cancelTask(taskId);
+    const stopState = await stopAgentEngineTask(taskId, { interruptFirst: false });
+    if (stopState !== 'none') {
       updateTaskStatus(taskId, 'cancelled', new Date().toISOString());
       return;
     }
@@ -1854,14 +1227,13 @@ let nodeToolsApiInitialized = false;
   handle('task:interrupt', async (_event: IpcMainInvokeEvent, taskId?: string) => {
     if (!taskId) return;
 
-    if (taskManager.isTaskQueued(taskId)) {
-      taskManager.cancelQueuedTask(taskId);
+    const stopState = await stopAgentEngineTask(taskId, { interruptFirst: true });
+    if (stopState === 'queued') {
       updateTaskStatus(taskId, 'interrupted', new Date().toISOString());
       return;
     }
 
-    if (taskManager.hasActiveTask(taskId)) {
-      await taskManager.interruptTask(taskId);
+    if (stopState === 'active') {
       console.log(`[IPC] Task ${taskId} interrupted`);
       // Optimistically unblock UI immediately. The task manager will still emit
       // final updates when the process exits.
@@ -1871,9 +1243,9 @@ let nodeToolsApiInitialized = false;
       // If task is still active, force-cancel quickly so stop feels immediate
       // and queued tasks are unblocked.
       setTimeout(() => {
-        if (!taskManager.hasActiveTask(taskId)) return;
+        if (!hasActiveAgentEngineTask(taskId)) return;
         console.warn(`[IPC] Task ${taskId} still active after interrupt; force-cancelling`);
-        void taskManager.cancelTask(taskId)
+        void cancelAgentEngineTask(taskId)
           .then(() => {
             updateTaskStatus(taskId, 'interrupted', new Date().toISOString());
           })
@@ -1906,21 +1278,13 @@ let nodeToolsApiInitialized = false;
 
   // Task: Delete task from history
   handle('task:delete', async (_event: IpcMainInvokeEvent, taskId: string) => {
-    markTaskIgnored(taskId);
+    markDesktopTaskIgnored(taskId);
     // Stop any queued or running task to prevent lingering events after deletion
-    if (taskManager.isTaskQueued(taskId)) {
-      taskManager.cancelQueuedTask(taskId);
-    }
+    await stopAgentEngineTask(taskId, { interruptFirst: false });
     // Drop any pending batched messages for this task
-    dropAndCleanupBatcher(taskId);
+    dropAndCleanupDesktopBatcher(taskId);
     // Delete from history immediately so UI updates fast
     deleteTask(taskId);
-    // Cancel active task in background (don't block IPC response)
-    if (taskManager.hasActiveTask(taskId)) {
-      taskManager.cancelTask(taskId).catch((err) => {
-        console.warn(`[IPC] Background task cancellation failed for ${taskId}:`, err);
-      });
-    }
   });
 
   // Task: Clear all history
@@ -1949,7 +1313,7 @@ let nodeToolsApiInitialized = false;
     }
 
     // Check if the task is still active
-    if (!taskManager.hasActiveTask(taskId)) {
+    if (!hasActiveAgentEngineTask(taskId)) {
       console.warn(`[IPC] Permission response for inactive task ${taskId}`);
       return;
     }
@@ -1958,10 +1322,10 @@ let nodeToolsApiInitialized = false;
       // Send the response to the correct task's CLI
       const message = parsedResponse.selectedOptions?.join(', ') || parsedResponse.message || 'yes';
       const sanitizedMessage = sanitizeString(message, 'permissionResponse', 1024);
-      await taskManager.sendResponse(taskId, sanitizedMessage);
+      await sendAgentEngineTaskResponse(taskId, sanitizedMessage);
     } else {
       // Send denial to the correct task
-      await taskManager.sendResponse(taskId, 'no');
+      await sendAgentEngineTaskResponse(taskId, 'no');
     }
   });
 
@@ -1976,321 +1340,28 @@ let nodeToolsApiInitialized = false;
       attachedFiles?: string[],
       privacyMode?: 'normal' | 'incognito'
     ) => {
-    const window = assertTrustedWindow(BrowserWindow.fromWebContents(event.sender));
-    const sender = event.sender;
-    const validatedSessionId = sanitizeString(sessionId, 'sessionId', 128);
-    const validatedPrompt = sanitizeString(prompt, 'prompt');
-    const validatedExistingTaskId = existingTaskId
-      ? sanitizeString(existingTaskId, 'taskId', 128)
-      : undefined;
-
-    // Process attached files: extract text and write to temp file for --file flag.
-    const validatedFiles = Array.isArray(attachedFiles)
-      ? attachedFiles.filter((f): f is string => typeof f === 'string' && f.trim().length > 0).slice(0, 20)
-      : undefined;
-    const augmentedPrompt = validatedPrompt;
-    let resumeAttachmentMeta: import('../utils/file-attachments').FileAttachmentMeta[] = [];
-    let resumeAttachmentTempFile: string | null = null;
-    let resumeAttachmentContentForEstimate = '';
-    let resumeAttachedFiles: string[] | undefined = validatedFiles;
-    if (validatedFiles && validatedFiles.length > 0) {
-      const { prompt: attachmentContent, meta } = await buildAttachmentsPrefix(validatedFiles);
-      resumeAttachmentMeta = meta;
-      resumeAttachmentContentForEstimate = attachmentContent;
-      // Write extracted content to a temp text file so the CLI can read it.
-      if (attachmentContent.trim().length > 0) {
-        resumeAttachmentTempFile = writeAttachmentsTempFile(attachmentContent);
-        resumeAttachedFiles = [resumeAttachmentTempFile];
-      } else {
-        resumeAttachedFiles = undefined;
-      }
+      const window = assertTrustedWindow(BrowserWindow.fromWebContents(event.sender));
+      ensureDesktopRuntimeServices({
+        window,
+        resolveTaskWorkspaceRoot: resolveDesktopRuntimeWorkspaceRoot,
+      });
+      const validatedSessionId = sanitizeString(sessionId, 'sessionId', 128);
+      const validatedPrompt = sanitizeString(prompt, 'prompt');
+      const validatedExistingTaskId = existingTaskId
+        ? sanitizeString(existingTaskId, 'taskId', 128)
+        : undefined;
+      return await resumeDesktopSessionRequest({
+        window,
+        sender: event.sender,
+        validatedSessionId,
+        validatedPrompt,
+        validatedExistingTaskId,
+        attachedFiles,
+        privacyMode,
+        applyAgentContext,
+      });
     }
-
-    // Use existing task ID or create a new one
-    const taskId = validatedExistingTaskId || createTaskId();
-    const existingTask = validatedExistingTaskId ? getTask(validatedExistingTaskId) : undefined;
-    const effectivePrivacyMode: 'normal' | 'incognito' =
-      privacyMode || existingTask?.privacyMode || 'normal';
-    const isIncognito = effectivePrivacyMode === 'incognito';
-    const sessionFilePath =
-      existingTask?.sessionFilePath || (isIncognito
-        ? initEphemeralSessionLog(taskId)
-        : initSessionLog(existingTask?.agentId, taskId));
-    if (!existingTask?.sessionFilePath) {
-      updateTaskSessionFilePath(taskId, sessionFilePath);
-    }
-
-    // Persist the user's follow-up message to task history (show original prompt + file status)
-    let resumeSessionLogContent = validatedPrompt;
-    if (validatedExistingTaskId) {
-      let displayContent = validatedPrompt;
-      if (resumeAttachmentMeta.length > 0) {
-        const fileLines = resumeAttachmentMeta.map((m) => `  ${m.fileName} (${m.status})`);
-        displayContent = `${validatedPrompt}\n\n📎 Attached files:\n${fileLines.join('\n')}`;
-      }
-      resumeSessionLogContent = displayContent;
-      const userMessage: TaskMessage = {
-        id: createMessageId(),
-        type: 'user',
-        content: displayContent,
-        timestamp: new Date().toISOString(),
-        // Store attachment meta for debugging/auditing
-        ...(resumeAttachmentMeta.length > 0 && {
-          attachments: [{
-            type: 'json' as const,
-            data: JSON.stringify(resumeAttachmentMeta),
-            label: 'File attachment processing results',
-          }],
-        }),
-      };
-      addTaskMessage(validatedExistingTaskId, userMessage, { skipSessionLog: true });
-    }
-
-    // Setup event forwarding to renderer
-    const forwardToRenderer = (channel: string, data: unknown) => {
-      if (!window.isDestroyed() && !sender.isDestroyed()) {
-        sender.send(channel, data);
-      }
-    };
-
-    // Create task-scoped callbacks for the TaskManager (with batching for performance)
-    const callbacks: TaskCallbacks = {
-      onMessage: (message: OpenCodeMessage) => {
-        if (isTaskIgnored(taskId)) return;
-        reconcileUsageFromOpenCodeMessage(taskId, message);
-        const taskMessage = toTaskMessage(message);
-        if (!taskMessage) return;
-
-        // Queue message for batching instead of immediate send
-        queueMessage(taskId, taskMessage, forwardToRenderer, addTaskMessage);
-      },
-
-      onProgress: (progress: { stage: string; message?: string }) => {
-        if (isTaskIgnored(taskId)) return;
-        forwardToRenderer('task:progress', {
-          taskId,
-          ...progress,
-        });
-      },
-
-      onPermissionRequest: (request: unknown) => {
-        if (isTaskIgnored(taskId)) return;
-        // Flush pending messages before showing permission request
-        flushAndCleanupBatcher(taskId);
-        forwardToRenderer('permission:request', request);
-      },
-
-      onComplete: (result: TaskResult) => {
-        if (isTaskIgnored(taskId)) return;
-        // Flush any pending messages before completing
-        flushAndCleanupBatcher(taskId);
-        cleanupTempFile(resumeAttachmentTempFile);
-        clearTaskFilePermissionPolicy(taskId);
-
-        // Finalize turn usage even if OpenCode didn't emit an end_turn/stop step_finish.
-        let finalInputTokens: number | undefined;
-        let finalOutputTokens: number | undefined;
-        const active = activeTurnByTaskId.get(taskId);
-        if (active) {
-          if (active.acc.inputTokens > 0 || active.acc.outputTokens > 0 || typeof active.acc.cachedInputTokens === 'number') {
-            updateTurnUsage(active.turnId, {
-              inputTokens: active.acc.inputTokens,
-              outputTokens: active.acc.outputTokens,
-              totalTokens: active.acc.inputTokens + active.acc.outputTokens,
-              cachedInputTokens: active.acc.cachedInputTokens,
-              estimated: false,
-            });
-            finalInputTokens = active.acc.inputTokens;
-            finalOutputTokens = active.acc.outputTokens;
-          } else {
-            updateTurnUsage(active.turnId, {
-              inputTokens: active.promptTokensEst,
-              outputTokens: active.outputTokensEst,
-              totalTokens: active.promptTokensEst + active.outputTokensEst,
-              estimated: true,
-            });
-            finalInputTokens = active.promptTokensEst;
-            finalOutputTokens = active.outputTokensEst;
-          }
-          activeTurnByTaskId.delete(taskId);
-        }
-
-        const wasSuccess = result.status === 'success';
-        finalizeTaskSkillRun(taskId, {
-          success: wasSuccess,
-          inputTokens: finalInputTokens,
-          outputTokens: finalOutputTokens,
-          error: wasSuccess ? undefined : (result.status === 'interrupted' ? 'Task interrupted' : 'Task failed'),
-        });
-
-        forwardToRenderer('task:update', {
-          taskId,
-          type: 'complete',
-          result,
-        });
-
-        // Map result status to task status
-        let taskStatus: TaskStatus;
-        if (result.status === 'success') {
-          taskStatus = 'completed';
-        } else if (result.status === 'interrupted') {
-          taskStatus = 'interrupted';
-        } else {
-          taskStatus = 'failed';
-        }
-
-        // Update task status in history
-        updateTaskStatus(taskId, taskStatus, new Date().toISOString());
-
-        // Update session ID if available (important for interrupted tasks to allow continuation)
-        const newSessionId = result.sessionId || taskManager.getSessionId(taskId);
-        if (newSessionId) {
-          updateTaskSessionId(taskId, newSessionId);
-        }
-      },
-
-      onError: (error: Error) => {
-        if (isTaskIgnored(taskId)) return;
-        // Flush any pending messages before error
-        flushAndCleanupBatcher(taskId);
-        cleanupTempFile(resumeAttachmentTempFile);
-
-        let finalInputTokens: number | undefined;
-        let finalOutputTokens: number | undefined;
-        const active = activeTurnByTaskId.get(taskId);
-        if (active) {
-          finalInputTokens = active.acc.inputTokens > 0 ? active.acc.inputTokens : active.promptTokensEst;
-          finalOutputTokens = active.acc.outputTokens > 0 ? active.acc.outputTokens : active.outputTokensEst;
-          activeTurnByTaskId.delete(taskId);
-        }
-        finalizeTaskSkillRun(taskId, {
-          success: false,
-          inputTokens: finalInputTokens,
-          outputTokens: finalOutputTokens,
-          error: error.message,
-        });
-
-        forwardToRenderer('task:update', {
-          taskId,
-          type: 'error',
-          error: error.message,
-        });
-
-        // Update task status in history
-        updateTaskStatus(taskId, 'failed', new Date().toISOString());
-      },
-
-      onDebug: (log: { type: string; message: string; data?: unknown }) => {
-        if (isTaskIgnored(taskId)) return;
-        if (getDebugMode()) {
-          forwardToRenderer('debug:log', {
-            taskId,
-            timestamp: new Date().toISOString(),
-            ...log,
-          });
-        }
-      },
-
-      onStatusChange: (status: TaskStatus) => {
-        if (isTaskIgnored(taskId)) return;
-        // Notify renderer of status change (e.g., queued -> running)
-        forwardToRenderer('task:status-change', {
-          taskId,
-          status,
-        });
-        // Update task status in history
-        updateTaskStatus(taskId, status, new Date().toISOString());
-      },
-    };
-
-    // Start the task via TaskManager with sessionId for resume (creates isolated adapter or queues if busy)
-    const resumeConfig = applyAgentContext({
-      prompt: augmentedPrompt,
-      sessionId: validatedSessionId,
-      taskId,
-      agentId: existingTask?.agentId,
-      attachedFiles: resumeAttachedFiles,
-      privacyMode: effectivePrivacyMode,
-    });
-
-    const prepared = await preparePayloadForSend({
-      agentId: resumeConfig.agentId,
-      taskId,
-      sessionFilePath,
-      userMessage: resumeConfig.prompt,
-      retrievedText: resumeAttachmentContentForEstimate,
-      baseSystemPromptAppend: resumeConfig.systemPromptAppend,
-      requireApiKey: true,
-    });
-    resumeConfig.systemPromptAppend = prepared.systemPromptAppend;
-    trackTaskSkillRun(taskId, {
-      agentId: resumeConfig.agentId,
-      skillIds: prepared.selectedSkillIds,
-    });
-    if (prepared.shouldResetSession) {
-      // Start a new OpenCode session while carrying forward trimmed context via system prompt.
-      delete resumeConfig.sessionId;
-    }
-
-    const turnId = createTurnId();
-    activeTurnByTaskId.set(taskId, {
-      turnId,
-      promptTokensEst: prepared.estimate.promptTokensEst,
-      acc: { inputTokens: 0, outputTokens: 0 },
-      outputTokensEst: 0,
-      textLensByMessageId: {},
-    });
-    addTurnLog({
-      id: turnId,
-      taskId,
-      createdAt: new Date().toISOString(),
-      provider: prepared.provider,
-      model: prepared.model,
-      contextLimitTokens: prepared.context.contextLimitTokens,
-      maxOutputTokens: prepared.context.maxOutputTokens,
-      headroomSafetyTokens: prepared.context.headroomSafetyTokens,
-      promptTokensEst: prepared.estimate.promptTokensEst,
-      estimated: prepared.estimate.estimated,
-      breakdown: prepared.estimate.breakdown,
-      trimmed: prepared.trimmed,
-      droppedMessages: prepared.droppedMessages,
-      summaryInserted: prepared.summaryInserted,
-      shouldResetSession: prepared.shouldResetSession,
-      usage: {
-        inputTokens: prepared.estimate.promptTokensEst,
-        outputTokens: 0,
-        totalTokens: prepared.estimate.promptTokensEst,
-        estimated: true,
-      },
-    });
-
-    // Add the user's follow-up into the session snapshot AFTER preparing the payload
-    // so we don't duplicate the current prompt in "Recent conversation".
-    appendSessionLogMessage({
-      sessionFilePath,
-      role: 'user',
-      content: resumeSessionLogContent,
-    });
-    let task: Task;
-    try {
-      task = await taskManager.startTask(taskId, resumeConfig, callbacks);
-    } catch (error) {
-      activeTurnByTaskId.delete(taskId);
-      activeSkillRunByTaskId.delete(taskId);
-      throw error;
-    }
-    task.agentId = resumeConfig.agentId;
-    task.privacyMode = effectivePrivacyMode;
-    (task as Task & { sessionFilePath?: string }).sessionFilePath = sessionFilePath;
-    updateTaskSessionFilePath(taskId, sessionFilePath);
-
-    // Update task status in history (whether running or queued)
-    if (validatedExistingTaskId) {
-      updateTaskStatus(validatedExistingTaskId, task.status, new Date().toISOString());
-    }
-
-    return task;
-  });
+  );
 
   // Settings: Get API keys
   // Note: In production, this should fetch from backend to get metadata
@@ -2880,6 +1951,111 @@ let nodeToolsApiInitialized = false;
     return getAppSettings();
   });
 
+  handle('settings:runtime-hooks:get', async () => {
+    return readRuntimeHooksRegistryRaw();
+  });
+
+  handle('settings:runtime-hooks:save', async (_event: IpcMainInvokeEvent, raw: string) => {
+    if (typeof raw !== 'string') {
+      throw new Error('Runtime hooks payload must be a string');
+    }
+    return saveRuntimeHooksRegistryRaw(raw);
+  });
+
+  handle('settings:runtime-hooks:diagnostics', async () => {
+    return { entries: listHookDiagnostics() };
+  });
+
+  handle('settings:runtime-hooks:clear-diagnostics', async () => {
+    clearHookDiagnostics();
+    return { ok: true };
+  });
+
+  handle('settings:permission-policy:get', async () => {
+    return getPermissionPolicySettings();
+  });
+
+  handle('settings:permission-policy:set', async (_event: IpcMainInvokeEvent, settings: unknown) => {
+    return setPermissionPolicySettings(settings as PermissionPolicySettings);
+  });
+
+  handle('settings:permission-policy:audit', async () => {
+    return { entries: listPermissionPolicyAuditEntries() };
+  });
+
+  handle('settings:permission-policy:opencode-preview', async (_event: IpcMainInvokeEvent, agentId?: string) => {
+    const sanitizedAgentId = typeof agentId === 'string' && agentId.trim()
+      ? sanitizeString(agentId, 'agentId', 64)
+      : undefined;
+    return getOpenCodePermissionPreview(sanitizedAgentId);
+  });
+
+  handle('settings:permission-policy:clear-audit', async () => {
+    clearPermissionPolicyAuditEntries();
+    return { ok: true };
+  });
+
+  handle('settings:plugins:list', async () => {
+    return listPluginRegistry();
+  });
+
+  handle('plugins:commands:list', async () => {
+    return { commands: listRegisteredPluginCommands() };
+  });
+
+  handle('settings:plugins:diagnostics', async () => {
+    return getPluginDiagnosticsState();
+  });
+
+  handle('settings:plugins:clear-diagnostics-history', async () => {
+    return clearPluginDiagnosticsHistory();
+  });
+
+  handle('settings:plugins:set-enabled', async (_event: IpcMainInvokeEvent, payload: { pluginId?: string; enabled?: boolean }) => {
+    if (!payload || typeof payload !== 'object') {
+      throw new Error('Invalid plugin payload');
+    }
+    const pluginId = sanitizeString(payload.pluginId, 'pluginId', 80);
+    if (typeof payload.enabled !== 'boolean') {
+      throw new Error('enabled must be a boolean');
+    }
+    const result = setPluginEnabled(pluginId, payload.enabled);
+    recordPluginRegistrationDiagnostics(payload.enabled ? 'enable' : 'disable');
+    notifyHelpDocsChanged();
+    return result;
+  });
+
+  handle('settings:plugins:install-from-directory', async (_event: IpcMainInvokeEvent, payload: { sourceDir?: string }) => {
+    if (!payload || typeof payload !== 'object') {
+      throw new Error('Invalid plugin install payload');
+    }
+    const sourceDir = sanitizeString(payload.sourceDir, 'sourceDir', 1024);
+    const result = installManagedPluginFromDirectory(sourceDir);
+    recordPluginRegistrationDiagnostics('install');
+    notifyHelpDocsChanged();
+    return result;
+  });
+
+  handle('settings:plugins:uninstall', async (_event: IpcMainInvokeEvent, payload: { pluginId?: string }) => {
+    if (!payload || typeof payload !== 'object') {
+      throw new Error('Invalid plugin uninstall payload');
+    }
+    const pluginId = sanitizeString(payload.pluginId, 'pluginId', 80);
+    const result = uninstallManagedPlugin(pluginId);
+    recordPluginRegistrationDiagnostics('uninstall');
+    notifyHelpDocsChanged();
+    return result;
+  });
+
+  handle('settings:plugins:open-managed-root', async () => {
+    const pluginRoot = getManagedPluginsRootPath();
+    const result = await shell.openPath(pluginRoot);
+    if (result) {
+      return { ok: false, path: pluginRoot, error: result };
+    }
+    return { ok: true, path: pluginRoot };
+  });
+
   // Saved prompts (shared between desktop renderer and webchat)
   handle('saved-prompts:list', async () => {
     return listSavedPrompts();
@@ -3033,12 +2209,39 @@ let nodeToolsApiInitialized = false;
       heartbeatPrompt?: string;
       autoSkillEnabled?: boolean;
       autoSkillAutoPromoteLowRisk?: boolean;
+      subagentsEnabled?: boolean;
+      subagentMaxChildren?: number;
+      subagentMaxDepth?: number;
+      subagentAllowedAgentIds?: string[];
+      subagentAutoRelayCompletions?: boolean;
+      subagentDefaultModel?: SelectedModel | null;
+      subagentRunTimeoutMs?: number;
+      subagentDefaultMode?: 'run' | 'session';
+      subagentInheritWorkingDirectory?: boolean;
+      subagentInheritAttachedFiles?: boolean;
+      subagentInheritPrivacyMode?: boolean;
+      permissionProfile?: {
+        enabled?: boolean;
+        file?: {
+          allowWorkspaceWritesWithoutPrompt?: boolean;
+          allowTaskScopedAllowAll?: boolean;
+          defaultDecision?: 'allow' | 'deny' | 'prompt';
+        };
+        runtime?: {
+          defaultToolDecision?: 'allow' | 'deny' | 'prompt';
+          defaultQuestionDecision?: 'allow' | 'deny' | 'prompt';
+          allowedToolNames?: string[];
+          blockedToolNames?: string[];
+        };
+      } | null;
     }
   ) => {
     if (!config || typeof config.name !== 'string') {
       throw new Error('Agent name is required');
     }
     const hasSelectedModel = Object.prototype.hasOwnProperty.call(config, 'selectedModel');
+    const hasSubagentDefaultModel = Object.prototype.hasOwnProperty.call(config, 'subagentDefaultModel');
+    const hasPermissionProfile = Object.prototype.hasOwnProperty.call(config, 'permissionProfile');
     const sanitizedConfig: {
       id?: string;
       name: string;
@@ -3064,6 +2267,31 @@ let nodeToolsApiInitialized = false;
       heartbeatPrompt?: string;
       autoSkillEnabled?: boolean;
       autoSkillAutoPromoteLowRisk?: boolean;
+      subagentsEnabled?: boolean;
+      subagentMaxChildren?: number;
+      subagentMaxDepth?: number;
+      subagentAllowedAgentIds?: string[];
+      subagentAutoRelayCompletions?: boolean;
+      subagentDefaultModel?: SelectedModel | null;
+      subagentRunTimeoutMs?: number;
+      subagentDefaultMode?: 'run' | 'session';
+      subagentInheritWorkingDirectory?: boolean;
+      subagentInheritAttachedFiles?: boolean;
+      subagentInheritPrivacyMode?: boolean;
+      permissionProfile?: {
+        enabled?: boolean;
+        file?: {
+          allowWorkspaceWritesWithoutPrompt?: boolean;
+          allowTaskScopedAllowAll?: boolean;
+          defaultDecision?: 'allow' | 'deny' | 'prompt';
+        };
+        runtime?: {
+          defaultToolDecision?: 'allow' | 'deny' | 'prompt';
+          defaultQuestionDecision?: 'allow' | 'deny' | 'prompt';
+          allowedToolNames?: string[];
+          blockedToolNames?: string[];
+        };
+      } | null;
     } = {
       id: config.id ? sanitizeString(config.id, 'agentId', 64) : undefined,
       name: sanitizeString(config.name, 'name', 128),
@@ -3078,6 +2306,125 @@ let nodeToolsApiInitialized = false;
       sanitizedConfig.selectedModel = config.selectedModel == null
         ? null
         : sanitizeSelectedModel(config.selectedModel, 'selectedModel');
+    }
+    if (Object.prototype.hasOwnProperty.call(config, 'subagentsEnabled')) {
+      if (typeof config.subagentsEnabled !== 'boolean') {
+        throw new Error('subagentsEnabled must be a boolean');
+      }
+      sanitizedConfig.subagentsEnabled = config.subagentsEnabled;
+    }
+    if (Object.prototype.hasOwnProperty.call(config, 'subagentMaxChildren')) {
+      sanitizedConfig.subagentMaxChildren = sanitizeIntegerRange(
+        config.subagentMaxChildren,
+        'subagentMaxChildren',
+        1,
+        12,
+        3
+      );
+    }
+    if (Object.prototype.hasOwnProperty.call(config, 'subagentMaxDepth')) {
+      sanitizedConfig.subagentMaxDepth = sanitizeIntegerRange(
+        config.subagentMaxDepth,
+        'subagentMaxDepth',
+        1,
+        4,
+        1
+      );
+    }
+    if (Object.prototype.hasOwnProperty.call(config, 'subagentAllowedAgentIds')) {
+      const values = Array.isArray(config.subagentAllowedAgentIds) ? config.subagentAllowedAgentIds : [];
+      sanitizedConfig.subagentAllowedAgentIds = values
+        .map((value, index) => sanitizeString(value, `subagentAllowedAgentIds[${index}]`, 64).trim().toLowerCase())
+        .filter(Boolean);
+    }
+    if (Object.prototype.hasOwnProperty.call(config, 'subagentAutoRelayCompletions')) {
+      if (typeof config.subagentAutoRelayCompletions !== 'boolean') {
+        throw new Error('subagentAutoRelayCompletions must be a boolean');
+      }
+      sanitizedConfig.subagentAutoRelayCompletions = config.subagentAutoRelayCompletions;
+    }
+    if (hasSubagentDefaultModel) {
+      sanitizedConfig.subagentDefaultModel = config.subagentDefaultModel == null
+        ? null
+        : sanitizeSelectedModel(config.subagentDefaultModel, 'subagentDefaultModel');
+    }
+    if (Object.prototype.hasOwnProperty.call(config, 'subagentRunTimeoutMs')) {
+      sanitizedConfig.subagentRunTimeoutMs = sanitizeIntegerRange(
+        config.subagentRunTimeoutMs,
+        'subagentRunTimeoutMs',
+        15_000,
+        3_600_000,
+        300_000
+      );
+    }
+    if (Object.prototype.hasOwnProperty.call(config, 'subagentDefaultMode')) {
+      if (config.subagentDefaultMode !== 'run' && config.subagentDefaultMode !== 'session') {
+        throw new Error('subagentDefaultMode must be run or session');
+      }
+      sanitizedConfig.subagentDefaultMode = config.subagentDefaultMode;
+    }
+    if (Object.prototype.hasOwnProperty.call(config, 'subagentInheritWorkingDirectory')) {
+      if (typeof config.subagentInheritWorkingDirectory !== 'boolean') {
+        throw new Error('subagentInheritWorkingDirectory must be a boolean');
+      }
+      sanitizedConfig.subagentInheritWorkingDirectory = config.subagentInheritWorkingDirectory;
+    }
+    if (Object.prototype.hasOwnProperty.call(config, 'subagentInheritAttachedFiles')) {
+      if (typeof config.subagentInheritAttachedFiles !== 'boolean') {
+        throw new Error('subagentInheritAttachedFiles must be a boolean');
+      }
+      sanitizedConfig.subagentInheritAttachedFiles = config.subagentInheritAttachedFiles;
+    }
+    if (Object.prototype.hasOwnProperty.call(config, 'subagentInheritPrivacyMode')) {
+      if (typeof config.subagentInheritPrivacyMode !== 'boolean') {
+        throw new Error('subagentInheritPrivacyMode must be a boolean');
+      }
+      sanitizedConfig.subagentInheritPrivacyMode = config.subagentInheritPrivacyMode;
+    }
+    if (hasPermissionProfile) {
+      if (config.permissionProfile == null) {
+        sanitizedConfig.permissionProfile = null;
+      } else if (typeof config.permissionProfile !== 'object') {
+        throw new Error('permissionProfile must be an object');
+      } else {
+        const profile = config.permissionProfile;
+        const file = profile.file && typeof profile.file === 'object' ? profile.file : {};
+        const runtime = profile.runtime && typeof profile.runtime === 'object' ? profile.runtime : {};
+        const sanitizeDecision = (
+          value: unknown,
+          field: string
+        ): 'allow' | 'deny' | 'prompt' | undefined => {
+          if (value == null || value === '') return undefined;
+          if (value === 'allow' || value === 'deny' || value === 'prompt') return value;
+          throw new Error(`${field} must be allow, deny, or prompt`);
+        };
+        const sanitizeToolNames = (values: unknown, field: string): string[] => {
+          if (!Array.isArray(values)) return [];
+          return values
+            .map((value, index) => sanitizeString(value, `${field}[${index}]`, 128).trim().toLowerCase())
+            .filter(Boolean);
+        };
+        sanitizedConfig.permissionProfile = {
+          enabled: typeof profile.enabled === 'boolean' ? profile.enabled : true,
+          file: {
+            allowWorkspaceWritesWithoutPrompt:
+              typeof file.allowWorkspaceWritesWithoutPrompt === 'boolean'
+                ? file.allowWorkspaceWritesWithoutPrompt
+                : undefined,
+            allowTaskScopedAllowAll:
+              typeof file.allowTaskScopedAllowAll === 'boolean'
+                ? file.allowTaskScopedAllowAll
+                : undefined,
+            defaultDecision: sanitizeDecision(file.defaultDecision, 'permissionProfile.file.defaultDecision'),
+          },
+          runtime: {
+            defaultToolDecision: sanitizeDecision(runtime.defaultToolDecision, 'permissionProfile.runtime.defaultToolDecision'),
+            defaultQuestionDecision: sanitizeDecision(runtime.defaultQuestionDecision, 'permissionProfile.runtime.defaultQuestionDecision'),
+            allowedToolNames: sanitizeToolNames(runtime.allowedToolNames, 'permissionProfile.runtime.allowedToolNames'),
+            blockedToolNames: sanitizeToolNames(runtime.blockedToolNames, 'permissionProfile.runtime.blockedToolNames'),
+          },
+        };
+      }
     }
     if (Object.prototype.hasOwnProperty.call(config, 'agenticLoopEnabled')) {
       if (typeof config.agenticLoopEnabled !== 'boolean') {
@@ -4583,8 +3930,18 @@ let nodeToolsApiInitialized = false;
 
   handle('build-mode:runtime:get', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; workspaceRelativePath?: unknown }) => {
     const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
-    const workspaceRelativePath = sanitizeOptionalText(payload?.workspaceRelativePath, 'workspaceRelativePath', 300) || '.';
-    return buildDevProcessManager.getSnapshot(agentId, workspaceRelativePath);
+    const workspaceRelativePath = sanitizeOptionalText(payload?.workspaceRelativePath, 'workspaceRelativePath', 300);
+    if (!workspaceRelativePath) {
+      return buildDevProcessManager.getActiveSnapshot(agentId);
+    }
+    try {
+      return buildDevProcessManager.getSnapshot(agentId, workspaceRelativePath);
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Cannot switch workspace path while process is running. Stop runtime first.') {
+        return buildDevProcessManager.getActiveSnapshot(agentId);
+      }
+      throw error;
+    }
   });
 
   handle('build-mode:runtime:start', async (_event: IpcMainInvokeEvent, payload: BuildStartRequest) => {
@@ -4592,6 +3949,19 @@ let nodeToolsApiInitialized = false;
     const workspaceRelativePath = sanitizeOptionalText(payload?.workspaceRelativePath, 'workspaceRelativePath', 300) || '.';
     const mode = payload?.mode === 'run' ? 'run' : 'dev';
     const commandOverride = sanitizeOptionalText(payload?.commandOverride, 'commandOverride', 500);
+    const startEntries = Array.isArray(payload?.startEntries)
+      ? payload.startEntries
+        .map((entry) => ({
+          command: sanitizeOptionalText(entry?.command, 'startEntries.command', 500),
+          workspaceRelativePath: sanitizeOptionalText(entry?.workspaceRelativePath, 'startEntries.workspaceRelativePath', 300) || undefined,
+          role: entry?.role === 'worker'
+            ? ('worker' as const)
+            : entry?.role === 'preview'
+              ? ('preview' as const)
+              : undefined,
+        }))
+        .filter((entry) => Boolean(entry.command))
+      : undefined;
     const autoRestart = payload?.autoRestart !== false;
     const forceRestart = payload?.forceRestart === true;
     const envOverrides = normalizeEnvOverrides(payload?.envOverrides);
@@ -4604,6 +3974,7 @@ let nodeToolsApiInitialized = false;
       workspaceRelativePath,
       mode,
       commandOverride: commandOverride || undefined,
+      startEntries,
       envOverrides,
       autoRestart,
       forceRestart,
@@ -4737,7 +4108,7 @@ let nodeToolsApiInitialized = false;
     const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
     const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
     const depth = typeof payload?.depth === 'number' && Number.isFinite(payload.depth) ? payload.depth : undefined;
-    const includeHidden = payload?.includeHidden === true;
+    const includeHidden = typeof payload?.includeHidden === 'boolean' ? payload.includeHidden : true;
     const maxEntries = typeof payload?.maxEntries === 'number' && Number.isFinite(payload.maxEntries) ? payload.maxEntries : undefined;
     return listWorkspaceTree(agentId, relativePath, { depth, includeHidden, maxEntries });
   });
@@ -5003,6 +4374,89 @@ let nodeToolsApiInitialized = false;
     return deleteBuildTaskSession({ sessionId });
   });
 
+  handle('subagents:list', async (_event: IpcMainInvokeEvent, payload: { parentTaskId?: unknown }) => {
+    const parentTaskId = sanitizeString(payload?.parentTaskId, 'parentTaskId', 128);
+    return {
+      runs: listSubagentRunsForParentTask(parentTaskId),
+      tree: listSubagentRunTreeForParentTask(parentTaskId),
+      activeCount: getActiveSubagentCount(parentTaskId),
+    };
+  });
+
+  handle('subagents:list-all', async (_event: IpcMainInvokeEvent, payload: { includeArchived?: unknown }) => {
+    const includeArchived = payload?.includeArchived === true;
+    const runs = listSubagentRuns(undefined, { includeArchived }).map((run) => getSubagentRunForUi(run.runId)).filter(Boolean);
+    return { runs };
+  });
+
+  handle('subagents:get', async (_event: IpcMainInvokeEvent, payload: { runId?: unknown }) => {
+    const runId = sanitizeString(payload?.runId, 'runId', 128);
+    return getSubagentRunForUi(runId) ?? null;
+  });
+
+  handle('subagents:wait', async (_event: IpcMainInvokeEvent, payload: {
+    runId?: unknown;
+    timeoutMs?: unknown;
+    pollIntervalMs?: unknown;
+  }) => {
+    const runId = sanitizeString(payload?.runId, 'runId', 128);
+    const timeoutMs = typeof payload?.timeoutMs === 'number' ? payload.timeoutMs : undefined;
+    const pollIntervalMs = typeof payload?.pollIntervalMs === 'number' ? payload.pollIntervalMs : undefined;
+    return waitForSubagentRun({ runId, timeoutMs, pollIntervalMs });
+  });
+
+  handle('subagents:stop', async (_event: IpcMainInvokeEvent, payload: { runId?: unknown }) => {
+    const runId = sanitizeString(payload?.runId, 'runId', 128);
+    const run = getSubagentRun(runId);
+    if (!run) {
+      throw new Error('Subagent run not found.');
+    }
+    await stopAgentEngineTask(run.childTaskId, { interruptFirst: true }).catch(() => {});
+    updateTaskStatus(run.childTaskId, 'interrupted', new Date().toISOString());
+    patchSubagentRun(runId, {
+      status: 'done',
+      resultStatus: 'interrupted',
+      completedAt: new Date().toISOString(),
+    });
+    return { ok: true, runId };
+  });
+
+  handle('subagents:archive', async (_event: IpcMainInvokeEvent, payload: { runId?: unknown; archived?: unknown }) => {
+    const runId = sanitizeString(payload?.runId, 'runId', 128);
+    const archived = payload?.archived !== false;
+    return archiveSubagentRun(runId, archived);
+  });
+
+  handle('subagents:close', async (_event: IpcMainInvokeEvent, payload: { runId?: unknown }) => {
+    const runId = sanitizeString(payload?.runId, 'runId', 128);
+    return closeSubagentSession(runId);
+  });
+
+  handle('subagents:send', async (_event: IpcMainInvokeEvent, payload: {
+    runId?: unknown;
+    prompt?: unknown;
+    modelProvider?: unknown;
+    modelId?: unknown;
+    modelBaseUrl?: unknown;
+  }) => {
+    const runId = sanitizeString(payload?.runId, 'runId', 128);
+    const prompt = sanitizeString(payload?.prompt, 'prompt', MAX_TEXT_LENGTH);
+    const modelProviderRaw = typeof payload?.modelProvider === 'string' ? payload.modelProvider.trim().toLowerCase() : '';
+    const modelIdRaw = typeof payload?.modelId === 'string' ? payload.modelId.trim() : '';
+    const modelBaseUrl = typeof payload?.modelBaseUrl === 'string' ? payload.modelBaseUrl.trim() : '';
+    return sendSubagentPrompt({
+      runId,
+      prompt,
+      model: modelProviderRaw && modelIdRaw
+        ? {
+          provider: modelProviderRaw,
+          model: modelIdRaw,
+          ...(modelBaseUrl ? { baseUrl: modelBaseUrl } : {}),
+        }
+        : null,
+    });
+  });
+
   // Log event handler - now just returns ok (no external logging)
   handle(
     'log:event',
@@ -5044,277 +4498,4 @@ let nodeToolsApiInitialized = false;
     setTaskFolder(taskId, folderId);
     return { success: true };
   });
-}
-
-function createTaskId(): string {
-  return `task_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-}
-
-function createMessageId(): string {
-  return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-}
-
-/**
- * Extract base64 screenshots from tool output
- * Returns cleaned text (with images replaced by placeholders) and extracted attachments
- */
-function extractScreenshots(output: string): {
-  cleanedText: string;
-  attachments: Array<{ type: 'screenshot' | 'json'; data: string; label?: string }>;
-} {
-  const attachments: Array<{ type: 'screenshot' | 'json'; data: string; label?: string }> = [];
-
-  // Match data URLs (data:image/png;base64,...)
-  const dataUrlRegex = /data:image\/(png|jpeg|jpg|webp);base64,[A-Za-z0-9+/=]+/g;
-  let match;
-  while ((match = dataUrlRegex.exec(output)) !== null) {
-    attachments.push({
-      type: 'screenshot',
-      data: match[0],
-      label: 'Browser screenshot',
-    });
-  }
-
-  // Also check for raw base64 PNG (starts with iVBORw0)
-  // This pattern matches PNG base64 that isn't already a data URL
-  const rawBase64Regex = /(?<![;,])(?:^|["\s])?(iVBORw0[A-Za-z0-9+/=]{100,})(?:["\s]|$)/g;
-  while ((match = rawBase64Regex.exec(output)) !== null) {
-    const base64Data = match[1];
-    // Wrap in data URL if it's valid base64 PNG
-    if (base64Data && base64Data.length > 100) {
-      attachments.push({
-        type: 'screenshot',
-        data: `data:image/png;base64,${base64Data}`,
-        label: 'Browser screenshot',
-      });
-    }
-  }
-
-  // Clean the text - replace image data with placeholder
-  let cleanedText = output
-    .replace(dataUrlRegex, '[Screenshot captured]')
-    .replace(rawBase64Regex, '[Screenshot captured]');
-
-  // Also clean up common JSON wrappers around screenshots
-  cleanedText = cleanedText
-    .replace(/"[Screenshot captured]"/g, '"[Screenshot]"')
-    .replace(/\[Screenshot captured\]\[Screenshot captured\]/g, '[Screenshot captured]');
-
-  return { cleanedText, attachments };
-}
-
-/**
- * Sanitize tool output to remove technical details that confuse users
- */
-function sanitizeToolOutput(text: string, isError: boolean): string {
-  let result = text;
-
-  // Strip any remaining ANSI escape codes
-  result = result.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '');
-  // Also strip any leftover escape sequences that may have been partially matched
-  result = result.replace(/\x1B\[2m|\x1B\[22m|\x1B\[0m/g, '');
-
-  // Try to extract meaningful content from JSON responses (common with MCP tools)
-  // Look for common result fields like "title", "result", "output", "content", "text"
-  try {
-    const jsonMatch = result.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[0]);
-      // Extract meaningful fields from MCP/dev-browser responses
-      if (parsed.title) {
-        return `Title: ${parsed.title}`;
-      }
-      if (parsed.result) {
-        return typeof parsed.result === 'string' ? parsed.result : JSON.stringify(parsed.result);
-      }
-      if (parsed.output) {
-        return typeof parsed.output === 'string' ? parsed.output : JSON.stringify(parsed.output);
-      }
-      if (parsed.content) {
-        return typeof parsed.content === 'string' ? parsed.content : JSON.stringify(parsed.content);
-      }
-      if (parsed.text) {
-        return typeof parsed.text === 'string' ? parsed.text : JSON.stringify(parsed.text);
-      }
-      // For page info responses, extract title if available
-      if (parsed.pageInfo?.title) {
-        return `Title: ${parsed.pageInfo.title}`;
-      }
-    }
-  } catch {
-    // Not valid JSON or parse error, continue with regular sanitization
-  }
-
-  // Remove WebSocket URLs
-  result = result.replace(/ws:\/\/[^\s\]]+/g, '[connection]');
-
-  // Remove "Call log:" sections and everything after
-  result = result.replace(/\s*Call log:[\s\S]*/i, '');
-
-  // Simplify common Playwright/CDP errors for users
-  if (isError) {
-    // Timeout errors: extract just the timeout duration
-    const timeoutMatch = result.match(/timed? ?out after (\d+)ms/i);
-    if (timeoutMatch) {
-      const seconds = Math.round(parseInt(timeoutMatch[1]) / 1000);
-      return `Timed out after ${seconds}s`;
-    }
-
-    // "browserType.connectOverCDP: Protocol error (X): Y" → "Y"
-    const protocolMatch = result.match(/Protocol error \([^)]+\):\s*(.+)/i);
-    if (protocolMatch) {
-      result = protocolMatch[1].trim();
-    }
-
-    // "Error executing code: X" → just the meaningful part
-    result = result.replace(/^Error executing code:\s*/i, '');
-
-    // Clean up "browserType.connectOverCDP:" prefix
-    result = result.replace(/browserType\.connectOverCDP:\s*/i, '');
-
-    // Remove stack traces (lines starting with "at ")
-    result = result.replace(/\s+at\s+.+/g, '');
-
-    // Remove error class names like "CodeExecutionTimeoutError:"
-    result = result.replace(/\w+Error:\s*/g, '');
-  }
-
-  return result.trim();
-}
-
-function extractAssistantFromToolOutput(toolName: string, toolOutput: string): string | null {
-  if (toolName.toLowerCase() !== 'bash') {
-    return null;
-  }
-
-  const trimmed = toolOutput.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  const pageTitleMatch = trimmed.match(/(?:RESULT_TITLE|PAGE_TITLE|TITLE):\s*([^\r\n]+)/i);
-  if (pageTitleMatch) {
-    return `Page title: ${pageTitleMatch[1].trim()}`;
-  }
-
-  const jsonMatch = trimmed.match(/\{[^\r\n]*\}/);
-  if (jsonMatch) {
-    try {
-      const parsed = JSON.parse(jsonMatch[0]) as { title?: unknown; url?: unknown };
-      if (typeof parsed.title === 'string' && parsed.title.trim()) {
-        const title = parsed.title.trim();
-        const url = typeof parsed.url === 'string' ? parsed.url.trim() : '';
-        return url ? `Page title: ${title}\nURL: ${url}` : `Page title: ${title}`;
-      }
-    } catch {
-      return null;
-    }
-  }
-
-  return null;
-}
-
-function toTaskMessage(message: OpenCodeMessage): TaskMessage | null {
-  // OpenCode format: step_start, text, tool_call, tool_use, tool_result, step_finish
-
-  // Handle text content
-  if (message.type === 'text') {
-    if (message.part.text) {
-      return {
-        id: createMessageId(),
-        type: 'assistant',
-        content: message.part.text,
-        timestamp: new Date().toISOString(),
-      };
-    }
-    return null;
-  }
-
-  // Handle tool calls (legacy format - just shows tool is starting)
-  if (message.type === 'tool_call') {
-    return {
-      id: createMessageId(),
-      type: 'tool',
-      content: `Using tool: ${message.part.tool}`,
-      toolName: message.part.tool,
-      toolInput: message.part.input,
-      timestamp: new Date().toISOString(),
-    };
-  }
-
-  // Handle tool_result messages (legacy format - result delivered separately)
-  if (message.type === 'tool_result') {
-    const toolResultMsg = message as import('@accomplish/shared').OpenCodeToolResultMessage;
-    const toolOutput = toolResultMsg.part.output || '';
-    const isError = Boolean(toolResultMsg.part.isError);
-    const { cleanedText, attachments } = extractScreenshots(toolOutput);
-    const sanitizedText = sanitizeToolOutput(cleanedText, isError);
-
-    return {
-      id: createMessageId(),
-      type: 'tool',
-      content: sanitizedText || 'Tool result',
-      toolName: 'tool_result',
-      timestamp: new Date().toISOString(),
-      attachments: attachments.length > 0 ? attachments : undefined,
-    };
-  }
-
-  // Handle tool_use messages (combined tool call + result)
-  if (message.type === 'tool_use') {
-    const toolUseMsg = message as import('@accomplish/shared').OpenCodeToolUseMessage;
-    const toolName = toolUseMsg.part.tool || 'unknown';
-    const toolInput = toolUseMsg.part.state?.input;
-    const toolOutput = toolUseMsg.part.state?.output || '';
-    const status = toolUseMsg.part.state?.status;
-
-    // Only create message for completed/error status (not pending/running)
-    if (status === 'completed' || status === 'error') {
-      // Extract screenshots from tool output
-      const { cleanedText, attachments } = extractScreenshots(toolOutput);
-
-      if (status === 'completed') {
-        const assistantContent = extractAssistantFromToolOutput(toolName, cleanedText);
-        if (assistantContent) {
-          return {
-            id: createMessageId(),
-            type: 'assistant',
-            content: assistantContent,
-            timestamp: new Date().toISOString(),
-            attachments: attachments.length > 0 ? attachments : undefined,
-          };
-        }
-      }
-
-      // Sanitize output - more aggressive for errors
-      const isError = status === 'error';
-      const sanitizedText = sanitizeToolOutput(cleanedText, isError);
-
-      return {
-        id: createMessageId(),
-        type: 'tool',
-        content: sanitizedText || `Tool ${toolName} ${status}`,
-        toolName,
-        toolInput,
-        timestamp: new Date().toISOString(),
-        attachments: attachments.length > 0 ? attachments : undefined,
-      };
-    }
-    return null;
-  }
-
-  // Fallback: if a message has text content in an unexpected shape, surface it.
-  const fallbackText = (message as { part?: { text?: unknown }; text?: unknown; content?: unknown }).part?.text
-    ?? (message as { text?: unknown }).text
-    ?? (message as { content?: unknown }).content;
-  if (typeof fallbackText === 'string' && fallbackText.trim()) {
-    return {
-      id: createMessageId(),
-      type: 'assistant',
-      content: fallbackText.trim(),
-      timestamp: new Date().toISOString(),
-    };
-  }
-
-  return null;
 }

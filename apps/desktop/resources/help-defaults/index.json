@@ -1,16 +1,52 @@
 {
   "docs": [
     {
-      "id": "settings-model-api-settings",
-      "title": "Settings: Model & API settings",
-      "file": "settings/model-api-settings.md",
-      "description": "Model selection, provider API keys, and custom provider/model setup."
+      "id": "getting-started",
+      "title": "Getting Started",
+      "file": "getting-started.md",
+      "description": "Overview of Chat Mode, Build Mode, settings, subagents, and help."
+    },
+    {
+      "id": "chat-mode",
+      "title": "Chat Mode",
+      "file": "chat-mode.md",
+      "description": "How to use the main task conversation workflow."
+    },
+    {
+      "id": "build-mode",
+      "title": "Build Mode",
+      "file": "build-mode.md",
+      "description": "Workspace, runtime, editor, terminals, logs, and diff workflow."
+    },
+    {
+      "id": "slash-commands",
+      "title": "Slash Commands",
+      "file": "slash-commands.md",
+      "description": "Available slash commands, aliases, and where each command works."
+    },
+    {
+      "id": "subagents",
+      "title": "Subagents",
+      "file": "subagents.md",
+      "description": "Tracked child agents across Chat Mode, Build Mode, and the global Subagents page."
+    },
+    {
+      "id": "plugins",
+      "title": "Plugins",
+      "file": "plugins.md",
+      "description": "Manifest structure, controlled contributions, install flow, and authoring examples."
     },
     {
       "id": "settings-overview",
       "title": "Settings Overview",
       "file": "settings/overview.md",
-      "description": "Reference map for every Settings section."
+      "description": "Reference map for every Settings section and related app guides."
+    },
+    {
+      "id": "settings-model-api-settings",
+      "title": "Settings: Model & API settings",
+      "file": "settings/model-api-settings.md",
+      "description": "Model selection, provider API keys, and custom provider/model setup."
     },
     {
       "id": "settings-skills",
@@ -61,6 +97,12 @@
       "description": "Background mode and launch-at-login behavior."
     },
     {
+      "id": "settings-build-mode-safety",
+      "title": "Settings: Build Mode Safety",
+      "file": "settings/build-mode-safety.md",
+      "description": "Diff approval modes for AI-driven Build Mode changes."
+    },
+    {
       "id": "settings-workspace-defaults",
       "title": "Settings: Workspace Defaults",
       "file": "settings/workspace-defaults.md",
@@ -85,6 +127,24 @@
       "description": "Default browser profile for automation sessions."
     },
     {
+      "id": "settings-permission-policy",
+      "title": "Settings: Permission Policy",
+      "file": "settings/permission-policy.md",
+      "description": "Global and per-agent file/runtime policy, audit, executor preview, and conflict handling."
+    },
+    {
+      "id": "settings-runtime-hooks",
+      "title": "Settings: Runtime Hooks",
+      "file": "settings/runtime-hooks.md",
+      "description": "JSON-backed runtime hooks registry, diagnostics, and editing workflow."
+    },
+    {
+      "id": "settings-plugins",
+      "title": "Settings: Plugins",
+      "file": "settings/plugins.md",
+      "description": "Plugin discovery, enable/disable, install/uninstall, diagnostics, and previews."
+    },
+    {
       "id": "settings-developer",
       "title": "Settings: Developer",
       "file": "settings/developer.md",
@@ -101,12 +161,6 @@
       "title": "Settings: About",
       "file": "settings/about.md",
       "description": "Version info and support links."
-    },
-    {
-      "id": "getting-started",
-      "title": "Getting Started",
-      "file": "getting-started.md",
-      "description": "Overview of the in-app Help system."
     },
     {
       "id": "editing-help",

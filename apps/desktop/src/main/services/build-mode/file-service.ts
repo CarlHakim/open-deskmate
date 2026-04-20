@@ -20,7 +20,7 @@ const DEFAULT_AGENT_WORKSPACES_ROOT = process.platform === 'win32'
   ? 'C:/agent-workspaces'
   : path.join(os.homedir(), 'agent-workspaces');
 
-const SKIP_TREE_DIRS = new Set([
+const SKIP_BASELINE_DIRS = new Set([
   '.git',
   'node_modules',
   '.next',
@@ -79,7 +79,7 @@ export async function listWorkspaceTree(
 
   const depth = Math.max(1, Math.min(8, options?.depth ?? 4));
   const maxEntries = Math.max(100, Math.min(10_000, options?.maxEntries ?? 2_000));
-  const includeHidden = options?.includeHidden === true;
+  const includeHidden = options?.includeHidden !== false;
   const limiter = { count: 0, maxEntries };
 
   const node = await walkDirectory(root, absolute, depth, includeHidden, limiter);
@@ -670,7 +670,6 @@ async function walkDirectory(
       if (!includeHidden && entry.name.startsWith('.')) {
         return entry.name === '.env.example';
       }
-      if (entry.isDirectory() && SKIP_TREE_DIRS.has(entry.name)) return false;
       return true;
     })
     .sort((a, b) => {
@@ -680,21 +679,27 @@ async function walkDirectory(
       return a.name.localeCompare(b.name);
     });
 
+  const directoryEntries: Array<{ entry: fs.Dirent; absoluteEntry: string; rel: string }> = [];
+
   for (const entry of filtered) {
     if (limiter.count >= limiter.maxEntries) break;
     const absoluteEntry = path.join(absoluteDir, entry.name);
     const rel = normalizePath(path.relative(root, absoluteEntry));
-    const stat = await fs.promises.stat(absoluteEntry);
-
-    limiter.count += 1;
 
     if (entry.isDirectory()) {
-      const child = await walkDirectory(root, absoluteEntry, depth - 1, includeHidden, limiter);
-      child.relativePath = rel;
-      directoryNode.children?.push(child);
+      limiter.count += 1;
+      directoryNode.children?.push({
+        name: entry.name,
+        relativePath: rel,
+        type: 'directory',
+        children: [],
+      });
+      directoryEntries.push({ entry, absoluteEntry, rel });
       continue;
     }
 
+    const stat = await fs.promises.stat(absoluteEntry);
+    limiter.count += 1;
     directoryNode.children?.push({
       name: entry.name,
       relativePath: rel,
@@ -702,6 +707,20 @@ async function walkDirectory(
       size: stat.size,
       modifiedAt: stat.mtime.toISOString(),
     });
+  }
+
+  for (const directoryEntry of directoryEntries) {
+    if (limiter.count >= limiter.maxEntries) break;
+    const child = await walkDirectory(root, directoryEntry.absoluteEntry, depth - 1, includeHidden, limiter);
+    child.relativePath = directoryEntry.rel;
+    const existingIndex = directoryNode.children?.findIndex((node) => (
+      node.type === 'directory' && node.relativePath === directoryEntry.rel
+    )) ?? -1;
+    if (existingIndex >= 0 && directoryNode.children) {
+      directoryNode.children[existingIndex] = child;
+    } else {
+      directoryNode.children?.push(child);
+    }
   }
 
   return directoryNode;
@@ -890,7 +909,7 @@ async function collectTextFileSnapshot(
 
       const absolute = path.join(currentDir, child.name);
       if (child.isDirectory()) {
-        if (SKIP_TREE_DIRS.has(child.name)) continue;
+        if (SKIP_BASELINE_DIRS.has(child.name)) continue;
         queue.push(absolute);
         continue;
       }

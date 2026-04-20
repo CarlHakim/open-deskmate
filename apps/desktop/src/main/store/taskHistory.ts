@@ -22,7 +22,11 @@ export interface StoredTask {
   memoryFlushAt?: string;
   memoryFlushCount?: number;
   sessionMemorySavedAt?: string;
+  workingDirectory?: string;
+  attachedFiles?: string[];
   privacyMode?: 'normal' | 'incognito';
+  hiddenFromHistory?: boolean;
+  parentTaskId?: string;
 }
 
 interface TaskHistorySchema {
@@ -178,7 +182,7 @@ export function reconcileStaleTasksOnStartup(): { interrupted: number; cancelled
  * Get all tasks from history
  */
 export function getTasks(agentId?: string): StoredTask[] {
-  const tasks = mergePersistentAndIncognito(getCurrentTasks());
+  const tasks = mergePersistentAndIncognito(getCurrentTasks()).filter((task) => !task.hiddenFromHistory);
   if (!agentId) {
     return tasks;
   }
@@ -225,10 +229,14 @@ export function saveTask(task: Task): void {
       sessionId: task.sessionId,
       sessionFilePath: (task as Task & { sessionFilePath?: string }).sessionFilePath,
       sessionMemorySavedAt: (task as Task & { sessionMemorySavedAt?: string }).sessionMemorySavedAt,
+      workingDirectory: task.workingDirectory,
+      attachedFiles: task.attachedFiles,
       createdAt: task.createdAt,
       startedAt: task.startedAt,
       completedAt: task.completedAt,
       privacyMode,
+      hiddenFromHistory: task.hiddenFromHistory,
+      parentTaskId: task.parentTaskId,
     };
     const previous = incognitoTasks.get(task.id)?.task;
     if (previous) {
@@ -263,7 +271,11 @@ export function saveTask(task: Task): void {
     sessionId: task.sessionId,
     sessionFilePath: (task as Task & { sessionFilePath?: string }).sessionFilePath,
     sessionMemorySavedAt: (task as Task & { sessionMemorySavedAt?: string }).sessionMemorySavedAt,
+    workingDirectory: task.workingDirectory,
+    attachedFiles: task.attachedFiles,
     privacyMode,
+    hiddenFromHistory: task.hiddenFromHistory,
+    parentTaskId: task.parentTaskId,
     createdAt: task.createdAt,
     startedAt: task.startedAt,
     completedAt: task.completedAt,

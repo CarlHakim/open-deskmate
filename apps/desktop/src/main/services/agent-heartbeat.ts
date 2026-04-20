@@ -1,8 +1,7 @@
 import type { AgentProfile } from '@accomplish/shared';
-import { getTaskManager } from '../opencode/task-manager';
 import { getTask } from '../store/taskHistory';
 import { listAgents } from '../store/agents';
-import { dispatchTask } from './task-dispatch';
+import { getActiveAgentEngineTaskIds, startAgentEngineTask } from '../runtime/agent-engine';
 
 const HEARTBEAT_TICK_MS = 5_000;
 const HEARTBEAT_DEFAULT_INTERVAL_SECONDS = 5 * 60;
@@ -304,8 +303,7 @@ function buildScheduleKey(agent: AgentProfile): string {
 }
 
 function isAgentBusy(agentId: string): boolean {
-  const taskManager = getTaskManager();
-  const activeTaskIds = taskManager.getActiveTaskIds();
+  const activeTaskIds = getActiveAgentEngineTaskIds();
   for (const taskId of activeTaskIds) {
     const task = getTask(taskId);
     if (task?.agentId === agentId) {
@@ -316,7 +314,7 @@ function isAgentBusy(agentId: string): boolean {
 }
 
 async function runAgentHeartbeat(agent: AgentProfile): Promise<void> {
-  const { completion } = await dispatchTask(
+  const { completion } = await startAgentEngineTask(
     {
       prompt: resolveHeartbeatPrompt(agent),
       agentId: agent.id,

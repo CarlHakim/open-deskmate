@@ -2,7 +2,7 @@ import { Bot, type Context, type BotError } from 'grammy';
 import type { TelegramConnectorConfig, TelegramConnectorStatus } from '@accomplish/shared';
 import { addTelegramDmAllowlistEntry, getTelegramConfig } from '../store/telegramConfig';
 import { getTelegramToken } from '../store/secureStorage';
-import { dispatchTask } from './task-dispatch';
+import { startAgentEngineTask } from '../runtime/agent-engine';
 import { getTask } from '../store/taskHistory';
 import { resolveActiveAgentId } from './agent-context';
 import { approveTelegramPairing, getOrCreateTelegramPairing } from '../store/telegramPairing';
@@ -303,7 +303,7 @@ async function handleTelegramMessage(
 
   try {
     const prompt = formatPrompt(ctx, content);
-    const { completion } = await dispatchTask(
+    const { completion } = await startAgentEngineTask(
       {
         prompt,
         taskId,

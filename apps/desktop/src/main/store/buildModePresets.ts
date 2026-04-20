@@ -1,5 +1,6 @@
 import Store from 'electron-store';
 import type {
+  BuildStartEntry,
   BuildEnvProfile,
   BuildProjectPreset,
   BuildProjectPresetInput,
@@ -74,6 +75,43 @@ function normalizeEnvKey(input: string): string {
   return key;
 }
 
+function normalizeStartEntries(value: unknown): BuildStartEntry[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const entries: BuildStartEntry[] = [];
+  for (const rawEntry of value) {
+    if (!rawEntry || typeof rawEntry !== 'object') continue;
+    const entry = rawEntry as Record<string, unknown>;
+    const command = normalizeText(entry.command);
+    if (!command) continue;
+    const workspaceRelativePath = normalizeText(entry.workspaceRelativePath);
+    const role = entry.role === 'worker'
+      ? ('worker' as const)
+      : entry.role === 'preview'
+        ? ('preview' as const)
+        : undefined;
+    entries.push({
+      command,
+      workspaceRelativePath: workspaceRelativePath || undefined,
+      role,
+    });
+  }
+
+  if (entries.length === 0) return undefined;
+
+  let previewAssigned = false;
+  return entries.map((entry, index) => {
+    if (entry.role === 'preview') {
+      previewAssigned = true;
+      return entry;
+    }
+    if (!previewAssigned && index === 0) {
+      previewAssigned = true;
+      return { ...entry, role: 'preview' };
+    }
+    return { ...entry, role: entry.role || 'worker' };
+  });
+}
+
 function resolveUniquePresetId(agentId: string, baseId: string, existing: BuildProjectPreset[]): string {
   const normalizedBase = normalizeId(baseId, 'preset');
   const ids = new Set(existing.filter((entry) => entry.agentId === agentId).map((entry) => entry.id));
@@ -96,6 +134,10 @@ function listAllPresets(): BuildProjectPreset[] {
       const agentId = normalizeId(entry.agentId || 'main', 'main');
       const commands = {
         startCommand: normalizeText(entry.commands?.startCommand) || undefined,
+        startEntries: normalizeStartEntries(entry.commands?.startEntries)
+          || (normalizeText(entry.commands?.startCommand)
+            ? [{ command: normalizeText(entry.commands?.startCommand), role: 'preview' as const }]
+            : undefined),
         buildCommand: normalizeText(entry.commands?.buildCommand) || undefined,
         runCommand: normalizeText(entry.commands?.runCommand) || undefined,
       };
@@ -119,6 +161,7 @@ function listAllPresets(): BuildProjectPreset[] {
         || next.name !== entry.name
         || next.workspaceRelativePath !== entry.workspaceRelativePath
         || next.commands.startCommand !== entry.commands?.startCommand
+        || JSON.stringify(next.commands.startEntries || []) !== JSON.stringify(entry.commands?.startEntries || [])
         || next.commands.buildCommand !== entry.commands?.buildCommand
         || next.commands.runCommand !== entry.commands?.runCommand
         || JSON.stringify(next.envProfiles) !== JSON.stringify(entry.envProfiles || [])
@@ -164,6 +207,10 @@ export function upsertBuildModePreset(input: BuildProjectPresetInput): BuildProj
 
   const commands = {
     startCommand: normalizeText(input.commands?.startCommand) || undefined,
+    startEntries: normalizeStartEntries(input.commands?.startEntries)
+      || (normalizeText(input.commands?.startCommand)
+        ? [{ command: normalizeText(input.commands?.startCommand), role: 'preview' as const }]
+        : undefined),
     buildCommand: normalizeText(input.commands?.buildCommand) || undefined,
     runCommand: normalizeText(input.commands?.runCommand) || undefined,
   };

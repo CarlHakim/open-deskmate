@@ -10,6 +10,7 @@ import type {
   BuildRuntimeCommandResult,
   BuildRuntimeState,
   BuildSessionSnapshot,
+  BuildStartEntry,
   BuildStartRequest,
 } from '@accomplish/shared';
 import { detectProjectRuntime, parseRuntimeDiagnosticLine, type RuntimeStructuredDiagnostic } from './runtime-adapters';
@@ -39,7 +40,17 @@ interface BuildSession {
   detection: BuildSessionSnapshot['detection'];
   runtime: BuildRuntimeState;
   process: ChildProcess | null;
+  processes: Array<{
+    child: ChildProcess;
+    command: string;
+    workspaceRoot: string;
+    workspaceRelativePath: string;
+    role: 'preview' | 'worker';
+    label: string;
+    isPrimary: boolean;
+  }>;
   killRequested: boolean;
+  runToken: number;
   stdoutBuffer: string;
   stderrBuffer: string;
   logs: BuildLogEntry[];
@@ -60,23 +71,88 @@ class DevProcessManager {
     return this.toSnapshot(session);
   }
 
+  async getActiveSnapshot(agentId: string): Promise<BuildSessionSnapshot> {
+    const session = await this.getOrCreateSession(agentId);
+    return this.toSnapshot(session);
+  }
+
+  private resolveStartEntries(
+    session: BuildSession,
+    mode: 'dev' | 'run',
+    commandOverride?: string,
+    startEntries?: BuildStartEntry[]
+  ): BuildStartEntry[] {
+    const normalizedEntries = Array.isArray(startEntries)
+      ? startEntries
+        .map((entry) => ({
+          command: typeof entry?.command === 'string' ? entry.command.trim() : '',
+          workspaceRelativePath: typeof entry?.workspaceRelativePath === 'string' ? entry.workspaceRelativePath.trim() : '',
+          role: entry?.role === 'worker'
+            ? ('worker' as const)
+            : entry?.role === 'preview'
+              ? ('preview' as const)
+              : undefined,
+        }))
+        .filter((entry) => entry.command.length > 0)
+      : [];
+
+    if (normalizedEntries.length > 0) {
+      let previewAssigned = false;
+      return normalizedEntries.map((entry, index) => {
+        if (entry.role === 'preview') {
+          previewAssigned = true;
+          return entry;
+        }
+        if (!previewAssigned && index === 0) {
+          previewAssigned = true;
+          return { ...entry, role: 'preview' as const };
+        }
+        return { ...entry, role: 'worker' as const };
+      });
+    }
+
+    const command = this.resolveStartCommand(session, mode, commandOverride);
+    if (!command) return [];
+    return [{
+      command,
+      role: 'preview',
+    }];
+  }
+
+  private resolveStartEntryWorkspaceRelativePath(session: BuildSession, entry: BuildStartEntry): string {
+    const base = session.workspaceRelativePath || '.';
+    const extra = typeof entry.workspaceRelativePath === 'string' ? entry.workspaceRelativePath.trim() : '';
+    if (!extra || extra === '.') return base;
+    const combined = path.posix.normalize(path.posix.join(base.replace(/\\/g, '/'), extra.replace(/\\/g, '/')));
+    return combined === '' ? '.' : combined;
+  }
+
+  private hasRunningProcesses(session: BuildSession): boolean {
+    return session.processes.some((entry) => this.isAlive(entry.child));
+  }
+
+  private activeProcessEntries(session: BuildSession) {
+    return session.processes.filter((entry) => this.isAlive(entry.child));
+  }
+
   async startDevelopmentProcess(request: BuildStartRequest): Promise<BuildSessionSnapshot> {
     const session = await this.ensureSession(request.agentId, request.workspaceRelativePath);
     const mode = request.mode === 'run' ? 'run' : 'dev';
 
-    if (session.process && this.isAlive(session.process) && !request.forceRestart) {
+    if (this.hasRunningProcesses(session) && !request.forceRestart) {
       this.appendLog(session, 'system', 'Process already running; duplicate launch prevented.');
       return this.toSnapshot(session);
     }
 
-    if (session.process && this.isAlive(session.process) && request.forceRestart) {
+    if (this.hasRunningProcesses(session) && request.forceRestart) {
       await this.stopProcess(request.agentId);
     }
 
-    const command = this.resolveStartCommand(session, mode, request.commandOverride);
-    if (!command) {
+    const startEntries = this.resolveStartEntries(session, mode, request.commandOverride, request.startEntries);
+    if (startEntries.length === 0) {
       throw new Error('No runnable start command found. Add dev/start scripts in package.json or provide command override.');
     }
+    const primaryEntry = startEntries.find((entry) => entry.role === 'preview') || startEntries[0];
 
     const shouldAllocatePort = session.detection.requiresPort;
     const portHint = Number.isFinite(request.portHint) ? Math.max(1_024, Math.min(65_535, Math.floor(request.portHint as number))) : undefined;
@@ -84,23 +160,20 @@ class DevProcessManager {
       ? (portHint || await findAvailablePort(session.detection.defaultPort ?? 3000))
       : undefined;
 
-    const env = buildRuntimeEnv({
-      mode,
-      envOverrides: request.envOverrides,
-      port,
-    });
-
     this.clearRestartTimer(session);
     this.clearHealthTimer(session);
     session.structuredDiagnostics = [];
     session.structuredDiagnosticKeys.clear();
 
     session.killRequested = false;
+    session.runToken += 1;
+    const runToken = session.runToken;
     session.runtime = {
       ...session.runtime,
       status: 'starting',
       mode,
-      activeCommand: command,
+      activeCommand: startEntries.map((entry) => entry.command).join(' | '),
+      activeStartEntries: startEntries.map((entry) => ({ ...entry })),
       port,
       previewUrl: port ? `http://127.0.0.1:${port}` : undefined,
       startedAt: new Date().toISOString(),
@@ -113,85 +186,138 @@ class DevProcessManager {
       autoRestart: request.autoRestart ?? session.runtime.autoRestart,
     };
 
-    this.appendLog(session, 'system', `Starting ${mode} process: ${command}`);
+    this.appendLog(session, 'system', `Starting ${mode} process${startEntries.length > 1 ? ' group' : ''}: ${startEntries.map((entry) => entry.command).join(' | ')}`);
     if (port) {
       this.appendLog(session, 'system', `Allocated port ${port} for runtime.`);
     }
+    const managedProcesses = startEntries.map((entry, index) => {
+      const workspaceRelativePath = this.resolveStartEntryWorkspaceRelativePath(session, entry);
+      const workspaceRoot = resolvePathInWorkspace(session.agentId, workspaceRelativePath);
+      const isPrimary = entry === primaryEntry;
+      const child = spawn(entry.command, {
+        cwd: workspaceRoot,
+        env: buildRuntimeEnv({
+          mode,
+          envOverrides: request.envOverrides,
+          port: isPrimary ? port : undefined,
+        }),
+        shell: true,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const label = entry.role === 'preview'
+        ? 'preview'
+        : (startEntries.length > 1 ? `worker ${index}` : 'runtime');
 
-    const child = spawn(command, {
-      cwd: session.workspaceRoot,
-      env,
-      shell: true,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      this.registerRuntimePid(child.pid);
+
+      child.stdout?.on('data', (chunk: Buffer | string) => {
+        if (runToken !== session.runToken) return;
+        this.handleProcessOutput(session, 'stdout', chunk.toString(), startEntries.length > 1 ? label : undefined);
+      });
+
+      child.stderr?.on('data', (chunk: Buffer | string) => {
+        if (runToken !== session.runToken) return;
+        this.handleProcessOutput(session, 'stderr', chunk.toString(), startEntries.length > 1 ? label : undefined);
+      });
+
+      child.on('error', (error) => {
+        if (runToken !== session.runToken) return;
+        session.runtime.status = 'error';
+        session.runtime.lastError = error.message;
+        session.runtime.suggestedRepairPrompt = this.buildRepairPrompt(session);
+        session.runtime.autoRepairRequestedAt = new Date().toISOString();
+        this.appendLog(session, 'system', `${label} spawn error: ${error.message}`);
+      });
+
+      child.on('exit', (exitCode, signal) => {
+        this.unregisterRuntimePid(child.pid);
+        if (runToken !== session.runToken) return;
+        session.processes = session.processes.filter((item) => item.child.pid !== child.pid);
+        if (isPrimary) {
+          session.process = null;
+        }
+        const aliveProcesses = this.activeProcessEntries(session);
+        session.runtime.lastExitCode = exitCode;
+        session.runtime.lastExitSignal = signal;
+        session.runtime.stoppedAt = new Date().toISOString();
+
+        if (session.killRequested) {
+          if (aliveProcesses.length === 0) {
+            this.clearHealthTimer(session);
+            session.runtime.status = 'stopped';
+            session.runtime.healthy = undefined;
+            this.appendLog(session, 'system', 'Process stopped.');
+          }
+          return;
+        }
+
+        if (exitCode === 0) {
+          if (aliveProcesses.length === 0) {
+            this.clearHealthTimer(session);
+            session.runtime.status = 'stopped';
+            session.runtime.healthy = undefined;
+            this.appendLog(session, 'system', 'Process exited normally.');
+          } else {
+            this.appendLog(session, 'system', `${label} exited normally.`);
+          }
+          return;
+        }
+
+        const failingMessage = `${label} exited with code ${exitCode ?? 'unknown'}${signal ? ` (${signal})` : ''}.`;
+        session.runtime.status = 'error';
+        session.runtime.crashCount += 1;
+        session.runtime.healthy = false;
+        session.runtime.lastError = failingMessage;
+        session.runtime.suggestedRepairPrompt = this.buildRepairPrompt(session);
+        session.runtime.autoRepairRequestedAt = new Date().toISOString();
+        this.appendLog(session, 'system', failingMessage);
+
+        const processesToStop = [...aliveProcesses];
+        session.runToken += 1;
+        session.killRequested = true;
+        session.process = null;
+        session.processes = [];
+        this.clearHealthTimer(session);
+        for (const processEntry of processesToStop) {
+          const pid = processEntry.child.pid;
+          if (typeof pid === 'number') {
+            void killProcessTree(pid).catch(() => {});
+            this.unregisterRuntimePid(pid);
+          }
+        }
+
+        if (session.runtime.autoRestart && session.runtime.restartCount < MAX_AUTO_RESTARTS) {
+          session.runtime.restartCount += 1;
+          this.appendLog(session, 'system', `Auto-restart scheduled (${session.runtime.restartCount}/${MAX_AUTO_RESTARTS})...`);
+          session.restartTimer = setTimeout(() => {
+            void this.startDevelopmentProcess({
+              agentId: session.agentId,
+              workspaceRelativePath: session.workspaceRelativePath,
+              mode: session.runtime.mode,
+              autoRestart: session.runtime.autoRestart,
+              startEntries: session.runtime.activeStartEntries,
+              envOverrides: request.envOverrides,
+            }).catch((error) => {
+              this.appendLog(session, 'system', `Auto-restart failed: ${error instanceof Error ? error.message : String(error)}`);
+            });
+          }, 1500);
+        }
+      });
+
+      return {
+        child,
+        command: entry.command,
+        workspaceRoot,
+        workspaceRelativePath,
+        role: entry.role === 'worker' ? ('worker' as const) : ('preview' as const),
+        label,
+        isPrimary,
+      };
     });
 
-    session.process = child;
-    this.registerRuntimePid(child.pid);
-
-    child.stdout?.on('data', (chunk: Buffer | string) => {
-      this.handleProcessOutput(session, 'stdout', chunk.toString());
-    });
-
-    child.stderr?.on('data', (chunk: Buffer | string) => {
-      this.handleProcessOutput(session, 'stderr', chunk.toString());
-    });
-
-    child.on('error', (error) => {
-      session.runtime.status = 'error';
-      session.runtime.lastError = error.message;
-      session.runtime.suggestedRepairPrompt = this.buildRepairPrompt(session);
-      session.runtime.autoRepairRequestedAt = new Date().toISOString();
-      this.appendLog(session, 'system', `Process spawn error: ${error.message}`);
-    });
-
-    child.on('exit', (exitCode, signal) => {
-      this.clearHealthTimer(session);
-      this.unregisterRuntimePid(child.pid);
-      session.process = null;
-      session.runtime.lastExitCode = exitCode;
-      session.runtime.lastExitSignal = signal;
-      session.runtime.stoppedAt = new Date().toISOString();
-
-      if (session.killRequested) {
-        session.runtime.status = 'stopped';
-        session.runtime.healthy = undefined;
-        this.appendLog(session, 'system', 'Process stopped.');
-        return;
-      }
-
-      if (exitCode === 0) {
-        session.runtime.status = 'stopped';
-        session.runtime.healthy = undefined;
-        this.appendLog(session, 'system', 'Process exited normally.');
-        return;
-      }
-
-      session.runtime.status = 'error';
-      session.runtime.crashCount += 1;
-      session.runtime.healthy = false;
-      session.runtime.lastError = `Process exited with code ${exitCode ?? 'unknown'}${signal ? ` (${signal})` : ''}.`;
-      session.runtime.suggestedRepairPrompt = this.buildRepairPrompt(session);
-      session.runtime.autoRepairRequestedAt = new Date().toISOString();
-      this.appendLog(session, 'system', session.runtime.lastError);
-
-      if (session.runtime.autoRestart && session.runtime.restartCount < MAX_AUTO_RESTARTS) {
-        session.runtime.restartCount += 1;
-        this.appendLog(session, 'system', `Auto-restart scheduled (${session.runtime.restartCount}/${MAX_AUTO_RESTARTS})...`);
-        session.restartTimer = setTimeout(() => {
-          void this.startDevelopmentProcess({
-            agentId: session.agentId,
-            workspaceRelativePath: session.workspaceRelativePath,
-            mode: session.runtime.mode,
-            autoRestart: session.runtime.autoRestart,
-            commandOverride: session.runtime.activeCommand,
-            envOverrides: request.envOverrides,
-          }).catch((error) => {
-            this.appendLog(session, 'system', `Auto-restart failed: ${error instanceof Error ? error.message : String(error)}`);
-          });
-        }, 1500);
-      }
-    });
+    session.processes = managedProcesses;
+    session.process = managedProcesses.find((entry) => entry.isPrimary)?.child || managedProcesses[0]?.child || null;
 
     if (session.runtime.port && session.detection.requiresPort) {
       this.startHealthPolling(session);
@@ -203,10 +329,11 @@ class DevProcessManager {
   async stopProcess(agentId: string): Promise<BuildSessionSnapshot> {
     const session = await this.getOrCreateSession(agentId);
 
-    if (!session.process || !this.isAlive(session.process)) {
+    if (!this.hasRunningProcesses(session)) {
       this.clearRestartTimer(session);
       this.clearHealthTimer(session);
       session.process = null;
+      session.processes = [];
       session.runtime.status = 'stopped';
       session.runtime.stoppedAt = new Date().toISOString();
       session.runtime.healthy = undefined;
@@ -214,16 +341,21 @@ class DevProcessManager {
     }
 
     session.killRequested = true;
+    session.runToken += 1;
     this.clearRestartTimer(session);
     this.clearHealthTimer(session);
 
-    const pid = session.process.pid;
-    if (typeof pid === 'number') {
-      await killProcessTree(pid);
-      this.unregisterRuntimePid(pid);
+    const processes = [...session.processes];
+    for (const processEntry of processes) {
+      const pid = processEntry.child.pid;
+      if (typeof pid === 'number') {
+        await killProcessTree(pid);
+        this.unregisterRuntimePid(pid);
+      }
     }
 
     session.process = null;
+    session.processes = [];
     session.runtime.status = 'stopped';
     session.runtime.stoppedAt = new Date().toISOString();
     session.runtime.healthy = undefined;
@@ -240,7 +372,7 @@ class DevProcessManager {
       workspaceRelativePath: session.workspaceRelativePath,
       mode: session.runtime.mode,
       autoRestart: session.runtime.autoRestart,
-      commandOverride: session.runtime.activeCommand,
+      startEntries: session.runtime.activeStartEntries,
       envOverrides: undefined,
       forceRestart: true,
     });
@@ -408,7 +540,9 @@ class DevProcessManager {
           autoRestart: true,
         },
         process: null,
+        processes: [],
         killRequested: false,
+        runToken: 0,
         stdoutBuffer: '',
         stderrBuffer: '',
         logs: [],
@@ -424,7 +558,7 @@ class DevProcessManager {
 
     const desiredRoot = resolvePathInWorkspace(key, normalizedRelativePath);
     if (session.workspaceRoot !== desiredRoot) {
-      if (session.process && this.isAlive(session.process)) {
+      if (this.hasRunningProcesses(session)) {
         throw new Error('Cannot switch workspace path while process is running. Stop runtime first.');
       }
 
@@ -509,7 +643,7 @@ class DevProcessManager {
     }
   }
 
-  private handleProcessOutput(session: BuildSession, stream: 'stdout' | 'stderr', text: string): void {
+  private handleProcessOutput(session: BuildSession, stream: 'stdout' | 'stderr', text: string, label?: string): void {
     const key = stream === 'stdout' ? 'stdoutBuffer' : 'stderrBuffer';
     const combined = `${session[key]}${text}`;
     const parts = combined.split(/\r?\n/);
@@ -518,7 +652,8 @@ class DevProcessManager {
     for (const rawLine of parts) {
       const line = rawLine.trimEnd();
       if (!line) continue;
-      this.appendLog(session, stream, line);
+      const loggedLine = label ? `[${label}] ${line}` : line;
+      this.appendLog(session, stream, loggedLine);
       this.inspectLogForRuntimeSignals(session, line);
       this.captureStructuredDiagnostic(session, line);
     }

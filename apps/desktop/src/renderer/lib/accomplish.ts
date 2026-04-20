@@ -24,6 +24,14 @@ import type {
   ProviderConfig,
   AgentConfig,
   AgentProfile,
+  OpenCodePermissionPreview,
+  PermissionPolicyAuditEntry,
+  PermissionPolicySettings,
+  PluginCommandContribution,
+  PluginDiagnosticsState,
+  PluginDiagnosticsRecord,
+  PluginRecord,
+  PluginRegistryState,
   AppConnectorExtensionConfig,
   AppConnectorExtensionConfigInput,
   AppConnectorExtensionState,
@@ -56,6 +64,9 @@ import type {
   BuildWorkspaceFingerprint,
   BuildWorkspaceDiff,
   BuildWorkspaceFileContent,
+  SubagentRunDetail,
+  SubagentRunRecord,
+  SubagentRunTreeNode,
   DiscordConnectorConfig,
   DiscordConnectorStatus,
   DiscordPairingRequest,
@@ -105,6 +116,8 @@ import type {
   UserSkillWriteFileRequest,
   UserSkillDeleteRequest,
   UserSkillDeleteResponse,
+  RuntimeHooksDiagnosticsState,
+  RuntimeHooksSettingsState,
   HelpDocPageResponse,
   HelpDocsListResponse,
   HelpDocsSearchResponse,
@@ -225,6 +238,23 @@ interface AccomplishAPI {
     path: string;
     date?: string;
   }>;
+  getRuntimeHooks(): Promise<RuntimeHooksSettingsState>;
+  saveRuntimeHooks(raw: string): Promise<{ path: string; hookCount: number }>;
+  getRuntimeHookDiagnostics(): Promise<RuntimeHooksDiagnosticsState>;
+  clearRuntimeHookDiagnostics(): Promise<{ ok: boolean }>;
+  getPermissionPolicySettings(): Promise<PermissionPolicySettings>;
+  setPermissionPolicySettings(settings: PermissionPolicySettings): Promise<PermissionPolicySettings>;
+  getPermissionPolicyAudit(): Promise<{ entries: PermissionPolicyAuditEntry[] }>;
+  getOpenCodePermissionPreview(agentId?: string): Promise<OpenCodePermissionPreview>;
+  clearPermissionPolicyAudit(): Promise<{ ok: boolean }>;
+  listPlugins(): Promise<PluginRegistryState>;
+  getPluginDiagnostics(): Promise<PluginDiagnosticsState>;
+  clearPluginDiagnosticsHistory(): Promise<{ ok: true }>;
+  listPluginCommands(): Promise<{ commands: PluginCommandContribution[] }>;
+  setPluginEnabled(pluginId: string, enabled: boolean): Promise<PluginRecord>;
+  installPluginFromDirectory(sourceDir: string): Promise<PluginRecord>;
+  uninstallPlugin(pluginId: string): Promise<{ ok: true; pluginId: string }>;
+  openManagedPluginsRoot(): Promise<{ ok: boolean; path: string; error?: string }>;
 
   // Agents
   listAgents(): Promise<{ agents: AgentProfile[]; defaultAgentId: string; activeAgentId: string }>;
@@ -453,6 +483,14 @@ interface AccomplishAPI {
   archiveBuildTaskHistorySession(payload: BuildTaskSessionArchiveInput): Promise<BuildTaskSession>;
   setBuildTaskHistorySessionPinned(payload: BuildTaskSessionPinInput): Promise<BuildTaskSession>;
   deleteBuildTaskHistorySession(payload: BuildTaskSessionDeleteInput): Promise<{ ok: boolean }>;
+  listSubagents(payload: { parentTaskId: string }): Promise<{ runs: SubagentRunDetail[]; tree: SubagentRunTreeNode[]; activeCount: number }>;
+  listAllSubagents(payload?: { includeArchived?: boolean }): Promise<{ runs: SubagentRunDetail[] }>;
+  getSubagent(payload: { runId: string }): Promise<SubagentRunDetail | null>;
+  waitSubagent(payload: { runId: string; timeoutMs?: number; pollIntervalMs?: number }): Promise<{ completed: boolean; waitedMs: number; run: SubagentRunDetail | null }>;
+  sendSubagent(payload: { runId: string; prompt: string; modelProvider?: string; modelId?: string; modelBaseUrl?: string }): Promise<{ ok: boolean; runId: string; childTaskId: string }>;
+  archiveSubagent(payload: { runId: string; archived?: boolean }): Promise<SubagentRunDetail>;
+  closeSubagent(payload: { runId: string }): Promise<SubagentRunDetail>;
+  stopSubagent(payload: { runId: string }): Promise<{ ok: boolean; runId: string }>;
 
   // API Key management
   hasApiKey(): Promise<boolean>;

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useTaskStore } from '@/stores/taskStore';
@@ -9,18 +9,26 @@ import { useAgentStore } from '@/stores/agentStore';
 import { getAccomplish } from '@/lib/accomplish';
 import { analytics } from '@/lib/analytics';
 import { staggerContainer } from '@/lib/animations';
-import type { Task } from '@accomplish/shared';
+import { cn } from '@/lib/utils';
+import type { ProviderConfig, SelectedModel, Task } from '@accomplish/shared';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import ConversationListItem from './ConversationListItem';
 import FolderItem from './FolderItem';
 import CreateFolderDialog from './CreateFolderDialog';
 import SettingsDialog from './SettingsDialog';
-import { Settings, MessageSquarePlus, Search, FolderPlus, MoreHorizontal, GripVertical, ChevronRight, ChevronDown, User, Check, CircleHelp, Sun, Moon, Monitor } from 'lucide-react';
+import { Settings, MessageSquarePlus, Search, FolderPlus, MoreHorizontal, GripVertical, ChevronRight, ChevronDown, User, Check, CircleHelp, Sun, Moon, Monitor, GitBranch } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import {
@@ -40,24 +48,55 @@ import { useTheme } from '@/contexts/ThemeContext';
 import logoImage from '/assets/open-deskmate-logo.png';
 import appFavicon from '../../../../resources/icon.png';
 
+const PROVIDER_LABELS: Record<string, string> = {
+  anthropic: 'Anthropic',
+  openai: 'OpenAI',
+  google: 'Google AI',
+  xai: 'xAI',
+  ollama: 'Ollama',
+};
+
+function formatSelectedModelLabel(model: SelectedModel | null | undefined): string {
+  if (!model) return 'Global default';
+  const providerId = typeof model.provider === 'string' ? model.provider.trim() : '';
+  const modelFullId = typeof model.model === 'string' ? model.model.trim() : '';
+  if (!providerId && !modelFullId) return 'Global default';
+
+  let modelName = modelFullId;
+  const providerPrefix = providerId ? `${providerId}/`.toLowerCase() : '';
+  if (providerPrefix && modelFullId.toLowerCase().startsWith(providerPrefix)) {
+    modelName = modelFullId.slice(providerPrefix.length);
+  }
+
+  const providerLabel = PROVIDER_LABELS[providerId.toLowerCase()] || providerId;
+  return providerLabel ? `${providerLabel}: ${modelName}` : modelName;
+}
+
 export default function Sidebar() {
   const navigate = useNavigate();
   const location = useLocation();
   const [showSettings, setShowSettings] = useState(false);
+  const [pendingSettingsSectionQuery, setPendingSettingsSectionQuery] = useState('');
   const [showCreateFolder, setShowCreateFolder] = useState(false);
   const [showAllProjects, setShowAllProjects] = useState(false);
   const [showReorderDialog, setShowReorderDialog] = useState(false);
   const [reorderList, setReorderList] = useState<string[]>([]);
   const [reorderDragId, setReorderDragId] = useState<string | null>(null);
   const [reorderTargetId, setReorderTargetId] = useState<string | null>(null);
+  const [agentMenuOpen, setAgentMenuOpen] = useState(false);
+  const [providerCatalog, setProviderCatalog] = useState<ProviderConfig[]>([]);
+  const [globalSelectedModel, setGlobalSelectedModel] = useState<SelectedModel | null>(null);
+  const [apiKeyStatus, setApiKeyStatus] = useState<Record<string, { exists: boolean; prefix?: string }>>({});
+  const [agentModelUpdating, setAgentModelUpdating] = useState(false);
 
   const MAX_VISIBLE_PROJECTS = 5;
   const { tasks, loadTasks, updateTaskStatus, addTaskUpdate, insertTask, openLauncher, setTaskFolder } = useTaskStore();
   const { folders, loadFolders, toggleFolderExpanded, reorderFolders } = useFolderStore();
-  const { agents, activeAgentId, defaultAgentId, loadAgents, setActiveAgent } = useAgentStore();
+  const { agents, activeAgentId, defaultAgentId, loadAgents, setActiveAgent, upsertAgent } = useAgentStore();
   const { theme, setTheme } = useTheme();
   const activeAgent = agents.find((agent) => agent.id === activeAgentId);
   const isBuildModeRoute = location.pathname === '/build';
+  const isSubagentsRoute = location.pathname === '/subagents';
 
   // Folder drag state
   const [draggedFolderId, setDraggedFolderId] = useState<string | null>(null);
@@ -75,6 +114,18 @@ export default function Sidebar() {
   useEffect(() => {
     loadFolders();
   }, [loadFolders, activeAgentId]);
+
+  useEffect(() => {
+    const handleOpenSettings = (event: Event) => {
+      const detail = event instanceof CustomEvent ? event.detail as { query?: unknown } | undefined : undefined;
+      setPendingSettingsSectionQuery(typeof detail?.query === 'string' ? detail.query : '');
+      setShowSettings(true);
+    };
+    window.addEventListener('opendeskmate:open-settings', handleOpenSettings as EventListener);
+    return () => {
+      window.removeEventListener('opendeskmate:open-settings', handleOpenSettings as EventListener);
+    };
+  }, []);
 
   // Get tasks organized by folder
   const unfiledTasks = tasks.filter((task) => !task.folderId);
@@ -159,6 +210,80 @@ export default function Sidebar() {
     navigate('/');
   };
 
+  useEffect(() => {
+    if (!agentMenuOpen) return;
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const [providers, selected, keys] = await Promise.all([
+          accomplish.listModelProviders(),
+          accomplish.getSelectedModel(),
+          accomplish.getAllApiKeys(),
+        ]);
+        if (cancelled) return;
+        setProviderCatalog(Array.isArray(providers) ? providers : []);
+        setGlobalSelectedModel((selected as SelectedModel | null) ?? null);
+        setApiKeyStatus(keys ?? {});
+      } catch {
+        if (cancelled) return;
+        setProviderCatalog([]);
+        setApiKeyStatus({});
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [accomplish, agentMenuOpen]);
+
+  const quickSwitchProviders = useMemo(
+    () => providerCatalog.filter((provider) => {
+      const hasModels = Array.isArray(provider.models) && provider.models.length > 0;
+      if (!hasModels) return false;
+      if (provider.requiresApiKey === false || provider.id === 'ollama') return true;
+      return Boolean(apiKeyStatus?.[provider.id]?.exists);
+    }),
+    [apiKeyStatus, providerCatalog]
+  );
+
+  const quickSwitchValue = activeAgent?.selectedModel?.model || '__global__';
+
+  const handleQuickAgentModelSwitch = async (selection: SelectedModel | null) => {
+    if (!activeAgent || agentModelUpdating) return;
+    setAgentModelUpdating(true);
+    try {
+      await upsertAgent({
+        id: activeAgent.id,
+        name: activeAgent.name,
+        roleName: activeAgent.roleName,
+        description: activeAgent.description,
+        avatar: activeAgent.avatar,
+        avatarColor: activeAgent.avatarColor,
+        workspaceRoot: activeAgent.workspaceRoot,
+        systemPromptAppend: activeAgent.systemPromptAppend,
+        selectedModel: selection,
+        agenticLoopEnabled: activeAgent.agenticLoopEnabled,
+        agenticLoopMaxIterations: activeAgent.agenticLoopMaxIterations,
+        agenticLoopTimeoutMs: activeAgent.agenticLoopTimeoutMs,
+        heartbeatEnabled: activeAgent.heartbeatEnabled,
+        heartbeatIntervalSeconds: activeAgent.heartbeatIntervalSeconds,
+        heartbeatScheduleMode: activeAgent.heartbeatScheduleMode,
+        heartbeatIntervalMinutes: activeAgent.heartbeatIntervalMinutes,
+        heartbeatDailyTime: activeAgent.heartbeatDailyTime,
+        heartbeatTimeZone: activeAgent.heartbeatTimeZone,
+        heartbeatWindowEnabled: activeAgent.heartbeatWindowEnabled,
+        heartbeatWindowStartTime: activeAgent.heartbeatWindowStartTime,
+        heartbeatWindowEndTime: activeAgent.heartbeatWindowEndTime,
+        heartbeatPrompt: activeAgent.heartbeatPrompt,
+        autoSkillEnabled: activeAgent.autoSkillEnabled,
+        autoSkillAutoPromoteLowRisk: activeAgent.autoSkillAutoPromoteLowRisk,
+      });
+    } finally {
+      setAgentModelUpdating(false);
+    }
+  };
+
   // Open reorder dialog
   const openReorderDialog = () => {
     setReorderList(sortedFolders.map((f) => f.id));
@@ -206,7 +331,7 @@ export default function Sidebar() {
         {isBuildModeRoute ? (
           <>
             <div className="px-1.5 pb-2">
-              <DropdownMenu>
+              <DropdownMenu open={agentMenuOpen} onOpenChange={setAgentMenuOpen}>
                 <DropdownMenuTrigger asChild>
                   <button
                     type="button"
@@ -225,6 +350,88 @@ export default function Sidebar() {
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="start" side="right" className="w-60">
+                  <DropdownMenuLabel className="pb-1 text-[11px] uppercase tracking-wider text-muted-foreground/80">
+                    Quick Model
+                  </DropdownMenuLabel>
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger className="gap-2">
+                      <div className="min-w-0">
+                        <div className="truncate text-sm">Model</div>
+                        <div className="truncate text-[11px] text-muted-foreground">
+                          {activeAgent?.selectedModel
+                            ? formatSelectedModelLabel(activeAgent.selectedModel)
+                            : `Global (${formatSelectedModelLabel(globalSelectedModel)})`}
+                        </div>
+                      </div>
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent className="w-72">
+                      <DropdownMenuRadioGroup
+                        value={quickSwitchValue}
+                        onValueChange={(value) => {
+                          if (value === quickSwitchValue) return;
+                          if (value === '__global__') {
+                            void handleQuickAgentModelSwitch(null);
+                            return;
+                          }
+                          const selectedProvider = quickSwitchProviders.find((provider) => (
+                            provider.models.some((model) => model.fullId === value)
+                          ));
+                          if (!selectedProvider) return;
+                          const selectedModel = selectedProvider.models.find((model) => model.fullId === value);
+                          if (!selectedModel) return;
+                          void handleQuickAgentModelSwitch({
+                            provider: selectedProvider.id,
+                            model: selectedModel.fullId,
+                          });
+                        }}
+                      >
+                        <DropdownMenuRadioItem value="__global__" disabled={agentModelUpdating}>
+                          <div className="min-w-0">
+                            <div className="text-sm">Use global default</div>
+                            <div className="truncate text-[11px] text-muted-foreground">
+                              {formatSelectedModelLabel(globalSelectedModel)}
+                            </div>
+                          </div>
+                        </DropdownMenuRadioItem>
+                        <DropdownMenuSeparator />
+                        {quickSwitchProviders.map((provider) => (
+                          <DropdownMenuSub key={provider.id}>
+                            <DropdownMenuSubTrigger className="text-sm">
+                              {provider.name}
+                            </DropdownMenuSubTrigger>
+                            <DropdownMenuSubContent className="w-72">
+                              <DropdownMenuRadioGroup
+                                value={quickSwitchValue}
+                                onValueChange={(value) => {
+                                  if (value === quickSwitchValue) return;
+                                  const selectedModel = provider.models.find((model) => model.fullId === value);
+                                  if (!selectedModel) return;
+                                  void handleQuickAgentModelSwitch({
+                                    provider: provider.id,
+                                    model: selectedModel.fullId,
+                                  });
+                                }}
+                              >
+                                {provider.models.map((model) => (
+                                  <DropdownMenuRadioItem
+                                    key={model.fullId}
+                                    value={model.fullId}
+                                    disabled={agentModelUpdating}
+                                  >
+                                    <div className="min-w-0">
+                                      <div className="truncate text-sm">{model.displayName}</div>
+                                      <div className="truncate text-[11px] text-muted-foreground">{model.fullId}</div>
+                                    </div>
+                                  </DropdownMenuRadioItem>
+                                ))}
+                              </DropdownMenuRadioGroup>
+                            </DropdownMenuSubContent>
+                          </DropdownMenuSub>
+                        ))}
+                      </DropdownMenuRadioGroup>
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                  <DropdownMenuSeparator />
                   <div className="px-2 py-1 text-xs font-medium text-muted-foreground/80 uppercase tracking-wider">
                     Agents
                   </div>
@@ -262,7 +469,10 @@ export default function Sidebar() {
                     );
                   })}
                   <DropdownMenuItem
-                    onClick={() => setShowSettings(true)}
+                    onClick={() => {
+                      setPendingSettingsSectionQuery('');
+                      setShowSettings(true);
+                    }}
                     className="flex items-center gap-2"
                   >
                     <Settings className="h-3.5 w-3.5" />
@@ -273,6 +483,18 @@ export default function Sidebar() {
             </div>
             <div className="flex-1" />
             <div className="px-2 py-4 border-t border-border/50 flex flex-col items-center gap-2 bg-gradient-to-t from-muted/30 to-transparent">
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => navigate('/subagents', { state: { from: `${location.pathname}${location.search}` } })}
+                title="Subagents"
+                className={cn(
+                  'h-9 w-9 rounded-xl transition-smooth',
+                  isSubagentsRoute ? 'bg-accent/90 text-foreground' : 'hover:bg-accent/80'
+                )}
+              >
+                <GitBranch className="h-4 w-4" />
+              </Button>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button
@@ -323,6 +545,7 @@ export default function Sidebar() {
                 size="icon"
                 onClick={() => {
                   analytics.trackOpenSettings();
+                  setPendingSettingsSectionQuery('');
                   setShowSettings(true);
                 }}
                 title="Settings"
@@ -344,7 +567,7 @@ export default function Sidebar() {
           <>
         {/* Agent switcher */}
         <div className="px-4 pb-2">
-          <DropdownMenu>
+          <DropdownMenu open={agentMenuOpen} onOpenChange={setAgentMenuOpen}>
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
@@ -364,6 +587,88 @@ export default function Sidebar() {
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-60">
+              <DropdownMenuLabel className="pb-1 text-[11px] uppercase tracking-wider text-muted-foreground/80">
+                Quick Model
+              </DropdownMenuLabel>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger className="gap-2">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm">Model</div>
+                    <div className="truncate text-[11px] text-muted-foreground">
+                      {activeAgent?.selectedModel
+                        ? formatSelectedModelLabel(activeAgent.selectedModel)
+                        : `Global (${formatSelectedModelLabel(globalSelectedModel)})`}
+                    </div>
+                  </div>
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="w-72">
+                  <DropdownMenuRadioGroup
+                    value={quickSwitchValue}
+                    onValueChange={(value) => {
+                      if (value === quickSwitchValue) return;
+                      if (value === '__global__') {
+                        void handleQuickAgentModelSwitch(null);
+                        return;
+                      }
+                      const selectedProvider = quickSwitchProviders.find((provider) => (
+                        provider.models.some((model) => model.fullId === value)
+                      ));
+                      if (!selectedProvider) return;
+                      const selectedModel = selectedProvider.models.find((model) => model.fullId === value);
+                      if (!selectedModel) return;
+                      void handleQuickAgentModelSwitch({
+                        provider: selectedProvider.id,
+                        model: selectedModel.fullId,
+                      });
+                    }}
+                  >
+                    <DropdownMenuRadioItem value="__global__" disabled={agentModelUpdating}>
+                      <div className="min-w-0">
+                        <div className="text-sm">Use global default</div>
+                        <div className="truncate text-[11px] text-muted-foreground">
+                          {formatSelectedModelLabel(globalSelectedModel)}
+                        </div>
+                      </div>
+                    </DropdownMenuRadioItem>
+                    <DropdownMenuSeparator />
+                    {quickSwitchProviders.map((provider) => (
+                      <DropdownMenuSub key={provider.id}>
+                        <DropdownMenuSubTrigger className="text-sm">
+                          {provider.name}
+                        </DropdownMenuSubTrigger>
+                        <DropdownMenuSubContent className="w-72">
+                          <DropdownMenuRadioGroup
+                            value={quickSwitchValue}
+                            onValueChange={(value) => {
+                              if (value === quickSwitchValue) return;
+                              const selectedModel = provider.models.find((model) => model.fullId === value);
+                              if (!selectedModel) return;
+                              void handleQuickAgentModelSwitch({
+                                provider: provider.id,
+                                model: selectedModel.fullId,
+                              });
+                            }}
+                          >
+                            {provider.models.map((model) => (
+                              <DropdownMenuRadioItem
+                                key={model.fullId}
+                                value={model.fullId}
+                                disabled={agentModelUpdating}
+                              >
+                                <div className="min-w-0">
+                                  <div className="truncate text-sm">{model.displayName}</div>
+                                  <div className="truncate text-[11px] text-muted-foreground">{model.fullId}</div>
+                                </div>
+                              </DropdownMenuRadioItem>
+                            ))}
+                          </DropdownMenuRadioGroup>
+                        </DropdownMenuSubContent>
+                      </DropdownMenuSub>
+                    ))}
+                  </DropdownMenuRadioGroup>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+              <DropdownMenuSeparator />
               <div className="px-2 py-1 text-xs font-medium text-muted-foreground/80 uppercase tracking-wider">
                 Agents
               </div>
@@ -401,7 +706,10 @@ export default function Sidebar() {
                 );
               })}
               <DropdownMenuItem
-                onClick={() => setShowSettings(true)}
+                onClick={() => {
+                  setPendingSettingsSectionQuery('');
+                  setShowSettings(true);
+                }}
                 className="flex items-center gap-2"
               >
                 <Settings className="h-3.5 w-3.5" />
@@ -627,6 +935,18 @@ export default function Sidebar() {
             <Button
               variant="ghost"
               size="icon"
+              onClick={() => navigate('/subagents', { state: { from: `${location.pathname}${location.search}` } })}
+              title="Subagents"
+              className={cn(
+                'rounded-xl transition-smooth',
+                isSubagentsRoute ? 'bg-accent/90 text-foreground' : 'hover:bg-accent/80'
+              )}
+            >
+              <GitBranch className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
               onClick={() => navigate('/help')}
               title="Help"
               className="rounded-xl hover:bg-accent/80 transition-smooth"
@@ -683,6 +1003,7 @@ export default function Sidebar() {
               size="icon"
               onClick={() => {
                 analytics.trackOpenSettings();
+                setPendingSettingsSectionQuery('');
                 setShowSettings(true);
               }}
               title="Settings"
@@ -696,7 +1017,11 @@ export default function Sidebar() {
         )}
       </div>
 
-      <SettingsDialog open={showSettings} onOpenChange={setShowSettings} />
+      <SettingsDialog
+        open={showSettings}
+        onOpenChange={setShowSettings}
+        initialSectionQuery={pendingSettingsSectionQuery}
+      />
       <CreateFolderDialog open={showCreateFolder} onOpenChange={setShowCreateFolder} />
 
       {/* Reorder Projects Dialog */}

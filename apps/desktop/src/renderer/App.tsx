@@ -13,6 +13,7 @@ import ExecutionPage from './pages/Execution';
 import OnboardingPage from './pages/Onboarding';
 import HelpPage from './pages/Help';
 import BuildPage from './pages/Build';
+import SubagentsPage from './pages/Subagents';
 
 // Components
 import Sidebar from './components/layout/Sidebar';
@@ -209,6 +210,21 @@ export default function App() {
                     transition={springs.gentle}
                   >
                     <BuildPage />
+                  </motion.div>
+                }
+              />
+              <Route
+                path="/subagents"
+                element={
+                  <motion.div
+                    className="h-full"
+                    initial="initial"
+                    animate="animate"
+                    exit="exit"
+                    variants={variants.fadeUp}
+                    transition={springs.gentle}
+                  >
+                    <SubagentsPage />
                   </motion.div>
                 }
               />

@@ -580,6 +580,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   insertTask: (task: Task) => {
+    if (task.hiddenFromHistory) {
+      return;
+    }
     set((state) => {
       const filtered = state.tasks.filter((t) => t.id !== task.id);
       return {

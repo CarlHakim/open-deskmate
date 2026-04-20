@@ -460,16 +460,48 @@ textarea::placeholder {
 }
 
 /* Help markdown viewer refinements */
+.help-markdown {
+  color: hsl(var(--foreground));
+}
+
 .help-markdown h1,
 .help-markdown h2,
 .help-markdown h3 {
+  color: hsl(var(--foreground));
   scroll-margin-top: 5.5rem;
+}
+
+.help-markdown p,
+.help-markdown li,
+.help-markdown td,
+.help-markdown th,
+.help-markdown strong,
+.help-markdown em,
+.help-markdown code,
+.help-markdown blockquote {
+  color: inherit;
 }
 
 .help-markdown a {
   color: hsl(var(--primary));
   text-decoration: underline;
   text-underline-offset: 2px;
+}
+
+.help-markdown table,
+.help-markdown thead,
+.help-markdown tbody,
+.help-markdown tr,
+.help-markdown th,
+.help-markdown td,
+.help-markdown hr,
+.help-markdown blockquote {
+  border-color: hsl(var(--border));
+}
+
+.help-markdown pre {
+  background: hsl(var(--muted));
+  color: hsl(var(--foreground));
 }
 
 .help-markdown img {

@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState, useRef, useMemo, useCallback, memo, forwardRef, useImperativeHandle, useLayoutEffect } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useEffect, useState, useRef, useMemo, useCallback, memo, forwardRef, useImperativeHandle, useLayoutEffect, type ChangeEvent, type ReactElement } from 'react';
+import { useParams, useNavigate, useLocation, Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useTaskStore } from '../stores/taskStore';
 import { useSavedPromptsStore } from '../stores/savedPromptsStore';
@@ -12,12 +12,16 @@ import type {
   ContextWindowEstimateResponse,
   ProviderConfig,
   SelectedModel,
+  SubagentRunRecord,
+  SubagentRunTreeNode,
+  Task,
   TaskMessage,
   UserSkillSharingScope,
 } from '@accomplish/shared';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
+import { Textarea } from '@/components/ui/textarea';
 import { XCircle, CornerDownLeft, ArrowLeft, CheckCircle2, AlertCircle, Terminal, Wrench, FileText, Search, Code, Brain, Clock, Square, Play, Download, File, Bug, ChevronUp, ChevronDown, Trash2, Check, Folder, X, Bookmark, BookmarkCheck, Settings, User, Mic, Copy, Plus, Image, Sparkles, Shield } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ReactMarkdown from 'react-markdown';
@@ -32,9 +36,14 @@ import { StreamingText } from '../components/ui/streaming-text';
 import { isWaitingForUser } from '../lib/waiting-detection';
 import SavedPromptsDialog from '../components/layout/SavedPromptsDialog';
 import ModeSwitch from '../components/layout/ModeSwitch';
+import BuildRuntimeIndicator from '../components/layout/BuildRuntimeIndicator';
 import ContextWindowIndicator from '../components/chat/ContextWindowIndicator';
 import { useVoiceWakeTalkMode } from '../hooks/useVoiceWakeTalkMode';
 import { useAttachmentStore } from '../stores/attachmentStore';
+import InlineSlashCommandMenu from '../components/commands/InlineSlashCommandMenu';
+import { filterSlashCommands, type SlashCommandDefinition } from '../lib/slash-commands';
+import { APP_COMMAND_EVENTS, createAppSlashCommands } from '../lib/app-commands';
+import { usePluginSlashCommands } from '../hooks/usePluginSlashCommands';
 // Debug log entry type
 interface DebugLogEntry {
   taskId: string;
@@ -124,6 +133,162 @@ function getOperationBadgeClasses(operation?: string): string {
     case 'move': return 'bg-blue-500/10 text-blue-600';
     default: return 'bg-gray-500/10 text-gray-600';
   }
+}
+
+function formatSubagentRunStatus(status: SubagentRunRecord['status'], resultStatus?: SubagentRunRecord['resultStatus']): string {
+  if (status === 'done') {
+    if (resultStatus === 'interrupted') return 'Interrupted';
+    if (resultStatus === 'error') return 'Failed';
+    return 'Completed';
+  }
+  if (status === 'error') return 'Failed';
+  if (status === 'accepted') return 'Queued';
+  return 'Running';
+}
+
+function getSubagentRunStatusClasses(status: SubagentRunRecord['status'], resultStatus?: SubagentRunRecord['resultStatus']): string {
+  if (status === 'done' && resultStatus === 'success') return 'bg-emerald-500/10 text-emerald-700';
+  if ((status === 'done' && resultStatus === 'interrupted') || status === 'accepted') return 'bg-amber-500/10 text-amber-700';
+  if (status === 'error' || (status === 'done' && resultStatus === 'error')) return 'bg-destructive/10 text-destructive';
+  return 'bg-sky-500/10 text-sky-700';
+}
+
+function formatSubagentModeLabel(run: Pick<SubagentRunRecord, 'mode' | 'sessionState' | 'reuseCount'> & { childTaskStatus?: string }): string {
+  const parts = [run.mode === 'session' ? 'Session mode' : 'Run mode'];
+  if (run.mode === 'session' && run.sessionState) {
+    parts.push(`session ${run.sessionState}`);
+  }
+  if (run.mode === 'run' && run.childTaskStatus) {
+    parts.push(`task ${run.childTaskStatus}`);
+  }
+  if (typeof run.reuseCount === 'number' && run.reuseCount > 0) {
+    parts.push(`reused ${run.reuseCount}x`);
+  }
+  return parts.join(' · ');
+}
+
+function areSubagentRunListsEquivalent(a: SubagentRunRecord[], b: SubagentRunRecord[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const left = a[i];
+    const right = b[i];
+    if (
+      left.runId !== right.runId
+      || left.status !== right.status
+      || left.resultStatus !== right.resultStatus
+      || left.updatedAt !== right.updatedAt
+      || left.archivedAt !== right.archivedAt
+      || left.closedAt !== right.closedAt
+      || left.sessionState !== right.sessionState
+      || left.reuseCount !== right.reuseCount
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function areSubagentRunTreesEquivalent(a: SubagentRunTreeNode[], b: SubagentRunTreeNode[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const left = a[i];
+    const right = b[i];
+    if (
+      left.runId !== right.runId
+      || left.status !== right.status
+      || left.resultStatus !== right.resultStatus
+      || left.updatedAt !== right.updatedAt
+      || left.archivedAt !== right.archivedAt
+      || left.closedAt !== right.closedAt
+      || left.sessionState !== right.sessionState
+      || left.reuseCount !== right.reuseCount
+    ) {
+      return false;
+    }
+    if (!areSubagentRunTreesEquivalent(left.children, right.children)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function SubagentTreeList({
+  nodes,
+  level = 0,
+  stoppingSubagentRunId,
+  onOpen,
+  onStop,
+}: {
+  nodes: SubagentRunTreeNode[];
+  level?: number;
+  stoppingSubagentRunId: string | null;
+  onOpen: (run: SubagentRunRecord) => void;
+  onStop: (runId: string) => void;
+}): ReactElement | null {
+  if (nodes.length === 0) return null;
+  return (
+    <div className={cn('space-y-1.5', level > 0 ? 'ml-4 border-l border-border/50 pl-3' : '')}>
+      {nodes.map((run) => {
+        const stoppable = run.status === 'running' || run.status === 'accepted';
+        return (
+          <div key={run.runId} className="rounded-md border border-border/50 bg-background/70 px-2 py-1.5">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="truncate text-xs font-medium text-foreground">
+                  {run.label || run.childAgentId}
+                </div>
+                <div className="truncate text-[10px] text-muted-foreground">
+                  Agent: {run.childAgentId}
+                  {run.model ? ` · ${run.model.provider}:${run.model.model}` : ''}
+                </div>
+                <div className="truncate text-[10px] text-muted-foreground">
+                  {formatSubagentModeLabel(run)}
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-medium', getSubagentRunStatusClasses(run.status, run.resultStatus))}>
+                  {formatSubagentRunStatus(run.status, run.resultStatus)}
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-6 px-2 text-[10px]"
+                  onClick={() => onOpen(run)}
+                >
+                  Open
+                </Button>
+                {stoppable ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-6 px-2 text-[10px]"
+                    onClick={() => onStop(run.runId)}
+                    disabled={stoppingSubagentRunId === run.runId}
+                  >
+                    {stoppingSubagentRunId === run.runId ? 'Stopping' : 'Stop'}
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+            <div className="mt-1 truncate text-[10px] text-muted-foreground" title={run.task}>
+              {run.task}
+            </div>
+            {run.children.length > 0 ? (
+              <div className="mt-2">
+                <SubagentTreeList
+                  nodes={run.children}
+                  level={level + 1}
+                  stoppingSubagentRunId={stoppingSubagentRunId}
+                  onOpen={onOpen}
+                  onStop={onStop}
+                />
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 interface ParsedPlanItem {
@@ -220,11 +385,12 @@ interface FollowUpBarProps {
   agentId?: string;
   privacyMode?: 'normal' | 'incognito';
   onPrivacyModeChange?: (mode: 'normal' | 'incognito') => void;
+  slashCommands: SlashCommandDefinition[];
 }
 
 const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
   function FollowUpBar(
-    { isLoading, hasSession, currentTaskStatus, promptsCount, onSend, onOpenSavedPrompts, onPlanNextJobs, planningJobs, taskId, agentId, privacyMode = 'normal', onPrivacyModeChange },
+    { isLoading, hasSession, currentTaskStatus, promptsCount, onSend, onOpenSavedPrompts, onPlanNextJobs, planningJobs, taskId, agentId, privacyMode = 'normal', onPrivacyModeChange, slashCommands },
     ref
   ) {
     const [followUp, setFollowUp] = useState('');
@@ -234,6 +400,7 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
     const removeAttachedFile = useAttachmentStore((state) => state.removeFile);
     const clearAttachedFiles = useAttachmentStore((state) => state.clearFiles);
     const [workingFolder, setWorkingFolder] = useState<string | null>(null);
+    const [selectedSlashIndex, setSelectedSlashIndex] = useState(0);
     const inputRef = useRef<HTMLTextAreaElement>(null);
     const resizeRafRef = useRef<number>(0);
     const accomplish = getAccomplish();
@@ -251,6 +418,18 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
     useEffect(() => {
       inputRef.current?.focus();
     }, []);
+
+    const filteredSlashCommands = useMemo(
+      () => filterSlashCommands(followUp, slashCommands),
+      [followUp, slashCommands]
+    );
+
+    useEffect(() => {
+      setSelectedSlashIndex((current) => {
+        if (filteredSlashCommands.length === 0) return 0;
+        return Math.min(current, filteredSlashCommands.length - 1);
+      });
+    }, [filteredSlashCommands]);
 
     // Auto-resize follow-up field up to about one paragraph, then allow scrolling.
     useEffect(() => {
@@ -304,6 +483,12 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
       clearAttachedFiles();
       setWorkingFolder(null);
     }, [followUp, attachedFiles, workingFolder, onSend, clearAttachedFiles]);
+
+    const handleExecuteSlashCommand = useCallback(async (command: SlashCommandDefinition) => {
+      await command.execute();
+      setFollowUp('');
+      setSelectedSlashIndex(0);
+    }, []);
 
     const {
       voiceEnabled,
@@ -360,26 +545,67 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
           )}
           {/* Input field with Ideas/Send buttons */}
           <div className="flex gap-3 items-end">
-            <textarea
-              ref={inputRef}
-              value={followUp}
-              onChange={(e) => setFollowUp(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
-                  void handleSubmit();
+            <div className="relative min-w-0 flex-1">
+              <textarea
+                ref={inputRef}
+                value={followUp}
+                onChange={(e) => setFollowUp(e.target.value)}
+                onKeyDown={(e) => {
+                  if (filteredSlashCommands.length > 0) {
+                    if (e.key === 'ArrowDown') {
+                      e.preventDefault();
+                      setSelectedSlashIndex((current) => (
+                        current >= filteredSlashCommands.length - 1 ? 0 : current + 1
+                      ));
+                      return;
+                    }
+                    if (e.key === 'ArrowUp') {
+                      e.preventDefault();
+                      setSelectedSlashIndex((current) => (
+                        current <= 0 ? filteredSlashCommands.length - 1 : current - 1
+                      ));
+                      return;
+                    }
+                    if ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') {
+                      e.preventDefault();
+                      const selected = filteredSlashCommands[selectedSlashIndex] || filteredSlashCommands[0];
+                      if (selected) {
+                        void handleExecuteSlashCommand(selected);
+                      }
+                      return;
+                    }
+                    if (e.key === 'Escape') {
+                      e.preventDefault();
+                      setFollowUp('');
+                      setSelectedSlashIndex(0);
+                      return;
+                    }
+                  }
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    void handleSubmit();
+                  }
+                }}
+                placeholder={
+                  ['completed', 'failed', 'cancelled', 'interrupted'].includes(currentTaskStatus)
+                    ? (hasSession ? 'Give new instructions...' : 'Start a new task...')
+                    : 'Ask for something...'
                 }
-              }}
-              placeholder={
-                ['completed', 'failed', 'cancelled', 'interrupted'].includes(currentTaskStatus)
-                  ? (hasSession ? 'Give new instructions...' : 'Start a new task...')
-                  : 'Ask for something...'
-              }
-              disabled={isLoading}
-              rows={1}
-              className="followup-textarea-scrollbar min-h-[40px] max-h-[120px] flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 leading-relaxed"
-              data-testid="execution-follow-up-input"
-            />
+                disabled={isLoading}
+                rows={1}
+                className="followup-textarea-scrollbar min-h-[40px] max-h-[120px] w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 leading-relaxed"
+                data-testid="execution-follow-up-input"
+              />
+              <InlineSlashCommandMenu
+                commands={filteredSlashCommands}
+                selectedIndex={selectedSlashIndex}
+                placement="top"
+                onSelect={(command, index) => {
+                  setSelectedSlashIndex(index);
+                  void handleExecuteSlashCommand(command);
+                }}
+              />
+            </div>
             {onPlanNextJobs && (
               <Button
                 onClick={() => void onPlanNextJobs()}
@@ -609,6 +835,7 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
 export default function ExecutionPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const accomplish = getAccomplish();
   const messagesScrollRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -626,6 +853,7 @@ export default function ExecutionPage() {
   const [planningJobs, setPlanningJobs] = useState(false);
   const [globalSelectedModel, setGlobalSelectedModel] = useState<SelectedModel | null>(null);
   const [modelProviders, setModelProviders] = useState<ProviderConfig[]>([]);
+  const [modelApiKeyStatus, setModelApiKeyStatus] = useState<Record<string, { exists: boolean; prefix?: string }>>({});
   const [proactiveOpen, setProactiveOpen] = useState(false);
   const [proactiveError, setProactiveError] = useState<string | null>(null);
   const [proactiveSuggestions, setProactiveSuggestions] = useState<ProactiveSuggestion[]>([]);
@@ -640,6 +868,17 @@ export default function ExecutionPage() {
   const [saveSkillMd, setSaveSkillMd] = useState('');
   const [saveSkillShareScope, setSaveSkillShareScope] = useState<UserSkillSharingScope>('private');
   const [saveSkillShareAgentIds, setSaveSkillShareAgentIds] = useState<string[]>([]);
+  const [subagentRuns, setSubagentRuns] = useState<SubagentRunRecord[]>([]);
+  const [subagentTree, setSubagentTree] = useState<SubagentRunTreeNode[]>([]);
+  const [subagentRunsLoading, setSubagentRunsLoading] = useState(false);
+  const [stoppingSubagentRunId, setStoppingSubagentRunId] = useState<string | null>(null);
+  const [subagentDetailRun, setSubagentDetailRun] = useState<SubagentRunRecord | null>(null);
+  const [subagentDetailTask, setSubagentDetailTask] = useState<Task | null>(null);
+  const [subagentDetailLoading, setSubagentDetailLoading] = useState(false);
+  const [subagentDetailPrompt, setSubagentDetailPrompt] = useState('');
+  const [subagentDetailModelOverride, setSubagentDetailModelOverride] = useState('');
+  const [subagentDetailSending, setSubagentDetailSending] = useState(false);
+  const [subagentDetailMutating, setSubagentDetailMutating] = useState(false);
   const debugPanelRef = useRef<HTMLDivElement>(null);
   const addAttachedFiles = useAttachmentStore((state) => state.addFiles);
   const autoFollowUpSentRef = useRef<Set<string>>(new Set());
@@ -675,6 +914,25 @@ export default function ExecutionPage() {
   }, [currentTask?.privacyMode]);
 
   const taskAgentId = currentTask?.agentId || activeAgentId;
+  const pluginSlashCommands = usePluginSlashCommands();
+  const canSaveSkillFromTask = Boolean(
+    currentTask
+    && ['completed', 'failed', 'cancelled', 'interrupted'].includes(currentTask.status)
+    && currentTask.messages.length > 0
+  );
+  const executionSlashCommands = useMemo<SlashCommandDefinition[]>(() => {
+    return createAppSlashCommands({
+      navigate,
+      pathname: location.pathname,
+      context: 'chat',
+      search: location.search,
+      modeSwitchTarget: 'build',
+      pluginCommands: pluginSlashCommands,
+      taskStop: { visible: currentTask?.status === 'running' },
+      taskSaveSkill: { visible: canSaveSkillFromTask },
+      subagentsRefresh: { visible: Boolean(currentTask?.id) },
+    });
+  }, [canSaveSkillFromTask, currentTask?.id, currentTask?.status, location.pathname, location.search, navigate, pluginSlashCommands]);
   const saveSkillOwnerAgentId = String(taskAgentId || activeAgentId || '').trim();
   const saveSkillSelectableAgents = useMemo(
     () => agents.filter((agent) => agent.id !== saveSkillOwnerAgentId),
@@ -699,6 +957,183 @@ export default function ExecutionPage() {
     if (!saveSkillOwnerAgentId) return;
     setSaveSkillShareAgentIds((current) => current.filter((agentId) => agentId !== saveSkillOwnerAgentId));
   }, [saveSkillOwnerAgentId]);
+
+  const refreshSubagentRuns = useCallback(async (showLoading = false) => {
+    if (!currentTask?.id) {
+      setSubagentRuns([]);
+      setSubagentTree([]);
+      setSubagentRunsLoading(false);
+      return;
+    }
+    if (showLoading) {
+      setSubagentRunsLoading(true);
+    }
+    try {
+      const result = await accomplish.listSubagents({ parentTaskId: currentTask.id });
+      setSubagentRuns((current) => areSubagentRunListsEquivalent(current, result.runs || []) ? current : (result.runs || []));
+      setSubagentTree((current) => areSubagentRunTreesEquivalent(current, result.tree || []) ? current : (result.tree || []));
+    } catch (err) {
+      console.error('Failed to load subagent runs:', err);
+    } finally {
+      if (showLoading) {
+        setSubagentRunsLoading(false);
+      }
+    }
+  }, [accomplish, currentTask?.id]);
+
+  useEffect(() => {
+    const handleTaskStop = () => {
+      void interruptTask();
+    };
+    const handleTaskSaveSkill = () => {
+      if (!canSaveSkillFromTask) return;
+      setSaveSkillOpen(true);
+      setSaveSkillError(null);
+    };
+    const handleSubagentsRefresh = () => {
+      void refreshSubagentRuns(true);
+    };
+
+    window.addEventListener(APP_COMMAND_EVENTS.taskStop, handleTaskStop);
+    window.addEventListener(APP_COMMAND_EVENTS.taskSaveSkill, handleTaskSaveSkill);
+    window.addEventListener(APP_COMMAND_EVENTS.subagentsRefresh, handleSubagentsRefresh);
+
+    return () => {
+      window.removeEventListener(APP_COMMAND_EVENTS.taskStop, handleTaskStop);
+      window.removeEventListener(APP_COMMAND_EVENTS.taskSaveSkill, handleTaskSaveSkill);
+      window.removeEventListener(APP_COMMAND_EVENTS.subagentsRefresh, handleSubagentsRefresh);
+    };
+  }, [canSaveSkillFromTask, interruptTask, refreshSubagentRuns]);
+
+  useEffect(() => {
+    if (!currentTask?.id) {
+      setSubagentRuns([]);
+      setSubagentTree([]);
+      return;
+    }
+    void refreshSubagentRuns(subagentRuns.length === 0);
+    const timer = window.setInterval(() => {
+      void refreshSubagentRuns();
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [currentTask?.id, refreshSubagentRuns, subagentRuns.length]);
+
+  const stopSubagentRun = useCallback(async (runId: string) => {
+    if (!runId) return;
+    setStoppingSubagentRunId(runId);
+    try {
+      await accomplish.stopSubagent({ runId });
+      await refreshSubagentRuns();
+    } catch (err) {
+      console.error('Failed to stop subagent:', err);
+    } finally {
+      setStoppingSubagentRunId((current) => (current === runId ? null : current));
+    }
+  }, [accomplish, refreshSubagentRuns]);
+
+  const loadSubagentDetail = useCallback(async (run: SubagentRunRecord, options?: { showLoading?: boolean; replaceRun?: boolean }) => {
+    if (options?.replaceRun !== false) {
+      setSubagentDetailRun(run);
+    }
+    if (options?.showLoading !== false) {
+      setSubagentDetailLoading(true);
+    }
+    try {
+      const task = await accomplish.getTask(run.childTaskId, run.childAgentId);
+      setSubagentDetailTask(task);
+    } catch (err) {
+      console.error('Failed to load subagent transcript:', err);
+    } finally {
+      if (options?.showLoading !== false) {
+        setSubagentDetailLoading(false);
+      }
+    }
+  }, [accomplish]);
+
+  const availableSubagentModelOptions = useMemo(() => (
+    modelProviders
+      .filter((provider) => {
+        const hasModels = Array.isArray(provider.models) && provider.models.length > 0;
+        if (!hasModels) return false;
+        if (provider.requiresApiKey === false || provider.id === 'ollama') return true;
+        return Boolean(modelApiKeyStatus?.[provider.id]?.exists);
+      })
+      .flatMap((provider) => provider.models.map((model) => ({
+        value: model.fullId,
+        providerId: String(provider.id),
+        providerName: provider.name,
+        displayName: model.displayName,
+        modelId: model.fullId,
+        baseUrl: provider.baseUrl,
+      })))
+  ), [modelApiKeyStatus, modelProviders]);
+
+  useEffect(() => {
+    if (!subagentDetailRun) {
+      setSubagentDetailTask(null);
+      setSubagentDetailPrompt('');
+      setSubagentDetailModelOverride('');
+      return;
+    }
+    void loadSubagentDetail(subagentDetailRun, { showLoading: true, replaceRun: false });
+    const timer = window.setInterval(() => {
+      void loadSubagentDetail(subagentDetailRun, { showLoading: false, replaceRun: false });
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [loadSubagentDetail, subagentDetailRun?.runId]);
+
+  const sendSubagentFollowUp = useCallback(async () => {
+    const prompt = subagentDetailPrompt.trim();
+    if (!prompt || !subagentDetailTask) return;
+    const selectedOverride = availableSubagentModelOptions.find((entry) => entry.value === subagentDetailModelOverride) || null;
+    setSubagentDetailSending(true);
+    try {
+      await accomplish.sendSubagent({
+        runId: subagentDetailRun?.runId || '',
+        prompt,
+        modelProvider: selectedOverride?.providerId,
+        modelId: selectedOverride?.modelId,
+        modelBaseUrl: selectedOverride?.baseUrl,
+      });
+      setSubagentDetailPrompt('');
+      const refreshed = await accomplish.getTask(subagentDetailTask.id, subagentDetailTask.agentId);
+      setSubagentDetailTask(refreshed);
+      await refreshSubagentRuns();
+    } catch (err) {
+      console.error('Failed to send subagent follow-up:', err);
+    } finally {
+      setSubagentDetailSending(false);
+    }
+  }, [accomplish, availableSubagentModelOptions, refreshSubagentRuns, subagentDetailModelOverride, subagentDetailPrompt, subagentDetailRun?.runId, subagentDetailTask]);
+
+  const archiveSubagentDetail = useCallback(async () => {
+    if (!subagentDetailRun) return;
+    setSubagentDetailMutating(true);
+    try {
+      await accomplish.archiveSubagent({ runId: subagentDetailRun.runId, archived: true });
+      setSubagentDetailRun(null);
+      await refreshSubagentRuns();
+    } catch (err) {
+      console.error('Failed to archive subagent:', err);
+    } finally {
+      setSubagentDetailMutating(false);
+    }
+  }, [accomplish, refreshSubagentRuns, subagentDetailRun]);
+
+  const closeSubagentDetailSession = useCallback(async () => {
+    if (!subagentDetailRun) return;
+    setSubagentDetailMutating(true);
+    try {
+      const updated = await accomplish.closeSubagent({ runId: subagentDetailRun.runId });
+      setSubagentDetailRun(updated);
+      await loadSubagentDetail(updated);
+      await refreshSubagentRuns();
+    } catch (err) {
+      console.error('Failed to close subagent session:', err);
+    } finally {
+      setSubagentDetailMutating(false);
+    }
+  }, [accomplish, loadSubagentDetail, refreshSubagentRuns, subagentDetailRun]);
 
   const tryAttachSnapshotFromMessage = useCallback((message?: TaskMessage | null) => {
     if (!message || message.type !== 'tool') return;
@@ -779,9 +1214,10 @@ export default function ExecutionPage() {
     let cancelled = false;
     const loadModelState = async () => {
       try {
-        const [selectedModelRaw, providersRaw] = await Promise.all([
+        const [selectedModelRaw, providersRaw, apiKeysRaw] = await Promise.all([
           accomplish.getSelectedModel(),
           accomplish.listModelProviders(),
+          accomplish.getAllApiKeys(),
         ]);
         if (cancelled) return;
 
@@ -813,10 +1249,12 @@ export default function ExecutionPage() {
             : null
         );
         setModelProviders(Array.isArray(providersRaw) ? (providersRaw as ProviderConfig[]) : []);
+        setModelApiKeyStatus(apiKeysRaw ?? {});
       } catch {
         if (cancelled) return;
         setGlobalSelectedModel(null);
         setModelProviders([]);
+        setModelApiKeyStatus({});
       }
     };
 
@@ -1444,6 +1882,7 @@ export default function ExecutionPage() {
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
+            <BuildRuntimeIndicator agentId={taskAgentId || undefined} />
             <Button
               size="sm"
               variant="outline"
@@ -1460,6 +1899,25 @@ export default function ExecutionPage() {
           </div>
         </div>
       </div>
+
+      {currentTask?.id && subagentRuns.length > 0 ? (
+        <div className="border-b border-border/60 bg-card/30 px-6 py-2">
+          <div className="mx-auto max-w-6xl rounded-lg border border-border/60 bg-background/60 p-3">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div className="text-xs font-medium text-foreground">Subagents</div>
+              <div className="text-[11px] text-muted-foreground">
+                {subagentRunsLoading ? 'Refreshing…' : `${subagentRuns.length} tracked`}
+              </div>
+            </div>
+            <SubagentTreeList
+              nodes={subagentTree}
+              stoppingSubagentRunId={stoppingSubagentRunId}
+              onOpen={(run) => void loadSubagentDetail(run)}
+              onStop={(runId) => void stopSubagentRun(runId)}
+            />
+          </div>
+        </div>
+      ) : null}
 
       {/* Browser installation modal - only shown during Playwright download */}
       <AnimatePresence>
@@ -1939,6 +2397,7 @@ export default function ExecutionPage() {
           agentId={currentTask.agentId}
           privacyMode={privacyMode}
           onPrivacyModeChange={setPrivacyMode}
+          slashCommands={executionSlashCommands}
           onOpenSavedPrompts={(mode) => {
             setSavedPromptsMode(mode);
             setShowSavedPromptsSelector(true);
@@ -2029,9 +2488,167 @@ export default function ExecutionPage() {
             )}
           </div>
 
-          <DialogFooter>
+      <DialogFooter>
             <Button variant="outline" onClick={() => setProactiveOpen(false)}>
               Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(subagentDetailRun)} onOpenChange={(open) => {
+        if (!open && !subagentDetailSending) {
+          setSubagentDetailRun(null);
+        }
+      }}>
+        <DialogContent className="flex max-h-[90vh] max-w-4xl flex-col overflow-hidden">
+          <DialogHeader>
+            <DialogTitle>
+              {subagentDetailRun ? `Subagent: ${subagentDetailRun.label || subagentDetailRun.childAgentId}` : 'Subagent'}
+            </DialogTitle>
+            <DialogDescription>
+              {subagentDetailRun
+                ? `Child agent ${subagentDetailRun.childAgentId} · ${formatSubagentRunStatus(subagentDetailRun.status, subagentDetailRun.resultStatus)} · ${formatSubagentModeLabel(subagentDetailRun).toLowerCase()}`
+                : 'Tracked child agent session'}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid min-h-0 flex-1 gap-3 overflow-y-auto pr-1">
+            <div className="rounded-md border border-border/60 bg-muted/10 px-3 py-2 text-xs text-muted-foreground">
+              {subagentDetailRun?.task || 'No task summary available.'}
+            </div>
+            {subagentDetailRun ? (
+              <div className="rounded-md border border-border/60 bg-background/70 px-3 py-2 text-[11px] text-muted-foreground">
+                <div>Child session key: {subagentDetailRun.childSessionKey}</div>
+                {subagentDetailRun.sessionId ? <div>Session id: {subagentDetailRun.sessionId}</div> : null}
+                {typeof subagentDetailRun.reuseCount === 'number' ? <div>Session reuse count: {subagentDetailRun.reuseCount}</div> : null}
+                {subagentDetailRun.closedAt ? <div>Closed at: {new Date(subagentDetailRun.closedAt).toLocaleString()}</div> : null}
+                {subagentDetailRun.archivedAt ? <div>Archived at: {new Date(subagentDetailRun.archivedAt).toLocaleString()}</div> : null}
+              </div>
+            ) : null}
+            {subagentDetailRun?.inheritedContext || subagentDetailRun?.executionPolicy ? (
+              <div className="rounded-md border border-border/60 bg-background/70 px-3 py-2 text-[11px] text-muted-foreground">
+                <div className="font-medium text-foreground">Inherited context</div>
+                {subagentDetailRun.inheritedContext?.workingDirectory ? <div>Working directory: {subagentDetailRun.inheritedContext.workingDirectory}</div> : null}
+                {Array.isArray(subagentDetailRun.inheritedContext?.attachedFiles) && subagentDetailRun.inheritedContext?.attachedFiles?.length ? (
+                  <div>Attached files: {subagentDetailRun.inheritedContext.attachedFiles.length}</div>
+                ) : (
+                  <div>Attached files: none</div>
+                )}
+                <div>Privacy mode: {subagentDetailRun.inheritedContext?.privacyMode || 'normal'}</div>
+                {subagentDetailRun.executionPolicy ? (
+                  <>
+                    <div className="mt-2 font-medium text-foreground">Execution policy</div>
+                    <div>Inherited from parent agent: {subagentDetailRun.executionPolicy.inheritedFromAgentId}</div>
+                    <div>Default mode: {subagentDetailRun.executionPolicy.mode}</div>
+                    <div>Max children: {subagentDetailRun.executionPolicy.maxChildren}</div>
+                    <div>Max depth: {subagentDetailRun.executionPolicy.maxDepth}</div>
+                    <div>Timeout: {Math.round(subagentDetailRun.executionPolicy.runTimeoutMs / 1000)}s</div>
+                    <div>Auto relay completions: {subagentDetailRun.executionPolicy.autoRelayCompletions ? 'on' : 'off'}</div>
+                  </>
+                ) : null}
+              </div>
+            ) : null}
+
+            <div className="max-h-[420px] overflow-y-auto rounded-md border border-border/60 bg-background/70 p-3">
+              {subagentDetailLoading ? (
+                <div className="text-xs text-muted-foreground">Loading transcript…</div>
+              ) : !subagentDetailTask || subagentDetailTask.messages.length === 0 ? (
+                <div className="text-xs text-muted-foreground">No transcript available yet.</div>
+              ) : (
+                <div className="space-y-3">
+                  {subagentDetailTask.messages.map((message, index) => (
+                    <MessageBubble
+                      key={`${message.id}-${index}`}
+                      message={message}
+                      debugMode={debugModeEnabled}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_220px] sm:items-end">
+              <div className="grid gap-2">
+                <label className="text-xs text-muted-foreground">Send follow-up to child session</label>
+                <Textarea
+                  value={subagentDetailPrompt}
+                  onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setSubagentDetailPrompt(event.target.value)}
+                  placeholder="Ask the child agent to continue or refine its work..."
+                  className="min-h-[88px]"
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <label className="text-xs text-muted-foreground">Model override for next child turns</label>
+                <select
+                  value={subagentDetailModelOverride}
+                  onChange={(event) => setSubagentDetailModelOverride(event.target.value)}
+                  className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  disabled={subagentDetailSending || availableSubagentModelOptions.length === 0}
+                >
+                  <option value="">Keep current child model</option>
+                  {modelProviders
+                    .filter((provider) => availableSubagentModelOptions.some((entry) => entry.providerId === String(provider.id)))
+                    .map((provider) => (
+                      <optgroup key={provider.id} label={provider.name}>
+                        {availableSubagentModelOptions
+                          .filter((entry) => entry.providerId === String(provider.id))
+                          .map((entry) => (
+                            <option key={entry.value} value={entry.value}>
+                              {entry.displayName}
+                            </option>
+                          ))}
+                      </optgroup>
+                    ))}
+                </select>
+                <div className="text-[11px] text-muted-foreground">
+                  {subagentDetailRun?.model
+                    ? `Current child model: ${subagentDetailRun.model.provider}:${subagentDetailRun.model.model}`
+                    : 'No explicit child model override is currently set.'}
+                </div>
+                <div className="text-[11px] text-muted-foreground">
+                  {availableSubagentModelOptions.length === 0
+                    ? 'No selectable models are available here yet. Add an API key or local provider first.'
+                    : 'Only models with a configured API key or local runtime are listed.'}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setSubagentDetailRun(null)}
+              disabled={subagentDetailSending || subagentDetailMutating}
+            >
+              Close
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => subagentDetailRun && void stopSubagentRun(subagentDetailRun.runId)}
+              disabled={subagentDetailSending || subagentDetailMutating || !subagentDetailRun || !(subagentDetailRun.status === 'running' || subagentDetailRun.status === 'accepted')}
+            >
+              Stop
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => void closeSubagentDetailSession()}
+              disabled={subagentDetailSending || subagentDetailMutating || !subagentDetailRun}
+            >
+              {subagentDetailMutating ? 'Working…' : 'Close session'}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => void archiveSubagentDetail()}
+              disabled={subagentDetailSending || subagentDetailMutating || !subagentDetailRun}
+            >
+              {subagentDetailMutating ? 'Working…' : 'Archive'}
+            </Button>
+            <Button
+              onClick={() => void sendSubagentFollowUp()}
+              disabled={!subagentDetailPrompt.trim() || subagentDetailSending || subagentDetailMutating || !subagentDetailTask}
+            >
+              {subagentDetailSending ? 'Sending…' : 'Send follow-up'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -2418,6 +3035,10 @@ const MessageBubble = memo(function MessageBubble({ message, shouldStream = fals
       animate={{ opacity: 1, y: 0 }}
       transition={springs.gentle}
       className={cn('flex', isUser ? 'justify-end' : 'justify-start')}
+      style={{
+        contentVisibility: 'auto',
+        containIntrinsicSize: '180px',
+      }}
     >
       <div
         className={cn(

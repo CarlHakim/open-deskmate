@@ -16,7 +16,7 @@ import { getBundledNodePaths, logBundledNodeInfo } from '../utils/bundled-node';
 import path from 'path';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'child_process';
 import { detectTaskComplexity, detectTaskNeedsBrowser, getRuntimeSpeedMode } from '../services/task-intent';
-import { resolveSelectedModelForAgent } from '../services/agent-context';
+import { resolveSelectedModelForTask } from '../services/agent-context';
 import type {
   TaskConfig,
   Task,
@@ -757,7 +757,7 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
     }
 
     // Set Ollama host if configured
-    const selectedModel = resolveSelectedModelForAgent(config?.agentId);
+    const selectedModel = resolveSelectedModelForTask(config?.taskId, config?.agentId);
     if (
       selectedModel?.provider &&
       selectedModel.provider !== 'anthropic' &&
@@ -790,6 +790,9 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
       env.ACCOMPLISH_TASK_ID = this.currentTaskId;
       console.log('[OpenCode CLI] Task ID in environment:', this.currentTaskId);
     }
+    if (config?.agentId) {
+      env.ACCOMPLISH_AGENT_ID = config.agentId;
+    }
 
     this.emit('debug', { type: 'info', message: 'Environment configured with API keys' });
 
@@ -798,7 +801,7 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
 
   private async buildCliArgs(config: TaskConfig): Promise<string[]> {
     // Get selected model from settings
-    const selectedModel = resolveSelectedModelForAgent(config.agentId);
+    const selectedModel = resolveSelectedModelForTask(config.taskId, config.agentId);
 
     // Write the prompt to a temp file to avoid shell escaping issues.
     // On Windows, PowerShell interprets special characters ($, :, (), etc.)

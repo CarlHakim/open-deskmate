@@ -2,7 +2,7 @@ import { ChannelType, Client, GatewayIntentBits, Partials, type Message } from '
 import type { DiscordConnectorConfig, DiscordConnectorStatus } from '@accomplish/shared';
 import { addDiscordDmAllowlistEntry, getDiscordConfig } from '../store/discordConfig';
 import { getDiscordToken } from '../store/secureStorage';
-import { dispatchTask } from './task-dispatch';
+import { startAgentEngineTask } from '../runtime/agent-engine';
 import { getTask } from '../store/taskHistory';
 import { resolveActiveAgentId } from './agent-context';
 import { approveDiscordPairing, getOrCreateDiscordPairing } from '../store/discordPairing';
@@ -275,7 +275,7 @@ async function handleDiscordMessage(message: Message, runtimeKey: string): Promi
   };
   try {
     const prompt = formatPrompt(message, content);
-    const { completion } = await dispatchTask(
+    const { completion } = await startAgentEngineTask(
       {
         prompt,
         taskId,
@@ -507,4 +507,3 @@ export async function sendDiscordOutboundMessage(params: {
     }
   }
 }
-

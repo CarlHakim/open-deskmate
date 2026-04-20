@@ -611,7 +611,26 @@ export default function HelpPage() {
               {error}
             </div>
           ) : docPage ? (
-            <article className="help-markdown prose prose-slate max-w-none dark:prose-invert">
+            <article
+              className={[
+                'help-markdown prose prose-sm max-w-none rounded-xl border border-border/60 bg-card/80 px-6 py-5 shadow-sm backdrop-blur-sm',
+                'text-foreground',
+                'prose-headings:text-foreground prose-headings:font-semibold',
+                'prose-p:text-foreground prose-p:leading-7',
+                'prose-strong:text-foreground',
+                'prose-em:text-foreground',
+                'prose-ul:text-foreground prose-ol:text-foreground',
+                'prose-li:text-foreground',
+                'prose-a:text-primary prose-a:underline prose-a:underline-offset-2',
+                'prose-code:text-foreground prose-code:bg-muted prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded',
+                'prose-pre:border prose-pre:border-border prose-pre:bg-muted prose-pre:text-foreground prose-pre:shadow-none',
+                'prose-blockquote:border-l-4 prose-blockquote:border-border prose-blockquote:text-muted-foreground',
+                'prose-hr:border-border',
+                'prose-table:text-foreground',
+                'prose-thead:border-border prose-tbody:border-border prose-tr:border-border',
+                'prose-th:text-foreground prose-td:text-foreground',
+              ].join(' ')}
+            >
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 rehypePlugins={[rehypeRaw, rehypeSlug, [rehypeSanitize, sanitizeSchema]]}

@@ -17,9 +17,8 @@ import {
   snapshotCanvas,
   getCanvasWindowUrl,
 } from './services/canvas-window';
-import { dispatchTask, resumeTaskSession } from './services/task-dispatch';
+import { getAgentEngineSessionId, resumeAgentEnginePrompt, startAgentEngineTask } from './runtime/agent-engine';
 import { getTask } from './store/taskHistory';
-import { getTaskManager } from './opencode/task-manager';
 
 const CANVAS_API_HOST = '127.0.0.1';
 
@@ -94,7 +93,7 @@ function parseJsonBody(req: http.IncomingMessage): Promise<Record<string, unknow
 
 function resolveSessionIdForTask(taskId?: string): string | undefined {
   if (!taskId) return undefined;
-  const active = getTaskManager().getSessionId(taskId);
+  const active = getAgentEngineSessionId(taskId);
   if (active) return active;
   const stored = getTask(taskId);
   return stored?.sessionId;
@@ -290,11 +289,16 @@ async function handleCanvasUserAction(payload: Record<string, unknown>): Promise
   const prompt = `A2UI user action received:\n${actionText}`;
 
   if (sessionId) {
-    const result = await resumeTaskSession(sessionId, prompt, taskId, agentId);
+    const result = await resumeAgentEnginePrompt({
+      prompt,
+      taskId,
+      agentIdOverride: agentId,
+      sessionId,
+    });
     return { ok: true, taskId: result.taskId, sessionId };
   }
 
-  const result = await dispatchTask({ prompt, agentId });
+  const result = await startAgentEngineTask({ prompt, agentId });
   return { ok: true, taskId: result.taskId };
 }
 

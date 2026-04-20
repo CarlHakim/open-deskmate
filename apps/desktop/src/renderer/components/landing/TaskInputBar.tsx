@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useEffect, useState, useCallback, forwardRef, useImperativeHandle } from 'react';
+import { useRef, useEffect, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react';
 import { getAccomplish } from '../../lib/accomplish';
 import { analytics } from '../../lib/analytics';
 import { CornerDownLeft, Loader2, Folder, X, FileText, Settings, Mic, Plus, Image, Sparkles, Shield } from 'lucide-react';
@@ -10,6 +10,8 @@ import { useAttachmentStore } from '../../stores/attachmentStore';
 import { useVoiceWakeTalkMode } from '../../hooks/useVoiceWakeTalkMode';
 import ContextWindowIndicator from '../chat/ContextWindowIndicator';
 import type { ContextWindowEstimateResponse } from '@accomplish/shared';
+import InlineSlashCommandMenu from '../commands/InlineSlashCommandMenu';
+import { filterSlashCommands, type SlashCommandDefinition } from '../../lib/slash-commands';
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -47,6 +49,7 @@ interface TaskInputBarProps {
   taskId?: string;
   privacyMode?: 'normal' | 'incognito';
   onPrivacyModeChange?: (mode: 'normal' | 'incognito') => void;
+  slashCommands?: SlashCommandDefinition[];
 }
 
 const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function TaskInputBar({
@@ -63,12 +66,14 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
   taskId,
   privacyMode = 'normal',
   onPrivacyModeChange,
+  slashCommands = [],
 }, ref) {
   const isInputDisabled = disabled;
   const isActionDisabled = disabled || isLoading;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const accomplish = getAccomplish();
   const [text, setText] = useState('');
+  const [selectedSlashIndex, setSelectedSlashIndex] = useState(0);
   const textRef = useRef(text);
   textRef.current = text;
   const [contextStats, setContextStats] = useState<ContextWindowEstimateResponse | null>(null);
@@ -123,6 +128,18 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
   useEffect(() => {
     loadPrompts();
   }, [loadPrompts]);
+
+  const filteredSlashCommands = useMemo(
+    () => filterSlashCommands(text, slashCommands),
+    [slashCommands, text]
+  );
+
+  useEffect(() => {
+    setSelectedSlashIndex((current) => {
+      if (filteredSlashCommands.length === 0) return 0;
+      return Math.min(current, filteredSlashCommands.length - 1);
+    });
+  }, [filteredSlashCommands]);
 
   // Live context window estimation (debounced)
   useEffect(() => {
@@ -231,6 +248,39 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
   }, [text]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (filteredSlashCommands.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSelectedSlashIndex((current) => (
+          current >= filteredSlashCommands.length - 1 ? 0 : current + 1
+        ));
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSelectedSlashIndex((current) => (
+          current <= 0 ? filteredSlashCommands.length - 1 : current - 1
+        ));
+        return;
+      }
+      if ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') {
+        e.preventDefault();
+        const selected = filteredSlashCommands[selectedSlashIndex] || filteredSlashCommands[0];
+        if (selected) {
+          Promise.resolve(selected.execute()).then(() => {
+            setText('');
+            setSelectedSlashIndex(0);
+          });
+        }
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setText('');
+        setSelectedSlashIndex(0);
+        return;
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       if (!text.trim()) return;
@@ -248,7 +298,7 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
   };
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="relative z-20 flex flex-col gap-2">
       {/* Main input area */}
       <div className="relative flex flex-col rounded-2xl border-2 border-border/60 bg-background px-4 py-3 shadow-soft transition-[border-color,box-shadow] duration-200 ease-out focus-within:border-primary/50 focus-within:shadow-glow">
         <div className="mb-2 flex items-center justify-between gap-2">
@@ -288,17 +338,30 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
           </DropdownMenu>
 
           {/* Text input */}
-          <textarea
-            data-testid="task-input-textarea"
-            ref={textareaRef}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={placeholder}
-            disabled={isInputDisabled}
-            rows={1}
-            className={`max-h-[200px] min-h-[40px] flex-1 resize-none bg-transparent text-foreground placeholder:text-muted-foreground/60 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 leading-relaxed ${large ? 'text-lg' : 'text-sm'}`}
-          />
+          <div className="relative min-w-0 flex-1">
+            <textarea
+              data-testid="task-input-textarea"
+              ref={textareaRef}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={placeholder}
+              disabled={isInputDisabled}
+              rows={1}
+              className={`max-h-[200px] min-h-[40px] w-full resize-none bg-transparent py-2 text-foreground placeholder:text-muted-foreground/60 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 leading-relaxed ${large ? 'text-lg' : 'text-sm'}`}
+            />
+            <InlineSlashCommandMenu
+              commands={filteredSlashCommands}
+              selectedIndex={selectedSlashIndex}
+              onSelect={(command, index) => {
+                setSelectedSlashIndex(index);
+                Promise.resolve(command.execute()).then(() => {
+                  setText('');
+                  setSelectedSlashIndex(0);
+                });
+              }}
+            />
+          </div>
 
           {onPlanNextJobs && (
             <button

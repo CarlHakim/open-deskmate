@@ -7,10 +7,9 @@ import os from 'os';
 import { dialog } from 'electron';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { GatewayAuthMode, GatewayRuntimeStatus, GatewayTailscaleMode, UsagePeriod } from '@accomplish/shared';
-import { dispatchTask, resumeTaskSession } from './task-dispatch';
+import { hasActiveAgentEngineTask, resumeAgentEngineSession, startAgentEngineTask, stopAgentEngineTask } from '../runtime/agent-engine';
 import { listWebPermissionRequests, resolveWebPermissionResponse } from './webhook-permissions';
 import { getTask, getTasks, updateTaskSummary, updateTaskStatus } from '../store/taskHistory';
-import { getTaskManager } from '../opencode/task-manager';
 import {
   getFolder,
   getFoldersForAgent,
@@ -926,20 +925,17 @@ function isTaskTerminal(status: string | undefined): boolean {
 }
 
 async function interruptTaskById(taskId: string): Promise<{ ok: boolean; status: number; error?: string }> {
-  const taskManager = getTaskManager();
-
-  if (taskManager.isTaskQueued(taskId)) {
-    taskManager.cancelQueuedTask(taskId);
+  const stopState = await stopAgentEngineTask(taskId, { interruptFirst: true });
+  if (stopState === 'queued') {
     updateTaskStatus(taskId, 'interrupted', new Date().toISOString());
     return { ok: true, status: 200 };
   }
 
-  if (taskManager.hasActiveTask(taskId)) {
-    await taskManager.interruptTask(taskId);
+  if (stopState === 'active') {
     updateTaskStatus(taskId, 'interrupted', new Date().toISOString());
     setTimeout(() => {
-      if (!taskManager.hasActiveTask(taskId)) return;
-      void taskManager.cancelTask(taskId).catch(() => {});
+      if (!hasActiveAgentEngineTask(taskId)) return;
+      void stopAgentEngineTask(taskId, { interruptFirst: false }).catch(() => {});
     }, 250);
     return { ok: true, status: 200 };
   }
@@ -1113,7 +1109,7 @@ async function startGatewayTask(payload: Record<string, unknown>): Promise<Gatew
   const existingSession = getGatewaySession(route.sessionKey);
   const sessionId = explicitSessionId ?? existingSession?.sessionId;
 
-  const { taskId, completion } = await dispatchTask(
+  const { taskId, completion } = await startAgentEngineTask(
     {
       prompt,
       agentId: route.agentId,
@@ -9435,7 +9431,7 @@ export function startWebhookServer(): http.Server {
           sendJson(res, 400, { error: 'sessionId or sessionKey with known session is required' });
           return;
         }
-        const result = await resumeTaskSession(
+        const result = await resumeAgentEngineSession(
           sessionId,
           prompt,
           taskId,

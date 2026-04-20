@@ -4,7 +4,30 @@
 
 # OpenDeskmate
 
-An open-source local-first AI agent platform for Windows forked from the Openwork for Mac project. It offers OpenClaw-style capabilities including multi-agent workflows, connector routing, automation loops, and tool-driven execution, but with a full settings UI instead of CLI-only setup. Run locally with your own provider keys, configure everything from the desktop/web settings panels, and install directly on Windows (installer or portable executable) without a cloud dependency.
+An open-source local-first AI agent platform for Windows forked from the Openwork for Mac project. It offers OpenClaw-style capabilities including multi-agent workflows, connector routing, automation loops, tool-driven execution, and tracked subagent orchestration, but with a full desktop settings UI instead of CLI-only setup. Run locally with your own provider keys, configure models, permissions, connectors, plugins, and automation from the app, and install directly on Windows (installer or portable executable) without a cloud dependency.
+
+---
+
+## What OpenDeskmate Is For
+
+OpenDeskmate is built for people who want local agent workflows without giving up operational control. It is aimed at casual users, developers, technical operators, and power users who need more than a single chat window:
+
+- Run agent tasks against local files and real project workspaces on Windows.
+- Switch between quick chat interactions and longer-running build workflows.
+- Route connectors, tools, and automation into the right agent with explicit settings.
+- Monitor subagents, runtime permissions, usage, and task state from the desktop UI.
+- Extend the app with skills, plugins, help docs, and connector-backed workflows.
+
+---
+
+## Why It Differs From Openwork / OpenClaw
+
+OpenDeskmate keeps the local-first, agentic power of Openwork and OpenClaw, but makes it much easier to operate day to day on Windows. The main difference is usability: instead of relying on CLI-heavy setup, scattered config, and hidden runtime state, OpenDeskmate brings the working surface and the configuration surface into a straightforward desktop UI.
+
+- Configure models, agents, subagents, permissions, connectors, plugins, schedules, voice features, and pricing from the app.
+- Use Chat Mode for fast prompts or Build Mode for workspace-driven implementation without changing tools.
+- Inspect task history, diffs, terminals, runtime logs, and child-agent runs in one place.
+- Keep advanced capabilities available without making normal setup and operation feel like developer-only infrastructure.
 
 ---
 
@@ -12,16 +35,86 @@ An open-source local-first AI agent platform for Windows forked from the Openwor
 
 - **Runs locally** - Your files and secrets stay on your machine by default.
 - **Bring your own AI** - OpenAI, Anthropic, Google, xAI, Ollama, plus custom OpenAI-compatible providers/models.
+- **Chat Mode + Build Mode** - Use fast task/chat flows or switch into a full workspace-oriented build surface with file tree, editor tabs, task history, diff review, runtime logs, and embedded terminal sessions.
 - **Multi-agent workspaces** - Per-agent role name, avatar, workspace defaults, and model/provider override with global fallback.
+- **Tracked subagents** - Per-agent subagent controls, global subagent monitoring, run/session modes, inherited context rules, and close/archive controls.
 - **Active Automation Mode per agent** - Enable agentic loop behavior with configurable heartbeat schedules.
+- **Permission policy controls** - Configure runtime permission defaults, recent audit history, and per-agent permission overrides for more autonomous or more locked-down agents.
 - **Session-key gateway + dynamic routing** - Route traffic from connectors into the right agent/account binding at runtime.
 - **Messaging Connector Extensions** - Multi-instance connector support (for example multiple Telegram/Discord bots), access policies, ID allowlists, and runtime health/testing.
 - **App Connector Extensions** - Connectors for Notion, Trello, Obsidian, GitHub, Slack, Dropbox, Canva, OneDrive, Supabase, Google apps, Figma, Miro, Outlook, and more.
 - **OAuth + local/public callback modes** - Supports desktop callback, loopback callback, and public HTTPS callback workflows.
 - **User Skills + agent-generated skills** - Create/import/edit/configure skills, private-by-default sharing, versioning, rollback, and test flows.
+- **Plugins** - Discover bundled and managed plugins with manifests, commands, hooks, tools, help docs, diagnostics, and enable/disable lifecycle controls.
+- **Slash commands + launcher flows** - Built-in command surfaces for navigation, agent actions, Build Mode actions, and plugin-contributed commands.
 - **Desktop + WebChat parity** - Saved prompts, add files, incognito mode, work-in-folder, voice wake/talk mode, model badge, context estimate badge/details, and message copy helpers.
+- **Usage + pricing visibility** - Track token usage globally and add provider pricing to estimate cost inside the app shell.
 - **In-app Help system** - Markdown-driven help pages with sidebar navigation, search, syntax highlighting, asset/link support, and live reload from a user-editable folder.
 - **Open source** - MIT licensed and fully transparent.
+
+---
+
+## Build Mode
+
+<table>
+  <tr>
+    <td valign="top">
+      <p><strong>Build Mode</strong> is the desktop workspace for longer-running implementation tasks. It combines agent chat history with project-aware tooling so you can inspect files, review proposed diffs, monitor runtime logs, work across terminal sessions, and keep tracked subagents visible while the main agent is executing.</p>
+      <p>It is designed for tasks that need persistent workspace context rather than a single chat reply.</p>
+    </td>
+    <td valign="top" width="420">
+      <img src="./build-mode.png" alt="OpenDeskmate Build Mode screenshot" width="420" />
+    </td>
+  </tr>
+</table>
+
+---
+
+## Chat Mode
+
+<table>
+  <tr>
+    <td valign="top">
+      <p><strong>Chat Mode</strong> is the faster task surface for direct prompting, follow-up questions, slash commands, saved prompts, file attachments, incognito sessions, and work-in-folder flows.</p>
+      <p>It is optimized for focused agent interaction when you do not need the full Build Mode workspace around the conversation.</p>
+    </td>
+    <td valign="top" width="420">
+      <img src="./chat-mode.png" alt="OpenDeskmate Chat Mode screenshot" width="420" />
+    </td>
+  </tr>
+</table>
+
+---
+
+## Settings
+
+<table>
+  <tr>
+    <td valign="top">
+      <p><strong>Settings</strong> exposes the operational control surface for the app: model and provider setup, runtime permission policy, connector routing, OAuth configuration, plugin lifecycle, voice wake, automation schedules, usage pricing, and per-agent overrides.</p>
+      <p>The goal is to keep advanced runtime configuration inside the desktop UI instead of pushing setup into external config files or a CLI-only workflow.</p>
+    </td>
+    <td valign="top" width="420">
+      <img src="./settings.png" alt="OpenDeskmate Settings screenshot" width="420" />
+    </td>
+  </tr>
+</table>
+
+---
+
+## Subagents
+
+<table>
+  <tr>
+    <td valign="top">
+      <p><strong>Subagents</strong> gives you a global control surface for tracked child agent runs across Chat Mode and Build Mode. You can inspect active, session, archived, and closed runs, review status, and jump back into the parent workflow with context intact.</p>
+      <p>This makes delegated agent work visible and manageable instead of leaving subagent execution as a hidden background detail.</p>
+    </td>
+    <td valign="top" width="420">
+      <img src="./subagents.png" alt="OpenDeskmate Subagents screenshot" width="420" />
+    </td>
+  </tr>
+</table>
 
 ---
 

@@ -6,11 +6,19 @@ import { NODE_TOOLS_API_PORT } from '../node-tools-api';
 import { CANVAS_API_PORT } from '../canvas-api';
 import { getDebugMode, getOllamaConfig } from '../store/appSettings';
 import { listCustomModelProviders } from '../store/modelProviders';
+import { getPermissionPolicySettings } from '../permissions/policy-store';
 import { getApiKey } from '../store/secureStorage';
 import { getAgentContext } from '../services/agent-context';
 import { normalizeAgentIdForStore } from '../store/agents';
 import { getNodePath, getBundledNodePaths } from '../utils/bundled-node';
 import { getCustomMcpRegistryPath, loadCustomMcpRegistry } from './custom-mcp-registry';
+import type {
+  AgentPermissionProfile,
+  OpenCodePermissionConfig,
+  OpenCodePermissionPreview,
+  OpenCodePermissionRulePreview,
+  PermissionPolicySettings,
+} from '@accomplish/shared';
 
 /**
  * Agent name used by Accomplish
@@ -519,6 +527,7 @@ interface AgentConfig {
   description?: string;
   prompt?: string;
   mode?: 'primary' | 'subagent' | 'all';
+  permission?: Record<string, string | Record<string, string>>;
 }
 
 interface McpServerConfig {
@@ -554,6 +563,256 @@ interface OpenCodeConfig {
   agent?: Record<string, AgentConfig>;
   mcp?: Record<string, McpServerConfig>;
   provider?: Record<string, OpenCodeProviderConfig>;
+}
+
+function normalizePermissionToolSet(values: string[] | undefined): Set<string> {
+  return new Set((values || []).map((entry) => String(entry || '').trim().toLowerCase()).filter(Boolean));
+}
+
+function isHardReadOnlyPolicy(settings: PermissionPolicySettings['file']): boolean {
+  return (
+    settings.allowWorkspaceWritesWithoutPrompt === false
+    && settings.allowTaskScopedAllowAll === false
+    && settings.defaultDecision === 'deny'
+  );
+}
+
+function mergePermissionPolicySettings(
+  base: PermissionPolicySettings,
+  profile?: AgentPermissionProfile
+): PermissionPolicySettings {
+  if (!profile || profile.enabled === false) {
+    return base;
+  }
+  return {
+    file: {
+      allowWorkspaceWritesWithoutPrompt:
+        profile.file?.allowWorkspaceWritesWithoutPrompt ?? base.file.allowWorkspaceWritesWithoutPrompt,
+      allowTaskScopedAllowAll:
+        profile.file?.allowTaskScopedAllowAll ?? base.file.allowTaskScopedAllowAll,
+      defaultDecision:
+        profile.file?.defaultDecision ?? base.file.defaultDecision,
+    },
+    runtime: {
+      defaultToolDecision:
+        profile.runtime?.defaultToolDecision ?? base.runtime.defaultToolDecision,
+      defaultQuestionDecision:
+        profile.runtime?.defaultQuestionDecision ?? base.runtime.defaultQuestionDecision,
+      allowedToolNames:
+        profile.runtime?.allowedToolNames ?? base.runtime.allowedToolNames,
+      blockedToolNames:
+        profile.runtime?.blockedToolNames ?? base.runtime.blockedToolNames,
+    },
+    audit: base.audit,
+  };
+}
+
+export function buildOpenCodePermissionRules(settings: PermissionPolicySettings): OpenCodePermissionConfig {
+  const rules: OpenCodePermissionConfig = { '*': 'allow' };
+  const allowedTools = normalizePermissionToolSet(settings.runtime.allowedToolNames);
+  const blockedTools = normalizePermissionToolSet(settings.runtime.blockedToolNames);
+  const runtimeDefaultDeny = settings.runtime.defaultToolDecision === 'deny';
+
+  const applyToolRule = (toolName: 'bash' | 'webfetch' | 'edit') => {
+    if (blockedTools.has(toolName)) {
+      rules[toolName] = 'deny';
+      return;
+    }
+    if (allowedTools.has(toolName)) {
+      rules[toolName] = 'allow';
+    }
+  };
+
+  const applyGlobalOnlyToolRule = (
+    toolName: 'websearch' | 'codesearch' | 'skill' | 'lsp' | 'todoread' | 'todowrite'
+  ) => {
+    if (blockedTools.has(toolName)) {
+      rules[toolName] = 'deny';
+      return;
+    }
+    if (allowedTools.has(toolName)) {
+      rules[toolName] = 'allow';
+      return;
+    }
+    if (runtimeDefaultDeny) {
+      rules[toolName] = 'deny';
+    }
+  };
+
+  applyToolRule('bash');
+  applyToolRule('webfetch');
+  applyToolRule('edit');
+  applyGlobalOnlyToolRule('websearch');
+  applyGlobalOnlyToolRule('codesearch');
+  applyGlobalOnlyToolRule('skill');
+  applyGlobalOnlyToolRule('lsp');
+  applyGlobalOnlyToolRule('todoread');
+  applyGlobalOnlyToolRule('todowrite');
+
+  // OpenDeskmate provides its own tracked subagent system. Deny OpenCode's built-in
+  // task launcher so helper-agent work goes through the app's registry and UI.
+  rules.task = 'deny';
+
+  if (!('bash' in rules) && settings.runtime.defaultToolDecision === 'deny') {
+    rules.bash = 'deny';
+  }
+  if (!('webfetch' in rules) && settings.runtime.defaultToolDecision === 'deny') {
+    rules.webfetch = 'deny';
+  }
+  if (!('edit' in rules) && isHardReadOnlyPolicy(settings.file)) {
+    rules.edit = 'deny';
+  }
+  if (isHardReadOnlyPolicy(settings.file)) {
+    rules.external_directory = 'deny';
+  }
+
+  return rules;
+}
+
+export function buildOpenCodeAgentPermissionOverride(
+  globalSettings: PermissionPolicySettings,
+  profile?: AgentPermissionProfile
+): OpenCodePermissionConfig | undefined {
+  if (!profile || profile.enabled === false) {
+    return undefined;
+  }
+  const globalRules = buildOpenCodePermissionRules(globalSettings);
+  const effectiveRules = buildOpenCodePermissionRules(mergePermissionPolicySettings(globalSettings, profile));
+  const override: OpenCodePermissionConfig = {};
+
+  for (const key of ['edit', 'bash', 'webfetch'] as const) {
+    const globalRule = typeof globalRules[key] === 'string' ? globalRules[key] : undefined;
+    const effectiveRule = typeof effectiveRules[key] === 'string' ? effectiveRules[key] : undefined;
+    if (globalRule === effectiveRule) continue;
+    override[key] = effectiveRule ?? 'allow';
+  }
+
+  return Object.keys(override).length > 0 ? override : undefined;
+}
+
+function buildOpenCodePermissionPreviewSources(
+  globalSettings: PermissionPolicySettings,
+  effectiveRules: OpenCodePermissionConfig,
+  targetAgentOverride?: OpenCodePermissionConfig | null
+): OpenCodePermissionRulePreview[] {
+  const allowedTools = normalizePermissionToolSet(globalSettings.runtime.allowedToolNames);
+  const blockedTools = normalizePermissionToolSet(globalSettings.runtime.blockedToolNames);
+  const entries = Object.entries(effectiveRules).filter(
+    (entry): entry is [string, string] => typeof entry[1] === 'string'
+  );
+  const preferredOrder = [
+    '*',
+    'bash',
+    'webfetch',
+    'edit',
+    'websearch',
+    'codesearch',
+    'skill',
+    'lsp',
+    'todoread',
+    'todowrite',
+    'task',
+    'external_directory',
+  ];
+
+  const getSortIndex = (rule: string): number => {
+    const index = preferredOrder.indexOf(rule);
+    return index === -1 ? preferredOrder.length : index;
+  };
+
+  return entries
+    .map(([rule, action]) => {
+      if (rule === 'task') {
+        return {
+          rule,
+          action,
+          source: 'fixed_app_rule' as const,
+          reason: 'OpenDeskmate always denies the built-in task tool so helper-agent work stays inside the tracked subagent system.',
+        };
+      }
+      if (rule === 'external_directory') {
+        return {
+          rule,
+          action,
+          source: 'fixed_app_rule' as const,
+          reason: 'OpenDeskmate denies external directory access when the effective file policy is fully read-only.',
+        };
+      }
+      if (targetAgentOverride && rule in targetAgentOverride) {
+        return {
+          rule,
+          action,
+          source: 'agent_override' as const,
+          reason: 'This effective executor rule differs from the global rule because the active agent has a permission profile override.',
+        };
+      }
+      if (allowedTools.has(rule)) {
+        return {
+          rule,
+          action,
+          source: 'global_builtin_override' as const,
+          reason: 'This built-in was explicitly allowed in the global runtime policy allowlist.',
+        };
+      }
+      if (blockedTools.has(rule)) {
+        return {
+          rule,
+          action,
+          source: 'global_builtin_override' as const,
+          reason: 'This built-in was explicitly denied in the global runtime policy blocklist.',
+        };
+      }
+      if (rule === '*') {
+        return {
+          rule,
+          action,
+          source: 'global_default' as const,
+          reason: 'Base executor default generated from the saved global permission policy.',
+        };
+      }
+      if (rule === 'edit' && action === 'deny') {
+        return {
+          rule,
+          action,
+          source: 'global_default' as const,
+          reason: 'The effective file policy is read-only enough that edit is denied at executor level.',
+        };
+      }
+      return {
+        rule,
+        action,
+        source: 'global_default' as const,
+        reason: 'This rule comes from the saved global permission defaults rather than an explicit built-in override.',
+      };
+    })
+    .sort((a, b) => {
+      const indexDiff = getSortIndex(a.rule) - getSortIndex(b.rule);
+      return indexDiff !== 0 ? indexDiff : a.rule.localeCompare(b.rule);
+    });
+}
+
+export function getOpenCodePermissionPreview(requestedAgentId?: string): OpenCodePermissionPreview {
+  const globalSettings = getPermissionPolicySettings();
+  const globalRules = buildOpenCodePermissionRules(globalSettings);
+  const agentContext = requestedAgentId ? getAgentContext(requestedAgentId) : null;
+  const targetAgentOverride = agentContext
+    ? buildOpenCodeAgentPermissionOverride(globalSettings, agentContext.agent.permissionProfile)
+    : undefined;
+  const effectiveRules = agentContext
+    ? buildOpenCodePermissionRules(mergePermissionPolicySettings(globalSettings, agentContext.agent.permissionProfile))
+    : globalRules;
+  return {
+    globalRules,
+    targetAgentId: agentContext?.agentId,
+    targetAgentName: agentContext?.agent.name,
+    targetAgentOverride: targetAgentOverride ?? null,
+    effectiveRules,
+    effectiveRuleSources: buildOpenCodePermissionPreviewSources(
+      globalSettings,
+      effectiveRules,
+      targetAgentOverride ?? null
+    ),
+  };
 }
 
 function normalizeOpenAICompatibleBaseUrl(providerId: string, baseUrl: string): string {
@@ -794,7 +1053,7 @@ export async function generateOpenCodeConfig(options?: { agentId?: string; syste
         NODE_BIN_PATH: bundledPaths?.binDir || '',
         ...(mcpUseElectronAsNode ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
       },
-      timeout: 10000,
+      timeout: 30000,
     },
     'memory-tools': {
       type: 'local',
@@ -830,19 +1089,26 @@ export async function generateOpenCodeConfig(options?: { agentId?: string; syste
     mergedMcp[id] = server;
   }
 
+  const globalPermissionSettings = getPermissionPolicySettings();
+  const openCodePermission = buildOpenCodePermissionRules(globalPermissionSettings);
+  const agentPermissionOverride = buildOpenCodeAgentPermissionOverride(
+    globalPermissionSettings,
+    agentContext.agent.permissionProfile
+  );
+
   const config: OpenCodeConfig = {
     $schema: 'https://opencode.ai/config.json',
     default_agent: ACCOMPLISH_AGENT_NAME,
-    // Auto-allow all tool permissions - the system prompt instructs the agent to use
-    // AskUserQuestion for user confirmations, which shows in the UI as an interactive modal.
-    // CLI-level permission prompts don't show in the UI and would block task execution.
-    permission: 'allow',
+    // Keep OpenCode permissive by default so tasks do not deadlock on CLI-only approval UX,
+    // but project explicit deny/allow overrides for built-in tools the app can reason about.
+    permission: openCodePermission,
     provider: providerConfig,
     agent: {
       [ACCOMPLISH_AGENT_NAME]: {
         description: 'Browser automation assistant using dev-browser',
         prompt: systemPrompt,
         mode: 'primary',
+        ...(agentPermissionOverride ? { permission: agentPermissionOverride } : {}),
       },
     },
     // MCP servers for additional tools
@@ -866,6 +1132,8 @@ export async function generateOpenCodeConfig(options?: { agentId?: string; syste
       agentId,
       skillsPath,
       customMcpRegistryPath,
+      permissionRules: openCodePermission,
+      agentPermissionOverride,
       mcpServers: Object.keys(config.mcp || {}),
       promptChars: systemPrompt.length,
     });

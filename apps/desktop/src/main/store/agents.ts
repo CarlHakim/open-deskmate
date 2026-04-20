@@ -22,6 +22,15 @@ const DEFAULT_HEARTBEAT_WINDOW_START_TIME = '09:00';
 const DEFAULT_HEARTBEAT_WINDOW_END_TIME = '17:00';
 const DEFAULT_AUTO_SKILL_ENABLED = false;
 const DEFAULT_AUTO_SKILL_AUTO_PROMOTE_LOW_RISK = false;
+const DEFAULT_SUBAGENTS_ENABLED = false;
+const DEFAULT_SUBAGENT_MAX_CHILDREN = 3;
+const DEFAULT_SUBAGENT_MAX_DEPTH = 1;
+const DEFAULT_SUBAGENT_AUTO_RELAY_COMPLETIONS = true;
+const DEFAULT_SUBAGENT_RUN_TIMEOUT_MS = 5 * 60 * 1000;
+const DEFAULT_SUBAGENT_DEFAULT_MODE: 'run' | 'session' = 'run';
+const DEFAULT_SUBAGENT_INHERIT_WORKING_DIRECTORY = true;
+const DEFAULT_SUBAGENT_INHERIT_ATTACHED_FILES = true;
+const DEFAULT_SUBAGENT_INHERIT_PRIVACY_MODE = true;
 
 const VALID_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
 const INVALID_CHARS_RE = /[^a-z0-9_-]+/g;
@@ -103,6 +112,61 @@ function normalizeOptionalShortText(value: unknown): string | undefined {
   return trimmed || undefined;
 }
 
+function normalizeAgentIdList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const next: string[] = [];
+  for (const entry of value) {
+    const normalized = normalizeAgentId(typeof entry === 'string' ? entry : '');
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    next.push(normalized);
+  }
+  return next;
+}
+
+function normalizePermissionDecision(value: unknown): 'allow' | 'deny' | 'prompt' | undefined {
+  return value === 'allow' || value === 'deny' || value === 'prompt' ? value : undefined;
+}
+
+function normalizePermissionToolList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value
+        .map((entry) => (typeof entry === 'string' ? entry.trim().toLowerCase() : ''))
+        .filter(Boolean)
+    )
+  );
+}
+
+function normalizeAgentPermissionProfile(value: unknown): AgentProfile['permissionProfile'] {
+  if (!value || typeof value !== 'object') return undefined;
+  const profile = value as NonNullable<AgentProfile['permissionProfile']>;
+  const file = (profile.file && typeof profile.file === 'object') ? profile.file : {};
+  const runtime = (profile.runtime && typeof profile.runtime === 'object') ? profile.runtime : {};
+  return {
+    enabled: profile.enabled !== false,
+    file: {
+      allowWorkspaceWritesWithoutPrompt:
+        typeof file.allowWorkspaceWritesWithoutPrompt === 'boolean'
+          ? file.allowWorkspaceWritesWithoutPrompt
+          : undefined,
+      allowTaskScopedAllowAll:
+        typeof file.allowTaskScopedAllowAll === 'boolean'
+          ? file.allowTaskScopedAllowAll
+          : undefined,
+      defaultDecision: normalizePermissionDecision(file.defaultDecision),
+    },
+    runtime: {
+      defaultToolDecision: normalizePermissionDecision(runtime.defaultToolDecision),
+      defaultQuestionDecision: normalizePermissionDecision(runtime.defaultQuestionDecision),
+      allowedToolNames: normalizePermissionToolList(runtime.allowedToolNames),
+      blockedToolNames: normalizePermissionToolList(runtime.blockedToolNames),
+    },
+  };
+}
+
 function createDefaultAgent(now: string): AgentProfile {
   return {
     id: DEFAULT_AGENT_ID,
@@ -121,6 +185,16 @@ function createDefaultAgent(now: string): AgentProfile {
     heartbeatWindowEndTime: DEFAULT_HEARTBEAT_WINDOW_END_TIME,
     autoSkillEnabled: DEFAULT_AUTO_SKILL_ENABLED,
     autoSkillAutoPromoteLowRisk: DEFAULT_AUTO_SKILL_AUTO_PROMOTE_LOW_RISK,
+    subagentsEnabled: DEFAULT_SUBAGENTS_ENABLED,
+    subagentMaxChildren: DEFAULT_SUBAGENT_MAX_CHILDREN,
+    subagentMaxDepth: DEFAULT_SUBAGENT_MAX_DEPTH,
+    subagentAllowedAgentIds: [],
+    subagentAutoRelayCompletions: DEFAULT_SUBAGENT_AUTO_RELAY_COMPLETIONS,
+    subagentRunTimeoutMs: DEFAULT_SUBAGENT_RUN_TIMEOUT_MS,
+    subagentDefaultMode: DEFAULT_SUBAGENT_DEFAULT_MODE,
+    subagentInheritWorkingDirectory: DEFAULT_SUBAGENT_INHERIT_WORKING_DIRECTORY,
+    subagentInheritAttachedFiles: DEFAULT_SUBAGENT_INHERIT_ATTACHED_FILES,
+    subagentInheritPrivacyMode: DEFAULT_SUBAGENT_INHERIT_PRIVACY_MODE,
     createdAt: now,
     updatedAt: now,
   };
@@ -191,6 +265,17 @@ export function listAgents(): AgentProfile[] {
       heartbeatPrompt: normalizeHeartbeatPrompt(agent.heartbeatPrompt),
       autoSkillEnabled: agent.autoSkillEnabled ?? DEFAULT_AUTO_SKILL_ENABLED,
       autoSkillAutoPromoteLowRisk: agent.autoSkillAutoPromoteLowRisk ?? DEFAULT_AUTO_SKILL_AUTO_PROMOTE_LOW_RISK,
+      subagentsEnabled: agent.subagentsEnabled ?? DEFAULT_SUBAGENTS_ENABLED,
+      subagentMaxChildren: clampInteger(agent.subagentMaxChildren, DEFAULT_SUBAGENT_MAX_CHILDREN, 1, 12),
+      subagentMaxDepth: clampInteger(agent.subagentMaxDepth, DEFAULT_SUBAGENT_MAX_DEPTH, 1, 4),
+      subagentAllowedAgentIds: normalizeAgentIdList(agent.subagentAllowedAgentIds),
+      subagentAutoRelayCompletions: agent.subagentAutoRelayCompletions ?? DEFAULT_SUBAGENT_AUTO_RELAY_COMPLETIONS,
+      subagentRunTimeoutMs: clampInteger(agent.subagentRunTimeoutMs, DEFAULT_SUBAGENT_RUN_TIMEOUT_MS, 15_000, 3_600_000),
+      subagentDefaultMode: agent.subagentDefaultMode === 'session' ? 'session' : DEFAULT_SUBAGENT_DEFAULT_MODE,
+      subagentInheritWorkingDirectory: agent.subagentInheritWorkingDirectory ?? DEFAULT_SUBAGENT_INHERIT_WORKING_DIRECTORY,
+      subagentInheritAttachedFiles: agent.subagentInheritAttachedFiles ?? DEFAULT_SUBAGENT_INHERIT_ATTACHED_FILES,
+      subagentInheritPrivacyMode: agent.subagentInheritPrivacyMode ?? DEFAULT_SUBAGENT_INHERIT_PRIVACY_MODE,
+      permissionProfile: normalizeAgentPermissionProfile(agent.permissionProfile),
     };
     if (
       next.roleName !== agent.roleName
@@ -209,6 +294,17 @@ export function listAgents(): AgentProfile[] {
       || next.heartbeatPrompt !== agent.heartbeatPrompt
       || next.autoSkillEnabled !== agent.autoSkillEnabled
       || next.autoSkillAutoPromoteLowRisk !== agent.autoSkillAutoPromoteLowRisk
+      || next.subagentsEnabled !== agent.subagentsEnabled
+      || next.subagentMaxChildren !== agent.subagentMaxChildren
+      || next.subagentMaxDepth !== agent.subagentMaxDepth
+      || JSON.stringify(next.subagentAllowedAgentIds) !== JSON.stringify(agent.subagentAllowedAgentIds ?? [])
+      || next.subagentAutoRelayCompletions !== agent.subagentAutoRelayCompletions
+      || next.subagentRunTimeoutMs !== agent.subagentRunTimeoutMs
+      || next.subagentDefaultMode !== (agent.subagentDefaultMode ?? DEFAULT_SUBAGENT_DEFAULT_MODE)
+      || next.subagentInheritWorkingDirectory !== (agent.subagentInheritWorkingDirectory ?? DEFAULT_SUBAGENT_INHERIT_WORKING_DIRECTORY)
+      || next.subagentInheritAttachedFiles !== (agent.subagentInheritAttachedFiles ?? DEFAULT_SUBAGENT_INHERIT_ATTACHED_FILES)
+      || next.subagentInheritPrivacyMode !== (agent.subagentInheritPrivacyMode ?? DEFAULT_SUBAGENT_INHERIT_PRIVACY_MODE)
+      || JSON.stringify(next.permissionProfile ?? null) !== JSON.stringify(agent.permissionProfile ?? null)
     ) {
       mutated = true;
     }
@@ -258,6 +354,18 @@ export function upsertAgent(config: AgentConfig): AgentProfile {
   const hasHeartbeatWindowStartTime = Object.prototype.hasOwnProperty.call(config, 'heartbeatWindowStartTime');
   const hasHeartbeatWindowEndTime = Object.prototype.hasOwnProperty.call(config, 'heartbeatWindowEndTime');
   const hasHeartbeatPrompt = Object.prototype.hasOwnProperty.call(config, 'heartbeatPrompt');
+  const hasSubagentsEnabled = Object.prototype.hasOwnProperty.call(config, 'subagentsEnabled');
+  const hasSubagentMaxChildren = Object.prototype.hasOwnProperty.call(config, 'subagentMaxChildren');
+  const hasSubagentMaxDepth = Object.prototype.hasOwnProperty.call(config, 'subagentMaxDepth');
+  const hasSubagentAllowedAgentIds = Object.prototype.hasOwnProperty.call(config, 'subagentAllowedAgentIds');
+  const hasSubagentAutoRelayCompletions = Object.prototype.hasOwnProperty.call(config, 'subagentAutoRelayCompletions');
+  const hasSubagentDefaultModel = Object.prototype.hasOwnProperty.call(config, 'subagentDefaultModel');
+  const hasSubagentRunTimeoutMs = Object.prototype.hasOwnProperty.call(config, 'subagentRunTimeoutMs');
+  const hasSubagentDefaultMode = Object.prototype.hasOwnProperty.call(config, 'subagentDefaultMode');
+  const hasSubagentInheritWorkingDirectory = Object.prototype.hasOwnProperty.call(config, 'subagentInheritWorkingDirectory');
+  const hasSubagentInheritAttachedFiles = Object.prototype.hasOwnProperty.call(config, 'subagentInheritAttachedFiles');
+  const hasSubagentInheritPrivacyMode = Object.prototype.hasOwnProperty.call(config, 'subagentInheritPrivacyMode');
+  const hasPermissionProfile = Object.prototype.hasOwnProperty.call(config, 'permissionProfile');
   const hasAutoSkillEnabled = Object.prototype.hasOwnProperty.call(config, 'autoSkillEnabled');
   const hasAutoSkillAutoPromoteLowRisk = Object.prototype.hasOwnProperty.call(config, 'autoSkillAutoPromoteLowRisk');
 
@@ -335,6 +443,42 @@ export function upsertAgent(config: AgentConfig): AgentProfile {
       heartbeatPrompt: hasHeartbeatPrompt
         ? normalizeHeartbeatPrompt(config.heartbeatPrompt)
         : agents[existingIndex].heartbeatPrompt,
+      subagentsEnabled: hasSubagentsEnabled
+        ? Boolean(config.subagentsEnabled)
+        : (agents[existingIndex].subagentsEnabled ?? DEFAULT_SUBAGENTS_ENABLED),
+      subagentMaxChildren: hasSubagentMaxChildren
+        ? clampInteger(config.subagentMaxChildren, agents[existingIndex].subagentMaxChildren ?? DEFAULT_SUBAGENT_MAX_CHILDREN, 1, 12)
+        : (agents[existingIndex].subagentMaxChildren ?? DEFAULT_SUBAGENT_MAX_CHILDREN),
+      subagentMaxDepth: hasSubagentMaxDepth
+        ? clampInteger(config.subagentMaxDepth, agents[existingIndex].subagentMaxDepth ?? DEFAULT_SUBAGENT_MAX_DEPTH, 1, 4)
+        : (agents[existingIndex].subagentMaxDepth ?? DEFAULT_SUBAGENT_MAX_DEPTH),
+      subagentAllowedAgentIds: hasSubagentAllowedAgentIds
+        ? normalizeAgentIdList(config.subagentAllowedAgentIds)
+        : normalizeAgentIdList(agents[existingIndex].subagentAllowedAgentIds),
+      subagentAutoRelayCompletions: hasSubagentAutoRelayCompletions
+        ? Boolean(config.subagentAutoRelayCompletions)
+        : (agents[existingIndex].subagentAutoRelayCompletions ?? DEFAULT_SUBAGENT_AUTO_RELAY_COMPLETIONS),
+      subagentDefaultModel: hasSubagentDefaultModel
+        ? (config.subagentDefaultModel ?? undefined)
+        : agents[existingIndex].subagentDefaultModel,
+      subagentRunTimeoutMs: hasSubagentRunTimeoutMs
+        ? clampInteger(config.subagentRunTimeoutMs, agents[existingIndex].subagentRunTimeoutMs ?? DEFAULT_SUBAGENT_RUN_TIMEOUT_MS, 15_000, 3_600_000)
+        : (agents[existingIndex].subagentRunTimeoutMs ?? DEFAULT_SUBAGENT_RUN_TIMEOUT_MS),
+      subagentDefaultMode: hasSubagentDefaultMode
+        ? (config.subagentDefaultMode === 'session' ? 'session' : 'run')
+        : (agents[existingIndex].subagentDefaultMode ?? DEFAULT_SUBAGENT_DEFAULT_MODE),
+      subagentInheritWorkingDirectory: hasSubagentInheritWorkingDirectory
+        ? Boolean(config.subagentInheritWorkingDirectory)
+        : (agents[existingIndex].subagentInheritWorkingDirectory ?? DEFAULT_SUBAGENT_INHERIT_WORKING_DIRECTORY),
+      subagentInheritAttachedFiles: hasSubagentInheritAttachedFiles
+        ? Boolean(config.subagentInheritAttachedFiles)
+        : (agents[existingIndex].subagentInheritAttachedFiles ?? DEFAULT_SUBAGENT_INHERIT_ATTACHED_FILES),
+      subagentInheritPrivacyMode: hasSubagentInheritPrivacyMode
+        ? Boolean(config.subagentInheritPrivacyMode)
+        : (agents[existingIndex].subagentInheritPrivacyMode ?? DEFAULT_SUBAGENT_INHERIT_PRIVACY_MODE),
+      permissionProfile: hasPermissionProfile
+        ? normalizeAgentPermissionProfile(config.permissionProfile)
+        : agents[existingIndex].permissionProfile,
       autoSkillEnabled: hasAutoSkillEnabled
         ? Boolean(config.autoSkillEnabled)
         : (agents[existingIndex].autoSkillEnabled ?? DEFAULT_AUTO_SKILL_ENABLED),
@@ -397,6 +541,26 @@ export function upsertAgent(config: AgentConfig): AgentProfile {
     heartbeatWindowStartTime: normalizeTimeOfDay(config.heartbeatWindowStartTime, DEFAULT_HEARTBEAT_WINDOW_START_TIME),
     heartbeatWindowEndTime: normalizeTimeOfDay(config.heartbeatWindowEndTime, DEFAULT_HEARTBEAT_WINDOW_END_TIME),
     heartbeatPrompt: normalizeHeartbeatPrompt(config.heartbeatPrompt),
+    subagentsEnabled: hasSubagentsEnabled ? Boolean(config.subagentsEnabled) : DEFAULT_SUBAGENTS_ENABLED,
+    subagentMaxChildren: clampInteger(config.subagentMaxChildren, DEFAULT_SUBAGENT_MAX_CHILDREN, 1, 12),
+    subagentMaxDepth: clampInteger(config.subagentMaxDepth, DEFAULT_SUBAGENT_MAX_DEPTH, 1, 4),
+    subagentAllowedAgentIds: normalizeAgentIdList(config.subagentAllowedAgentIds),
+    subagentAutoRelayCompletions: hasSubagentAutoRelayCompletions
+      ? Boolean(config.subagentAutoRelayCompletions)
+      : DEFAULT_SUBAGENT_AUTO_RELAY_COMPLETIONS,
+    subagentDefaultModel: hasSubagentDefaultModel ? (config.subagentDefaultModel ?? undefined) : undefined,
+    subagentRunTimeoutMs: clampInteger(config.subagentRunTimeoutMs, DEFAULT_SUBAGENT_RUN_TIMEOUT_MS, 15_000, 3_600_000),
+    subagentDefaultMode: config.subagentDefaultMode === 'session' ? 'session' : DEFAULT_SUBAGENT_DEFAULT_MODE,
+    subagentInheritWorkingDirectory: hasSubagentInheritWorkingDirectory
+      ? Boolean(config.subagentInheritWorkingDirectory)
+      : DEFAULT_SUBAGENT_INHERIT_WORKING_DIRECTORY,
+    subagentInheritAttachedFiles: hasSubagentInheritAttachedFiles
+      ? Boolean(config.subagentInheritAttachedFiles)
+      : DEFAULT_SUBAGENT_INHERIT_ATTACHED_FILES,
+    subagentInheritPrivacyMode: hasSubagentInheritPrivacyMode
+      ? Boolean(config.subagentInheritPrivacyMode)
+      : DEFAULT_SUBAGENT_INHERIT_PRIVACY_MODE,
+    permissionProfile: hasPermissionProfile ? normalizeAgentPermissionProfile(config.permissionProfile) : undefined,
     autoSkillEnabled: hasAutoSkillEnabled ? Boolean(config.autoSkillEnabled) : DEFAULT_AUTO_SKILL_ENABLED,
     autoSkillAutoPromoteLowRisk: hasAutoSkillAutoPromoteLowRisk
       ? Boolean(config.autoSkillAutoPromoteLowRisk)

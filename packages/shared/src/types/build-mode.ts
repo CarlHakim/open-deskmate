@@ -11,8 +11,17 @@ export type BuildExecutionMode = 'dev' | 'run';
 export type BuildBuildStatus = 'unknown' | 'success' | 'failed';
 export type BuildDiffEnforcementMode = 'auto-apply' | 'preview-only' | 'approval';
 
+export type BuildStartEntryRole = 'preview' | 'worker';
+
+export interface BuildStartEntry {
+  command: string;
+  workspaceRelativePath?: string;
+  role?: BuildStartEntryRole;
+}
+
 export interface BuildRuntimeCommands {
   startCommand: string | null;
+  startEntries?: BuildStartEntry[];
   buildCommand: string | null;
   runCommand: string | null;
 }
@@ -36,6 +45,7 @@ export interface BuildRuntimeState {
   mode: BuildExecutionMode;
   buildStatus: BuildBuildStatus;
   activeCommand?: string;
+  activeStartEntries?: BuildStartEntry[];
   pid?: number;
   port?: number;
   previewUrl?: string;
@@ -74,6 +84,7 @@ export interface BuildStartRequest {
   workspaceRelativePath?: string;
   mode?: BuildExecutionMode;
   commandOverride?: string;
+  startEntries?: BuildStartEntry[];
   envOverrides?: Record<string, string>;
   autoRestart?: boolean;
   forceRestart?: boolean;
@@ -191,6 +202,7 @@ export interface BuildProjectPreset {
   workspaceRelativePath: string;
   commands: {
     startCommand?: string;
+    startEntries?: BuildStartEntry[];
     buildCommand?: string;
     runCommand?: string;
   };
@@ -207,6 +219,7 @@ export interface BuildProjectPresetInput {
   workspaceRelativePath: string;
   commands?: {
     startCommand?: string;
+    startEntries?: BuildStartEntry[];
     buildCommand?: string;
     runCommand?: string;
   };

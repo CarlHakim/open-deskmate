@@ -1,4 +1,5 @@
 import { app, shell } from 'electron';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import type {
@@ -10,12 +11,25 @@ import type {
   HelpDocsSearchResult,
   HelpDocsUpdatedEvent,
 } from '@accomplish/shared';
+import { listEnabledPluginHelpDocContributions } from '../plugins/plugin-registry';
 
 const HELP_DIR_NAME = 'help';
 const HELP_DEFAULTS_DIR_NAME = 'help-defaults';
 const HELP_INDEX_FILE = 'index.json';
 const HELP_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const HELP_MAX_ASSET_BYTES = 8 * 1024 * 1024;
+const HELP_LEGACY_SYNCABLE_HASHES: Record<string, string[]> = {
+  'index.json': ['1703BEC3974D359527A1A292CD5237AF214DE4A6B15694B3F9E2C05AEC71256E'],
+  'getting-started.md': [
+    'BBC56439C0614E1B0B04F491FFBDEED16AFDDB7E3945B3C0F3A19E65177414C3',
+    '6ECC683FF04A3321F2C80C0F1983C816FFEB56C2378ECE02C3259C6DE79EC995',
+  ],
+  'settings/overview.md': [
+    'F8CA6A03158C4106A61BA927B4383E5D9E66C7FC40420B7981AC7B5DE31A50B3',
+    '951199030B4C566218EF4D637573C83A4D12E8B42A9DDF8A7BEE998A381073B4',
+  ],
+  'settings/agents.md': ['3CEA1D526E474A83DFA0902E7139F7C49812087F1068A03EC4FDADC296A11E6C'],
+};
 
 let helpWatcher: fs.FSWatcher | null = null;
 let pendingEmitTimer: NodeJS.Timeout | null = null;
@@ -58,7 +72,7 @@ function isSubPath(rootDir: string, resolvedPath: string): boolean {
   return !!relative && !relative.startsWith('..') && !path.isAbsolute(relative) || resolvedPath === rootDir;
 }
 
-function resolveInsideHelpRoot(helpRoot: string, relativePath: string): string {
+function resolveInsideRoot(rootDir: string, relativePath: string): string {
   const sanitized = toPosixPath(relativePath).trim();
   if (!sanitized) {
     throw new Error('Path is required');
@@ -66,8 +80,8 @@ function resolveInsideHelpRoot(helpRoot: string, relativePath: string): string {
   if (path.isAbsolute(sanitized)) {
     throw new Error('Absolute paths are not allowed');
   }
-  const resolved = path.resolve(helpRoot, fromPosixPath(sanitized));
-  if (!isSubPath(helpRoot, resolved)) {
+  const resolved = path.resolve(rootDir, fromPosixPath(sanitized));
+  if (!isSubPath(rootDir, resolved)) {
     throw new Error('Path traversal detected');
   }
   return resolved;
@@ -112,6 +126,16 @@ function readJsonFile(filePath: string): unknown {
   try {
     const raw = fs.readFileSync(filePath, 'utf-8');
     return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function readFileSha256(filePath: string): string | null {
+  try {
+    const hash = crypto.createHash('sha256');
+    hash.update(fs.readFileSync(filePath));
+    return hash.digest('hex').toUpperCase();
   } catch {
     return null;
   }
@@ -192,8 +216,17 @@ function copyDefaultHelpFilesIfMissing(helpRoot: string): void {
   const sourceFiles = listFilesRecursively(defaultsDir);
   for (const sourceFile of sourceFiles) {
     const relative = path.relative(defaultsDir, sourceFile);
+    const relativePosix = toPosixPath(relative).toLowerCase();
     const destination = path.join(helpRoot, relative);
     if (fs.existsSync(destination)) {
+      const legacyHashes = HELP_LEGACY_SYNCABLE_HASHES[relativePosix];
+      if (legacyHashes?.length) {
+        const destinationHash = readFileSha256(destination);
+        if (destinationHash && legacyHashes.includes(destinationHash)) {
+          ensureDirectory(path.dirname(destination));
+          fs.copyFileSync(sourceFile, destination);
+        }
+      }
       continue;
     }
     ensureDirectory(path.dirname(destination));
@@ -254,7 +287,7 @@ function sanitizeIndexDocs(helpRoot: string, index: HelpDocsIndexFile): HelpDocS
 
   const existingDocs = docs.filter((entry) => {
     try {
-      const abs = resolveInsideHelpRoot(helpRoot, entry.file);
+      const abs = resolveInsideRoot(helpRoot, entry.file);
       return fs.existsSync(abs) && fs.statSync(abs).isFile();
     } catch {
       return false;
@@ -284,8 +317,101 @@ function findDocById(docs: HelpDocSummary[], docId: string): HelpDocSummary | nu
   return docs.find((doc) => doc.id === targetId) ?? null;
 }
 
+interface ResolvedHelpDocSource {
+  doc: HelpDocSummary;
+  absolutePath: string;
+  sourceRoot: string;
+}
+
 function resolveDocPath(helpRoot: string, doc: HelpDocSummary): string {
-  return resolveInsideHelpRoot(helpRoot, doc.file);
+  return resolveInsideRoot(helpRoot, doc.file);
+}
+
+function listPluginHelpDocSources(startOrder: number): ResolvedHelpDocSource[] {
+  const output: ResolvedHelpDocSource[] = [];
+  let order = startOrder;
+  for (const entry of listEnabledPluginHelpDocContributions()) {
+    try {
+      const absolutePath = resolveInsideRoot(entry.pluginDir, entry.doc.file);
+      if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) {
+        continue;
+      }
+      output.push({
+        doc: {
+          ...entry.doc,
+          title: `${entry.pluginName}: ${entry.doc.title}`,
+          description: entry.doc.description || `Plugin help page from ${entry.pluginName}`,
+          order,
+        },
+        absolutePath,
+        sourceRoot: entry.pluginDir,
+      });
+      order += 1;
+    } catch {
+      // Ignore invalid plugin help docs.
+    }
+  }
+  return output;
+}
+
+function getResolvedHelpDocs(): {
+  docs: HelpDocSummary[];
+  rootDir: string;
+  embeddedSiteUrl?: string;
+  sourcesById: Map<string, ResolvedHelpDocSource>;
+} {
+  const helpRoot = getHelpDocsRootDir();
+  ensureDirectory(helpRoot);
+  const index = readIndexFile(helpRoot);
+  const docs = index ? sanitizeIndexDocs(helpRoot, index) : scanMarkdownFiles(helpRoot);
+  const fallbackDocs = docs.length > 0 ? docs : scanMarkdownFiles(helpRoot);
+
+  const sourcesById = new Map<string, ResolvedHelpDocSource>();
+  for (const doc of fallbackDocs) {
+    try {
+      sourcesById.set(doc.id, {
+        doc,
+        absolutePath: resolveDocPath(helpRoot, doc),
+        sourceRoot: helpRoot,
+      });
+    } catch {
+      // Ignore invalid docs.
+    }
+  }
+
+  const pluginSources = listPluginHelpDocSources(fallbackDocs.length);
+  for (const source of pluginSources) {
+    if (!sourcesById.has(source.doc.id)) {
+      sourcesById.set(source.doc.id, source);
+    }
+  }
+
+  return {
+    docs: Array.from(sourcesById.values())
+      .map((entry) => entry.doc)
+      .sort((a, b) => a.order - b.order || a.title.localeCompare(b.title)),
+    rootDir: helpRoot,
+    embeddedSiteUrl: sanitizeEmbeddedSiteUrl(index?.embeddedSiteUrl),
+    sourcesById,
+  };
+}
+
+function resolveHelpDocSource(docId: string): ResolvedHelpDocSource {
+  const resolved = getResolvedHelpDocs();
+  const source = resolved.sourcesById.get(docId.trim().toLowerCase());
+  if (!source) {
+    throw new Error('Help document not found');
+  }
+  return source;
+}
+
+function resolveHelpAssetPath(source: ResolvedHelpDocSource, relativeAssetPath: string): string {
+  const docDir = path.posix.dirname(source.doc.file);
+  const joined = path.posix.normalize(path.posix.join(docDir, toPosixPath(relativeAssetPath)));
+  if (joined.startsWith('../')) {
+    throw new Error('Asset path escapes help directory');
+  }
+  return resolveInsideRoot(source.sourceRoot, joined);
 }
 
 function scoreDocSearch(queryTokens: string[], title: string, content: string): number {
@@ -352,6 +478,10 @@ function scheduleHelpDocsChangedEmit(): void {
   }, 150);
 }
 
+export function notifyHelpDocsChanged(): void {
+  scheduleHelpDocsChangedEmit();
+}
+
 export function onHelpDocsChanged(listener: (event: HelpDocsUpdatedEvent) => void): () => void {
   helpChangeListeners.add(listener);
   return () => helpChangeListeners.delete(listener);
@@ -398,26 +528,17 @@ export function stopHelpDocsWatcher(): void {
 }
 
 export async function listHelpDocs(): Promise<HelpDocsListResponse> {
-  const helpRoot = getHelpDocsRootDir();
-  ensureDirectory(helpRoot);
-  const index = readIndexFile(helpRoot);
-  const docs = index ? sanitizeIndexDocs(helpRoot, index) : scanMarkdownFiles(helpRoot);
-  const fallbackDocs = docs.length > 0 ? docs : scanMarkdownFiles(helpRoot);
-
+  const { docs, rootDir, embeddedSiteUrl } = getResolvedHelpDocs();
   return {
-    docs: fallbackDocs,
-    rootDir: helpRoot,
-    embeddedSiteUrl: sanitizeEmbeddedSiteUrl(index?.embeddedSiteUrl),
+    docs,
+    rootDir,
+    embeddedSiteUrl,
   };
 }
 
 export async function readHelpDoc(docId: string): Promise<HelpDocPageResponse> {
-  const list = await listHelpDocs();
-  const doc = findDocById(list.docs, docId);
-  if (!doc) {
-    throw new Error('Help document not found');
-  }
-  const absolutePath = resolveDocPath(list.rootDir, doc);
+  const source = resolveHelpDocSource(docId);
+  const { doc, absolutePath } = source;
   const content = fs.readFileSync(absolutePath, 'utf-8');
   const stat = fs.statSync(absolutePath);
   return {
@@ -443,7 +564,7 @@ export async function searchHelpDocs(query: string): Promise<HelpDocsSearchRespo
   const results: HelpDocsSearchResult[] = [];
   for (const doc of list.docs) {
     try {
-      const absolutePath = resolveDocPath(list.rootDir, doc);
+      const absolutePath = resolveHelpDocSource(doc.id).absolutePath;
       const content = fs.readFileSync(absolutePath, 'utf-8');
       const score = scoreDocSearch(tokens, doc.title, content);
       if (score <= 0) continue;
@@ -464,13 +585,8 @@ export async function searchHelpDocs(query: string): Promise<HelpDocsSearchRespo
 }
 
 export async function getHelpAssetDataUrl(docId: string, relativeAssetPath: string): Promise<{ dataUrl: string }> {
-  const page = await readHelpDoc(docId);
-  const docDir = path.posix.dirname(page.doc.file);
-  const joined = path.posix.normalize(path.posix.join(docDir, toPosixPath(relativeAssetPath)));
-  if (joined.startsWith('../')) {
-    throw new Error('Asset path escapes help directory');
-  }
-  const absAssetPath = resolveInsideHelpRoot(getHelpDocsRootDir(), joined);
+  const source = resolveHelpDocSource(docId);
+  const absAssetPath = resolveHelpAssetPath(source, relativeAssetPath);
   const stat = fs.statSync(absAssetPath);
   if (!stat.isFile()) {
     throw new Error('Help asset is not a file');
@@ -502,13 +618,8 @@ export async function openHelpDocsFolder(): Promise<{ ok: boolean; path: string 
 }
 
 export async function openHelpAssetExternally(docId: string, relativeAssetPath: string): Promise<{ ok: boolean; path: string }> {
-  const page = await readHelpDoc(docId);
-  const docDir = path.posix.dirname(page.doc.file);
-  const joined = path.posix.normalize(path.posix.join(docDir, toPosixPath(relativeAssetPath)));
-  if (joined.startsWith('../')) {
-    throw new Error('Asset path escapes help directory');
-  }
-  const absAssetPath = resolveInsideHelpRoot(getHelpDocsRootDir(), joined);
+  const source = resolveHelpDocSource(docId);
+  const absAssetPath = resolveHelpAssetPath(source, relativeAssetPath);
   const result = await shell.openPath(absAssetPath);
   if (result) {
     throw new Error(result);

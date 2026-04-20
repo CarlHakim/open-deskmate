@@ -1,6 +1,6 @@
 import Cron from 'croner';
 import type { ScheduledTask, ScheduleConfig } from '@accomplish/shared';
-import { dispatchTask } from './task-dispatch';
+import { startAgentEngineTask } from '../runtime/agent-engine';
 import { getAgentContext } from './agent-context';
 import {
   listSchedules,
@@ -37,7 +37,7 @@ async function runSchedule(scheduleId: string, reason: 'cron' | 'manual'): Promi
 
   try {
     const agentContext = getAgentContext(schedule.agentId);
-    const { completion } = await dispatchTask(
+    const { completion } = await startAgentEngineTask(
       {
         prompt: schedule.prompt,
         agentId: agentContext.agentId,

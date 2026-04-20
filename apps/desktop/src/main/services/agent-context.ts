@@ -1,6 +1,7 @@
 import type { AgentProfile, SelectedModel } from '@accomplish/shared';
 import { getWorkspaceRoot, getActiveAgentId, setActiveAgentId, getSelectedModel } from '../store/appSettings';
 import { getAgent, getDefaultAgentId, listAgents, normalizeAgentIdForStore } from '../store/agents';
+import { getTaskModelOverride } from '../store/taskModelOverrides';
 
 export interface AgentContext {
   agentId: string;
@@ -104,4 +105,10 @@ export function resolveActiveAgentId(): string {
 export function resolveSelectedModelForAgent(agentId?: string): SelectedModel | null {
   const agentModel = getAgentContext(agentId).selectedModel;
   return agentModel ?? getSelectedModel();
+}
+
+export function resolveSelectedModelForTask(taskId?: string, agentId?: string): SelectedModel | null {
+  const taskOverride = getTaskModelOverride(taskId);
+  if (taskOverride) return taskOverride;
+  return resolveSelectedModelForAgent(agentId);
 }

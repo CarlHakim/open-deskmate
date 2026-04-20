@@ -8,7 +8,7 @@ import type {
   GatewayConnectorRuntimeTestResult,
   TelegramConnectorConfig,
 } from '@accomplish/shared';
-import { dispatchTask } from './task-dispatch';
+import { startAgentEngineTask } from '../runtime/agent-engine';
 import { resolveActiveAgentId } from './agent-context';
 import { resolveGatewayRoute } from './gateway-routing';
 import { getTask } from '../store/taskHistory';
@@ -505,7 +505,7 @@ async function runConnectorTask(params: {
     return;
   }
   const taskId = sanitizeTaskId(params.connectorId, params.taskSeed);
-  const { completion } = await dispatchTask(
+  const { completion } = await startAgentEngineTask(
     {
       prompt: params.prompt,
       taskId,

@@ -1,6 +1,6 @@
 import type { PermissionRequest, PermissionResponse } from '@accomplish/shared';
 import { applyAllowAllForFileRequest, isFilePermissionRequest, resolvePermission } from '../permission-api';
-import { getTaskManager } from '../opencode/task-manager';
+import { hasActiveAgentEngineTask, sendAgentEngineTaskResponse } from '../runtime/agent-engine';
 
 type PendingPermission = PermissionRequest & { createdAtMs: number };
 
@@ -66,8 +66,7 @@ export async function resolveWebPermissionResponse(response: PermissionResponse)
     return resolved ? { ok: true } : { ok: false, error: 'file permission request not found' };
   }
 
-  const taskManager = getTaskManager();
-  if (!taskManager.hasActiveTask(taskId)) {
+  if (!hasActiveAgentEngineTask(taskId)) {
     return { ok: false, error: 'task is not active' };
   }
 
@@ -76,9 +75,9 @@ export async function resolveWebPermissionResponse(response: PermissionResponse)
       (response.selectedOptions && response.selectedOptions.length > 0)
         ? response.selectedOptions.join(', ')
         : sanitizeString(response.message) || 'yes';
-    await taskManager.sendResponse(taskId, message);
+    await sendAgentEngineTaskResponse(taskId, message);
   } else {
-    await taskManager.sendResponse(taskId, 'no');
+    await sendAgentEngineTaskResponse(taskId, 'no');
   }
 
   return { ok: true };

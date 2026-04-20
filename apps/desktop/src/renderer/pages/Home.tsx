@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import TaskInputBar, { type TaskInputBarHandle } from '../components/landing/TaskInputBar';
 import SettingsDialog from '../components/layout/SettingsDialog';
 import ModeSwitch from '../components/layout/ModeSwitch';
+import BuildRuntimeIndicator from '../components/layout/BuildRuntimeIndicator';
 import { useTaskStore } from '../stores/taskStore';
 import { useAgentStore } from '../stores/agentStore';
 import { getAccomplish } from '../lib/accomplish';
@@ -15,6 +16,8 @@ import { Button } from '@/components/ui/button';
 import { CheckCircle2, ChevronDown, Code, Sparkles, User } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import type { SelectedModel } from '@accomplish/shared';
+import { createAppSlashCommands } from '../lib/app-commands';
+import { usePluginSlashCommands } from '../hooks/usePluginSlashCommands';
 
 // Import use case images for proper bundling in production
 import calendarPrepNotesImg from '/assets/usecases/calendar-prep-notes.png';
@@ -180,6 +183,17 @@ export default function HomePage() {
   const navigate = useNavigate();
   const location = useLocation();
   const accomplish = getAccomplish();
+  const pluginSlashCommands = usePluginSlashCommands();
+  const homeSlashCommands = useMemo(() => (
+    createAppSlashCommands({
+      navigate,
+      pathname: location.pathname,
+      context: 'home',
+      search: location.search,
+      modeSwitchTarget: 'build',
+      pluginCommands: pluginSlashCommands,
+    })
+  ), [location.pathname, location.search, navigate, pluginSlashCommands]);
 
   const refreshGlobalSelectedModel = useCallback(async () => {
     try {
@@ -343,6 +357,7 @@ export default function HomePage() {
           <div className="mx-auto flex w-full max-w-5xl flex-wrap items-center justify-between gap-2">
             <ModeSwitch />
             <div className="flex flex-wrap items-center justify-end gap-2">
+            <BuildRuntimeIndicator agentId={activeAgentId} />
             <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-700 shrink-0">
               <CheckCircle2 className="h-3 w-3" />
               Ready
@@ -390,8 +405,8 @@ export default function HomePage() {
           transition={{ ...springs.gentle, delay: 0.1 }}
           className="w-full"
         >
-          <Card className="w-full card-glass shadow-glow gap-0 py-0 flex flex-col max-h-[calc(100vh-4rem)] overflow-hidden">
-            <CardContent className="p-6 pb-4 flex-shrink-0">
+          <Card className="w-full card-glass shadow-glow gap-0 py-0 flex flex-col max-h-[calc(100vh-4rem)] overflow-visible">
+            <CardContent className="p-6 pb-4 flex-shrink-0 overflow-visible">
               {/* Input Section */}
               <TaskInputBar
                 ref={taskInputRef}
@@ -406,6 +421,7 @@ export default function HomePage() {
                 agentId={activeAgentId}
                 privacyMode={privacyMode}
                 onPrivacyModeChange={setPrivacyMode}
+                slashCommands={homeSlashCommands}
               />
               {planningJobs && (
                 <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-border bg-muted/40 px-3 py-1.5 text-xs text-foreground">
