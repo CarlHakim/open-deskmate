@@ -3,14 +3,749 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Open Deskmate</title>
+  <title>Open Deskmate | Open-source desktop AI companion</title>
+  <meta name="description" content="Open Deskmate is an open-source desktop AI companion for practical everyday productivity, combining chat, build workflows, settings-driven control, and local-first operation.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="./styles.css">
+  <script>
+    if ('scrollRestoration' in history) {
+      history.scrollRestoration = 'manual';
+    }
+    window.addEventListener('pageshow', () => {
+      window.scrollTo(0, 0);
+    });
+    document.addEventListener('DOMContentLoaded', () => {
+      const header = document.querySelector('.site-header');
+      const toggle = document.querySelector('.menu-toggle');
+      const menu = document.getElementById('site-menu');
+      if (!header || !toggle || !menu) return;
+
+      const closeMenu = () => {
+        header.classList.remove('menu-open');
+        toggle.setAttribute('aria-expanded', 'false');
+      };
+
+      toggle.addEventListener('click', () => {
+        const open = header.classList.toggle('menu-open');
+        toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      });
+
+      menu.querySelectorAll('a').forEach((link) => {
+        link.addEventListener('click', closeMenu);
+      });
+
+      window.addEventListener('resize', () => {
+        if (window.innerWidth > 980) {
+          closeMenu();
+        }
+      });
+    });
+  </script>
 </head>
 <body>
-  <main>
-    <h1>Open Deskmate</h1>
-    <p>Your AI desktop teammate.</p>
-    <p><a href="https://github.com/CarlHakim/open-deskmate">View the repo</a></p>
-  </main>
+  <div class="page-shell">
+    <header class="site-header">
+      <div class="container header-inner">
+        <a class="brand" href="#top" aria-label="Open Deskmate home">
+          <img src="./logo.png" alt="Open Deskmate logo">
+          <span>Open Deskmate</span>
+        </a>
+        <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-menu" aria-label="Open navigation menu">
+          <span></span>
+          <span></span>
+          <span></span>
+        </button>
+        <div class="header-menu" id="site-menu">
+          <nav class="site-nav" aria-label="Primary">
+            <a href="#what-it-does">What it does</a>
+            <a href="#why-different">Why it's different</a>
+            <a href="#features">Features</a>
+            <a href="#screenshots">Screenshots</a>
+            <a href="#faq">FAQ</a>
+            <a href="#get-started">Get started</a>
+            <a href="#open-source">Open source</a>
+            <a href="#contact">Contact</a>
+          </nav>
+          <a class="header-link" href="https://github.com/CarlHakim/open-deskmate" target="_blank" rel="noreferrer">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 2.5A9.5 9.5 0 0 0 9 21.5c.5.1.7-.2.7-.5v-1.8c-2.8.6-3.4-1.2-3.4-1.2-.4-1-.9-1.3-.9-1.3-.8-.5.1-.5.1-.5.9.1 1.4 1 1.4 1 .8 1.4 2.2 1 2.8.8.1-.6.3-1 .6-1.3-2.3-.3-4.7-1.2-4.7-5.1 0-1.1.4-2 1-2.7-.1-.3-.4-1.3.1-2.8 0 0 .8-.3 2.8 1a9.3 9.3 0 0 1 5 0c1.9-1.3 2.8-1 2.8-1 .5 1.5.2 2.5.1 2.8.6.7 1 1.6 1 2.7 0 3.9-2.4 4.8-4.7 5.1.4.3.7.9.7 1.9V21c0 .3.2.6.7.5A9.5 9.5 0 0 0 12 2.5Z"/>
+            </svg>
+            <span>GitHub</span>
+          </a>
+        </div>
+      </div>
+    </header>
+
+    <main id="top">
+      <section class="hero section">
+        <div class="container hero-grid">
+          <div class="hero-copy">
+            <div class="eyebrow">Open-source desktop AI companion for Windows</div>
+            <h1>Desktop AI for practical work, with setup you can actually manage.</h1>
+            <p class="hero-lead">Open Deskmate is an open-source desktop AI companion designed for founders, consultants, solo professionals, knowledge workers, and early contributors who want real workflows, local control, and a simple UI instead of a CLI-heavy stack.</p>
+            <div class="hero-actions">
+              <a class="button button-primary" href="https://github.com/CarlHakim/open-deskmate" target="_blank" rel="noreferrer">View on GitHub</a>
+              <a class="button button-accent" href="https://github.com/CarlHakim/open-deskmate/releases/latest" target="_blank" rel="noreferrer">Download for Windows</a>
+              <a class="button button-secondary" href="#get-started">Get Started</a>
+            </div>
+            <div class="hero-meta" aria-label="Audience and positioning">
+              <span>Local-first</span>
+              <span>Open source</span>
+              <span>Chat + Build workflows</span>
+              <span>Configurable from the UI</span>
+            </div>
+          </div>
+
+          <div class="hero-visual card glass-card">
+            <div class="hero-visual-header">
+              <span class="pulse pulse-ready"></span>
+              <strong>Designed for practical productivity</strong>
+            </div>
+            <div class="hero-workspace">
+              <div class="hero-window">
+                <div class="hero-window-topbar">
+                  <span class="window-dot"></span>
+                  <span class="window-dot"></span>
+                  <span class="window-dot"></span>
+                  <div class="hero-window-title">Open Deskmate</div>
+                </div>
+                <div class="hero-window-body">
+                  <aside class="hero-sidebar">
+                    <div class="hero-sidebar-brand">
+                      <img src="./logo.png" alt="" aria-hidden="true">
+                      <span>Workspace</span>
+                    </div>
+                    <div class="hero-sidebar-stack">
+                      <span class="hero-sidebar-pill active">Chat Mode</span>
+                      <span class="hero-sidebar-pill">Build Mode</span>
+                      <span class="hero-sidebar-pill">Subagents</span>
+                      <span class="hero-sidebar-pill">Settings</span>
+                    </div>
+                  </aside>
+                  <div class="hero-main">
+                    <div class="hero-main-card hero-main-card-primary">
+                      <span class="panel-label">Chat + Build</span>
+                      <h2>One app for quick prompts and longer-running project work.</h2>
+                      <p>Move between direct chat, workspace-aware build flows, tracked subagents, and settings-driven control without changing tools.</p>
+                    </div>
+                    <div class="hero-main-grid">
+                      <article class="hero-panel">
+                        <span class="panel-label">Everyday control</span>
+                        <p>Models, permissions, connectors, plugins, schedules, and pricing are configured in the UI.</p>
+                      </article>
+                      <article class="hero-panel">
+                        <span class="panel-label">Built for real files</span>
+                        <p>Use local workspaces, inspect diffs, review logs, and keep tasks grounded in the project you are actually working on.</p>
+                      </article>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="hero-float hero-float-chat">
+                <div class="hero-float-label">Chat Mode</div>
+                <img src="./chat-mode.png" alt="Chat Mode preview">
+              </div>
+              <div class="hero-float hero-float-subagents">
+                <div class="hero-float-label">Tracked subagents</div>
+                <div class="hero-float-metrics">
+                  <span>2 active</span>
+                  <span>1 session</span>
+                  <span>Visible in UI</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section section-trust">
+        <div class="container">
+          <div class="trust-band card">
+            <div class="trust-copy">
+              <div class="eyebrow">Local-first trust</div>
+              <h2>Built to keep day-to-day AI work understandable.</h2>
+              <p>Open Deskmate is designed to keep the assistant surface, the configuration surface, and the runtime surface in one place so local work does not become opaque or hard to control.</p>
+            </div>
+            <div class="trust-points" aria-label="Trust points">
+              <span>Open source (MIT)</span>
+              <span>Runs from your desktop</span>
+              <span>Bring your own providers</span>
+              <span>Permissions in the UI</span>
+              <span>Visible subagent activity</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="container">
+          <div class="section-heading">
+            <div class="eyebrow">Windows downloads</div>
+            <h2>Download Open Deskmate from GitHub Releases.</h2>
+            <p>Windows builds are published on GitHub Releases. Choose the installer for the standard setup flow or the portable executable if you want to run the app without installing it.</p>
+          </div>
+          <div class="download-grid">
+            <article class="card download-card">
+              <div class="download-card-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M3 4.5 10 3v8H3V4.5Zm8 7.5h10V2l-10 1.4V12ZM3 12.9h7v8.1L3 19.6v-6.7Zm8 0v8.2L21 22v-9.1H11Z"/>
+                </svg>
+              </div>
+              <div class="download-card-body">
+                <div class="download-card-kicker">Recommended</div>
+                <h3>Windows Installer</h3>
+                <p>Best for most users who want the normal install flow and desktop integration.</p>
+              </div>
+              <a class="button button-primary" href="https://github.com/CarlHakim/open-deskmate/releases/latest" target="_blank" rel="noreferrer">Open Latest Release</a>
+            </article>
+            <article class="card download-card">
+              <div class="download-card-icon download-card-icon-alt" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M12 3 4 7v5c0 5 3.4 8.5 8 9 4.6-.5 8-4 8-9V7l-8-4Zm1 5v4.2l2.4 2.4-1.4 1.4L11 13V8h2Z"/>
+                </svg>
+              </div>
+              <div class="download-card-body">
+                <div class="download-card-kicker">No install</div>
+                <h3>Portable EXE</h3>
+                <p>Run Open Deskmate directly if you prefer a portable Windows build without installation.</p>
+              </div>
+              <a class="button button-secondary" href="https://github.com/CarlHakim/open-deskmate/releases/latest" target="_blank" rel="noreferrer">Browse Portable Build</a>
+            </article>
+          </div>
+          <div class="download-warning">
+            <strong>Installer note:</strong> The Windows installer for this prerelease is not yet code-signed, so Windows may show a warning before installation or launch. That is expected for this build. If you prefer to avoid the installer, the portable version is also available.
+          </div>
+          <p class="download-assets-note">On the GitHub release page, click the <strong>Assets</strong> section to expand the available downloads.</p>
+          <p class="download-note">Looking for older versions or the full asset list? <a href="https://github.com/CarlHakim/open-deskmate/releases" target="_blank" rel="noreferrer">Browse all GitHub Releases</a>.</p>
+        </div>
+      </section>
+
+      <section id="what-it-does" class="section">
+        <div class="container">
+          <div class="section-heading">
+            <div class="eyebrow">What it does</div>
+            <h2>An AI assistant that feels like a desktop tool, not a demo.</h2>
+            <p>Open Deskmate is built to bring AI into practical daily work. It combines conversational help, workspace-aware build flows, configurable agent behavior, and local-first operation in a single interface that stays understandable as your setup grows.</p>
+          </div>
+          <div class="explain-grid">
+            <article class="card explain-card">
+              <h3>Works on your machine</h3>
+              <p>Use your own provider keys, work with local files, and keep everyday operation close to your desktop instead of routing everything through a hosted product.</p>
+            </article>
+            <article class="card explain-card">
+              <h3>Fits real workflows</h3>
+              <p>Use Chat Mode for direct prompts or Build Mode when a task needs history, files, diff review, runtime logs, terminals, and longer-running execution.</p>
+            </article>
+            <article class="card explain-card">
+              <h3>Keeps you in control</h3>
+              <p>Configure agents, permissions, connectors, subagents, plugins, and automation from a simple UI designed to make advanced setups usable.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section section-tinted">
+        <div class="container">
+          <div class="section-heading">
+            <div class="eyebrow">Works with your setup</div>
+            <h2>Built around common AI providers and the connector catalog already in the app.</h2>
+            <p>Open Deskmate is designed to work with the providers and workflow surfaces people already use. This section now shows the current provider and connector surface as full-width marquee rows.</p>
+          </div>
+        </div>
+        <div class="logo-bleed" aria-label="Supported providers and integrations">
+          <div class="logo-strip card">
+            <div class="logo-group">
+              <div class="logo-group-label">Providers</div>
+              <div class="logo-marquee logo-marquee-providers">
+                <div class="logo-marquee-track">
+                  <div class="logo-marquee-group">
+                    <span class="logo-item logo-openai">
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M12 3.2c1.5 0 2.8.8 3.5 2l2.1 1.2c1.6.9 2.4 2.8 2 4.6.9 1.4.9 3.2 0 4.6.4 1.8-.4 3.7-2 4.6l-2.1 1.2A4.03 4.03 0 0 1 12 20.8a4.03 4.03 0 0 1-3.5 2l-2.1-1.2c-1.6-.9-2.4-2.8-2-4.6a4.8 4.8 0 0 1 0-4.6c-.4-1.8.4-3.7 2-4.6L8.5 5.2c.7-1.2 2-2 3.5-2Zm0 2.2c-.8 0-1.5.4-1.9 1.1l-.3.5 2.2 1.3 2.2-1.3-.3-.5c-.4-.7-1.1-1.1-1.9-1.1Zm-4.8 3c-.9.5-1.3 1.6-1.1 2.6l.1.6 2.2-1.3V7.9l-1.2.7Zm9.6-.5v2.6l2.2 1.3.1-.6c.2-1-.2-2.1-1.1-2.6l-1.2-.7Zm-4.8 2-2.2 1.3v2.6l2.2 1.3 2.2-1.3v-2.6L12 9.9Zm-6 4.1c-.3.9.1 2 .9 2.5l1.2.7v-2.6l-2.1-1.2Zm13.9-.1-2.1 1.2v2.6l1.2-.7c.8-.5 1.2-1.6.9-2.5Zm-9.5 3.1-.7.4.3.5c.4.7 1.1 1.1 1.9 1.1s1.5-.4 1.9-1.1l.3-.5-.7-.4-1.5.9-1.5-.9Z"/>
+                      </svg>
+                      <span>OpenAI</span>
+                    </span>
+                    <span class="logo-item logo-anthropic">
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M11.1 3 4 21h3.1l1.5-4h6.8l1.5 4H20L12.9 3h-1.8Zm1 4.2 2.2 6h-4.4l2.2-6Z"/>
+                      </svg>
+                      <span>Anthropic</span>
+                    </span>
+                    <span class="logo-item logo-google">
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path class="google-blue" d="M21.8 12.2c0-.7-.1-1.3-.2-1.9H12v3.6h5.5a4.7 4.7 0 0 1-2 3.1v2.6h3.2c1.9-1.8 3.1-4.4 3.1-7.4Z"/>
+                        <path class="google-green" d="M12 22c2.7 0 5-.9 6.7-2.4l-3.2-2.6c-.9.6-2 .9-3.5.9-2.7 0-5-1.8-5.8-4.3H2.9v2.7A10 10 0 0 0 12 22Z"/>
+                        <path class="google-yellow" d="M6.2 13.6a6 6 0 0 1 0-3.2V7.7H2.9a10 10 0 0 0 0 8.6l3.3-2.7Z"/>
+                        <path class="google-red" d="M12 6.1c1.5 0 2.8.5 3.9 1.5l2.9-2.9A10 10 0 0 0 2.9 7.7l3.3 2.7C7 7.9 9.3 6.1 12 6.1Z"/>
+                      </svg>
+                      <span>Google</span>
+                    </span>
+                    <span class="logo-item logo-xai">
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M5 5h3.2l3.8 5.4L15.8 5H19l-5.2 7L19 19h-3.2L12 13.6 8.2 19H5l5.2-7L5 5Z"/>
+                      </svg>
+                      <span>xAI</span>
+                    </span>
+                    <span class="logo-item logo-ollama">
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M7 10a5 5 0 0 1 10 0v6a2 2 0 0 1-2 2h-1.5v2H10.5v-2H9a2 2 0 0 1-2-2v-6Zm3.5-1.5a1.5 1.5 0 1 0 0 .1Zm3 0a1.5 1.5 0 1 0 0 .1ZM9 13h6v-1H9v1Z"/>
+                      </svg>
+                      <span>Ollama</span>
+                    </span>
+                    <span class="logo-item logo-openrouter">
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M12 3 4 7.5v9L12 21l8-4.5v-9L12 3Zm0 2.5 5.5 3.1L12 11.7 6.5 8.6 12 5.5Zm-6 4.8 5 2.8v5.8l-5-2.8v-5.8Zm7 8.6v-5.8l5-2.8v5.8l-5 2.8Z"/>
+                      </svg>
+                      <span>OpenRouter</span>
+                    </span>
+                    <span class="logo-item logo-minimax">
+                      <img src="provider-logos/minimax-logo.png" alt="MiniMax" class="provider-logo-image provider-logo-image-minimax">
+                    </span>
+                    <span class="logo-item logo-kimi">
+                      <img src="provider-logos/kimi-logo.png" alt="" class="provider-logo-image provider-logo-image-kimi">
+                      <span>Kimi</span>
+                    </span>
+                    <span class="logo-item logo-deepseek">
+                      <img src="provider-logos/deepseek-logo.png" alt="DeepSeek" class="provider-logo-image provider-logo-image-deepseek">
+                    </span>
+                  </div>
+                  <div class="logo-marquee-group" aria-hidden="true">
+                    <span class="logo-item logo-openai"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.2c1.5 0 2.8.8 3.5 2l2.1 1.2c1.6.9 2.4 2.8 2 4.6.9 1.4.9 3.2 0 4.6.4 1.8-.4 3.7-2 4.6l-2.1 1.2A4.03 4.03 0 0 1 12 20.8a4.03 4.03 0 0 1-3.5 2l-2.1-1.2c-1.6-.9-2.4-2.8-2-4.6a4.8 4.8 0 0 1 0-4.6c-.4-1.8.4-3.7 2-4.6L8.5 5.2c.7-1.2 2-2 3.5-2Zm0 2.2c-.8 0-1.5.4-1.9 1.1l-.3.5 2.2 1.3 2.2-1.3-.3-.5c-.4-.7-1.1-1.1-1.9-1.1Zm-4.8 3c-.9.5-1.3 1.6-1.1 2.6l.1.6 2.2-1.3V7.9l-1.2.7Zm9.6-.5v2.6l2.2 1.3.1-.6c.2-1-.2-2.1-1.1-2.6l-1.2-.7Zm-4.8 2-2.2 1.3v2.6l2.2 1.3 2.2-1.3v-2.6L12 9.9Zm-6 4.1c-.3.9.1 2 .9 2.5l1.2.7v-2.6l-2.1-1.2Zm13.9-.1-2.1 1.2v2.6l1.2-.7c.8-.5 1.2-1.6.9-2.5Zm-9.5 3.1-.7.4.3.5c.4.7 1.1 1.1 1.9 1.1s1.5-.4 1.9-1.1l.3-.5-.7-.4-1.5.9-1.5-.9Z"/></svg><span>OpenAI</span></span>
+                    <span class="logo-item logo-anthropic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11.1 3 4 21h3.1l1.5-4h6.8l1.5 4H20L12.9 3h-1.8Zm1 4.2 2.2 6h-4.4l2.2-6Z"/></svg><span>Anthropic</span></span>
+                    <span class="logo-item logo-google"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="google-blue" d="M21.8 12.2c0-.7-.1-1.3-.2-1.9H12v3.6h5.5a4.7 4.7 0 0 1-2 3.1v2.6h3.2c1.9-1.8 3.1-4.4 3.1-7.4Z"/><path class="google-green" d="M12 22c2.7 0 5-.9 6.7-2.4l-3.2-2.6c-.9.6-2 .9-3.5.9-2.7 0-5-1.8-5.8-4.3H2.9v2.7A10 10 0 0 0 12 22Z"/><path class="google-yellow" d="M6.2 13.6a6 6 0 0 1 0-3.2V7.7H2.9a10 10 0 0 0 0 8.6l3.3-2.7Z"/><path class="google-red" d="M12 6.1c1.5 0 2.8.5 3.9 1.5l2.9-2.9A10 10 0 0 0 2.9 7.7l3.3 2.7C7 7.9 9.3 6.1 12 6.1Z"/></svg><span>Google</span></span>
+                    <span class="logo-item logo-xai"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h3.2l3.8 5.4L15.8 5H19l-5.2 7L19 19h-3.2L12 13.6 8.2 19H5l5.2-7L5 5Z"/></svg><span>xAI</span></span>
+                    <span class="logo-item logo-ollama"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10a5 5 0 0 1 10 0v6a2 2 0 0 1-2 2h-1.5v2H10.5v-2H9a2 2 0 0 1-2-2v-6Zm3.5-1.5a1.5 1.5 0 1 0 0 .1Zm3 0a1.5 1.5 0 1 0 0 .1ZM9 13h6v-1H9v1Z"/></svg><span>Ollama</span></span>
+                    <span class="logo-item logo-openrouter"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 7.5v9L12 21l8-4.5v-9L12 3Zm0 2.5 5.5 3.1L12 11.7 6.5 8.6 12 5.5Zm-6 4.8 5 2.8v5.8l-5-2.8v-5.8Zm7 8.6v-5.8l5-2.8v5.8l-5 2.8Z"/></svg><span>OpenRouter</span></span>
+                    <span class="logo-item logo-minimax"><img src="provider-logos/minimax-logo.png" alt="" class="provider-logo-image provider-logo-image-minimax"></span>
+                    <span class="logo-item logo-kimi"><img src="provider-logos/kimi-logo.png" alt="" class="provider-logo-image provider-logo-image-kimi"><span>Kimi</span></span>
+                    <span class="logo-item logo-deepseek"><img src="provider-logos/deepseek-logo.png" alt="" class="provider-logo-image provider-logo-image-deepseek"></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="logo-group">
+              <div class="logo-group-label">Messaging Connectors</div>
+              <div class="logo-marquee logo-marquee-messaging">
+                <div class="logo-marquee-track">
+                  <div class="logo-marquee-group">
+                    <span class="logo-item logo-item-text logo-brand-discord"><span class="logo-badge" aria-hidden="true">Di</span><span>Discord</span></span>
+                    <span class="logo-item logo-item-text logo-brand-telegram"><span class="logo-badge" aria-hidden="true">Te</span><span>Telegram</span></span>
+                    <span class="logo-item logo-item-text"><span class="logo-badge" aria-hidden="true">BB</span><span>BlueBubbles</span></span>
+                    <span class="logo-item logo-item-text logo-brand-google"><span class="logo-badge" aria-hidden="true">GC</span><span>Google Chat</span></span>
+                    <span class="logo-item logo-item-text"><span class="logo-badge" aria-hidden="true">iM</span><span>iMessage</span></span>
+                    <span class="logo-item logo-item-text logo-brand-line"><span class="logo-badge" aria-hidden="true">Li</span><span>LINE</span></span>
+                    <span class="logo-item logo-item-text"><span class="logo-badge" aria-hidden="true">Mx</span><span>Matrix</span></span>
+                    <span class="logo-item logo-item-text"><span class="logo-badge" aria-hidden="true">Mm</span><span>Mattermost</span></span>
+                    <span class="logo-item logo-item-text logo-brand-microsoft"><span class="logo-badge" aria-hidden="true">MT</span><span>Microsoft Teams</span></span>
+                    <span class="logo-item logo-item-text"><span class="logo-badge" aria-hidden="true">NC</span><span>Nextcloud Talk</span></span>
+                    <span class="logo-item logo-item-text"><span class="logo-badge" aria-hidden="true">No</span><span>Nostr</span></span>
+                    <span class="logo-item logo-item-text logo-brand-signal"><span class="logo-badge" aria-hidden="true">Si</span><span>Signal</span></span>
+                    <span class="logo-item logo-item-text logo-brand-slack"><span class="logo-badge" aria-hidden="true">Sl</span><span>Slack</span></span>
+                    <span class="logo-item logo-item-text"><span class="logo-badge" aria-hidden="true">Tl</span><span>Tlon</span></span>
+                    <span class="logo-item logo-item-text logo-brand-whatsapp"><span class="logo-badge" aria-hidden="true">WA</span><span>WhatsApp</span></span>
+                    <span class="logo-item logo-item-text"><span class="logo-badge" aria-hidden="true">ZO</span><span>Zalo OA</span></span>
+                    <span class="logo-item logo-item-text"><span class="logo-badge" aria-hidden="true">ZU</span><span>Zalo User</span></span>
+                  </div>
+                  <div class="logo-marquee-group" aria-hidden="true">
+                    <span class="logo-item logo-item-text logo-brand-discord"><span class="logo-badge" aria-hidden="true">Di</span><span>Discord</span></span>
+                    <span class="logo-item logo-item-text logo-brand-telegram"><span class="logo-badge" aria-hidden="true">Te</span><span>Telegram</span></span>
+                    <span class="logo-item logo-item-text"><span class="logo-badge" aria-hidden="true">BB</span><span>BlueBubbles</span></span>
+                    <span class="logo-item logo-item-text logo-brand-google"><span class="logo-badge" aria-hidden="true">GC</span><span>Google Chat</span></span>
+                    <span class="logo-item logo-item-text"><span class="logo-badge" aria-hidden="true">iM</span><span>iMessage</span></span>
+                    <span class="logo-item logo-item-text logo-brand-line"><span class="logo-badge" aria-hidden="true">Li</span><span>LINE</span></span>
+                    <span class="logo-item logo-item-text"><span class="logo-badge" aria-hidden="true">Mx</span><span>Matrix</span></span>
+                    <span class="logo-item logo-item-text"><span class="logo-badge" aria-hidden="true">Mm</span><span>Mattermost</span></span>
+                    <span class="logo-item logo-item-text logo-brand-microsoft"><span class="logo-badge" aria-hidden="true">MT</span><span>Microsoft Teams</span></span>
+                    <span class="logo-item logo-item-text"><span class="logo-badge" aria-hidden="true">NC</span><span>Nextcloud Talk</span></span>
+                    <span class="logo-item logo-item-text"><span class="logo-badge" aria-hidden="true">No</span><span>Nostr</span></span>
+                    <span class="logo-item logo-item-text logo-brand-signal"><span class="logo-badge" aria-hidden="true">Si</span><span>Signal</span></span>
+                    <span class="logo-item logo-item-text logo-brand-slack"><span class="logo-badge" aria-hidden="true">Sl</span><span>Slack</span></span>
+                    <span class="logo-item logo-item-text"><span class="logo-badge" aria-hidden="true">Tl</span><span>Tlon</span></span>
+                    <span class="logo-item logo-item-text logo-brand-whatsapp"><span class="logo-badge" aria-hidden="true">WA</span><span>WhatsApp</span></span>
+                    <span class="logo-item logo-item-text"><span class="logo-badge" aria-hidden="true">ZO</span><span>Zalo OA</span></span>
+                    <span class="logo-item logo-item-text"><span class="logo-badge" aria-hidden="true">ZU</span><span>Zalo User</span></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="logo-group">
+              <div class="logo-group-label">App Connectors</div>
+              <div class="logo-marquee logo-marquee-apps">
+                <div class="logo-marquee-track">
+                  <div class="logo-marquee-group">
+                    <span class="logo-item logo-item-text logo-brand-notion"><span class="logo-badge" aria-hidden="true">No</span><span>Notion</span></span>
+                    <span class="logo-item logo-item-text logo-brand-trello"><span class="logo-badge" aria-hidden="true">Tr</span><span>Trello</span></span>
+                    <span class="logo-item logo-item-text logo-brand-obsidian"><span class="logo-badge" aria-hidden="true">Ob</span><span>Obsidian</span></span>
+                    <span class="logo-item logo-item-text logo-brand-github"><span class="logo-badge" aria-hidden="true">GH</span><span>GitHub</span></span>
+                    <span class="logo-item logo-item-text logo-brand-slack"><span class="logo-badge" aria-hidden="true">Sl</span><span>Slack</span></span>
+                    <span class="logo-item logo-item-text logo-brand-dropbox"><span class="logo-badge" aria-hidden="true">Dr</span><span>Dropbox</span></span>
+                    <span class="logo-item logo-item-text logo-brand-canva"><span class="logo-badge" aria-hidden="true">Ca</span><span>Canva</span></span>
+                    <span class="logo-item logo-item-text logo-brand-microsoft"><span class="logo-badge" aria-hidden="true">OD</span><span>OneDrive</span></span>
+                    <span class="logo-item logo-item-text logo-brand-supabase"><span class="logo-badge" aria-hidden="true">Su</span><span>Supabase</span></span>
+                    <span class="logo-item logo-item-text logo-brand-google"><span class="logo-badge" aria-hidden="true">GS</span><span>Google Slides</span></span>
+                    <span class="logo-item logo-item-text logo-brand-google"><span class="logo-badge" aria-hidden="true">GT</span><span>Google Tasks</span></span>
+                    <span class="logo-item logo-item-text logo-brand-google"><span class="logo-badge" aria-hidden="true">Sh</span><span>Google Sheets</span></span>
+                    <span class="logo-item logo-item-text logo-brand-google"><span class="logo-badge" aria-hidden="true">GD</span><span>Google Docs</span></span>
+                    <span class="logo-item logo-item-text logo-brand-google"><span class="logo-badge" aria-hidden="true">Dr</span><span>Google Drive</span></span>
+                    <span class="logo-item logo-item-text logo-brand-google"><span class="logo-badge" aria-hidden="true">Ph</span><span>Google Photos</span></span>
+                    <span class="logo-item logo-item-text logo-brand-google"><span class="logo-badge" aria-hidden="true">Mp</span><span>Google Maps</span></span>
+                    <span class="logo-item logo-item-text logo-brand-youtube"><span class="logo-badge" aria-hidden="true">YT</span><span>YouTube</span></span>
+                    <span class="logo-item logo-item-text logo-brand-figma"><span class="logo-badge" aria-hidden="true">Fi</span><span>Figma</span></span>
+                    <span class="logo-item logo-item-text logo-brand-miro"><span class="logo-badge" aria-hidden="true">Mi</span><span>Miro</span></span>
+                    <span class="logo-item logo-item-text logo-brand-gmail"><span class="logo-badge" aria-hidden="true">Gm</span><span>Gmail</span></span>
+                    <span class="logo-item logo-item-text"><span class="logo-badge" aria-hidden="true">ET</span><span>Email Triggers</span></span>
+                    <span class="logo-item logo-item-text logo-brand-google"><span class="logo-badge" aria-hidden="true">GC</span><span>Google Calendar</span></span>
+                    <span class="logo-item logo-item-text logo-brand-microsoft"><span class="logo-badge" aria-hidden="true">MO</span><span>Microsoft Outlook</span></span>
+                  </div>
+                  <div class="logo-marquee-group" aria-hidden="true">
+                    <span class="logo-item logo-item-text logo-brand-notion"><span class="logo-badge" aria-hidden="true">No</span><span>Notion</span></span>
+                    <span class="logo-item logo-item-text logo-brand-trello"><span class="logo-badge" aria-hidden="true">Tr</span><span>Trello</span></span>
+                    <span class="logo-item logo-item-text logo-brand-obsidian"><span class="logo-badge" aria-hidden="true">Ob</span><span>Obsidian</span></span>
+                    <span class="logo-item logo-item-text logo-brand-github"><span class="logo-badge" aria-hidden="true">GH</span><span>GitHub</span></span>
+                    <span class="logo-item logo-item-text logo-brand-slack"><span class="logo-badge" aria-hidden="true">Sl</span><span>Slack</span></span>
+                    <span class="logo-item logo-item-text logo-brand-dropbox"><span class="logo-badge" aria-hidden="true">Dr</span><span>Dropbox</span></span>
+                    <span class="logo-item logo-item-text logo-brand-canva"><span class="logo-badge" aria-hidden="true">Ca</span><span>Canva</span></span>
+                    <span class="logo-item logo-item-text logo-brand-microsoft"><span class="logo-badge" aria-hidden="true">OD</span><span>OneDrive</span></span>
+                    <span class="logo-item logo-item-text logo-brand-supabase"><span class="logo-badge" aria-hidden="true">Su</span><span>Supabase</span></span>
+                    <span class="logo-item logo-item-text logo-brand-google"><span class="logo-badge" aria-hidden="true">GS</span><span>Google Slides</span></span>
+                    <span class="logo-item logo-item-text logo-brand-google"><span class="logo-badge" aria-hidden="true">GT</span><span>Google Tasks</span></span>
+                    <span class="logo-item logo-item-text logo-brand-google"><span class="logo-badge" aria-hidden="true">Sh</span><span>Google Sheets</span></span>
+                    <span class="logo-item logo-item-text logo-brand-google"><span class="logo-badge" aria-hidden="true">GD</span><span>Google Docs</span></span>
+                    <span class="logo-item logo-item-text logo-brand-google"><span class="logo-badge" aria-hidden="true">Dr</span><span>Google Drive</span></span>
+                    <span class="logo-item logo-item-text logo-brand-google"><span class="logo-badge" aria-hidden="true">Ph</span><span>Google Photos</span></span>
+                    <span class="logo-item logo-item-text logo-brand-google"><span class="logo-badge" aria-hidden="true">Mp</span><span>Google Maps</span></span>
+                    <span class="logo-item logo-item-text logo-brand-youtube"><span class="logo-badge" aria-hidden="true">YT</span><span>YouTube</span></span>
+                    <span class="logo-item logo-item-text logo-brand-figma"><span class="logo-badge" aria-hidden="true">Fi</span><span>Figma</span></span>
+                    <span class="logo-item logo-item-text logo-brand-miro"><span class="logo-badge" aria-hidden="true">Mi</span><span>Miro</span></span>
+                    <span class="logo-item logo-item-text logo-brand-gmail"><span class="logo-badge" aria-hidden="true">Gm</span><span>Gmail</span></span>
+                    <span class="logo-item logo-item-text"><span class="logo-badge" aria-hidden="true">ET</span><span>Email Triggers</span></span>
+                    <span class="logo-item logo-item-text logo-brand-google"><span class="logo-badge" aria-hidden="true">GC</span><span>Google Calendar</span></span>
+                    <span class="logo-item logo-item-text logo-brand-microsoft"><span class="logo-badge" aria-hidden="true">MO</span><span>Microsoft Outlook</span></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section id="why-different" class="section">
+        <div class="container">
+          <div class="section-heading narrow">
+            <div class="eyebrow">Why it's different</div>
+            <h2>More usable than a CLI-heavy agent stack.</h2>
+            <p>Open Deskmate keeps the power of local agent workflows, but brings setup, oversight, and daily operation into a desktop interface that is easier to adopt and easier to keep under control.</p>
+          </div>
+          <div class="difference-grid">
+            <article class="card difference-card">
+              <h3>UI-first setup</h3>
+              <p>Configure providers, permissions, connectors, plugins, schedules, and pricing from the app instead of relying on scattered configuration and hidden runtime state.</p>
+            </article>
+            <article class="card difference-card">
+              <h3>Acts across real workspaces</h3>
+              <p>Move beyond a single chat window with Build Mode, task history, diffs, runtime logs, embedded terminals, and project-aware execution.</p>
+            </article>
+            <article class="card difference-card">
+              <h3>Visible delegated work</h3>
+              <p>Tracked subagents are surfaced as a first-class part of the app so child-agent execution can be monitored, revisited, and managed instead of staying hidden.</p>
+            </article>
+            <article class="card difference-card">
+              <h3>Local-first by design</h3>
+              <p>Built for people who want practical desktop AI workflows without turning normal operation into a hosted service dependency or a developer-only setup process.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="features" class="section section-tinted">
+        <div class="container">
+          <div class="section-heading narrow">
+            <div class="eyebrow">Key features</div>
+            <h2>Built for practical AI work, not just prompting.</h2>
+          </div>
+          <div class="feature-grid">
+            <article class="card feature-card">
+              <div class="feature-icon feature-icon-chat" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M5 6.5A2.5 2.5 0 0 1 7.5 4h9A2.5 2.5 0 0 1 19 6.5v6A2.5 2.5 0 0 1 16.5 15H11l-4 3v-3H7.5A2.5 2.5 0 0 1 5 12.5v-6Z"/></svg>
+              </div>
+              <h3>Chat Mode and Build Mode</h3>
+              <p>Switch from fast prompts to a full workspace surface with history, file tree, diff review, logs, and terminals.</p>
+            </article>
+            <article class="card feature-card">
+              <div class="feature-icon feature-icon-subagents" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M8 11a3 3 0 1 1 0-6 3 3 0 0 1 0 6Zm8 2a3 3 0 1 1 0-6 3 3 0 0 1 0 6ZM3.5 19c0-2.5 2.2-4 4.5-4s4.5 1.5 4.5 4v1h-9v-1Zm8 1c0-2.1 1.8-3.5 4.1-3.5 2.2 0 4.4 1.3 4.4 3.5v1h-8.5v-1Z"/></svg>
+              </div>
+              <h3>Tracked subagents</h3>
+              <p>Run delegated child-agent work with visible status, session and run modes, and a dedicated global monitoring page.</p>
+            </article>
+            <article class="card feature-card">
+              <div class="feature-icon feature-icon-settings" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="m19.4 13 .1-1-.1-1 2-1.6-2-3.4-2.4 1a8.5 8.5 0 0 0-1.7-1l-.4-2.6H9.1l-.4 2.6c-.6.2-1.2.6-1.7 1l-2.4-1-2 3.4L4.6 11a6.7 6.7 0 0 0 0 2l-2 1.6 2 3.4 2.4-1c.5.4 1.1.8 1.7 1l.4 2.6h5.8l.4-2.6c.6-.2 1.2-.6 1.7-1l2.4 1 2-3.4-2-1.6ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z"/></svg>
+              </div>
+              <h3>UI-first configuration</h3>
+              <p>Configure models, permissions, connectors, schedules, pricing, and agent behavior from the app instead of scattered config files.</p>
+            </article>
+            <article class="card feature-card">
+              <div class="feature-icon feature-icon-connectors" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M7 7h4V3h2v4h4v2h-4v6h4v2h-4v4h-2v-4H7v-2h4V9H7V7Zm-2 4a3 3 0 1 1 0 6 3 3 0 0 1 0-6Zm14-4a3 3 0 1 1 0 6 3 3 0 0 1 0-6Z"/></svg>
+              </div>
+              <h3>Connector-ready workflows</h3>
+              <p>Built to route messaging and app connectors into the right agent/account binding when automation needs to touch outside systems.</p>
+            </article>
+            <article class="card feature-card">
+              <div class="feature-icon feature-icon-plugins" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M11 2h2v4h3a2 2 0 0 1 2 2v3h4v2h-4v3a2 2 0 0 1-2 2h-3v4h-2v-4H8a2 2 0 0 1-2-2v-3H2v-2h4V8a2 2 0 0 1 2-2h3V2Zm-3 6v8h8V8H8Z"/></svg>
+              </div>
+              <h3>Skills, plugins, and help</h3>
+              <p>Extend the app with managed plugins, user skills, slash commands, and a markdown-driven help system.</p>
+            </article>
+            <article class="card feature-card">
+              <div class="feature-icon feature-icon-productivity" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M12 2 4 6v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V6l-8-4Zm-1 14-3-3 1.4-1.4 1.6 1.6 4.6-4.6L17 10l-6 6Z"/></svg>
+              </div>
+              <h3>Local-first everyday productivity</h3>
+              <p>Designed to support practical desktop work for founders, consultants, solo professionals, and early technical teams.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="how-it-works" class="section section-tinted">
+        <div class="container">
+          <div class="section-heading narrow">
+            <div class="eyebrow">How it works</div>
+            <h2>Simple flow, advanced control.</h2>
+            <p>The product is designed to stay approachable even when you need more than basic prompting.</p>
+          </div>
+          <div class="workflow-grid">
+            <article class="card workflow-card">
+              <div class="workflow-step">Step 1</div>
+              <h3>Install or clone the project</h3>
+              <p>Start from the GitHub repository, install dependencies, and run the desktop app locally on Windows.</p>
+            </article>
+            <article class="card workflow-card">
+              <div class="workflow-step">Step 2</div>
+              <h3>Configure the app in the UI</h3>
+              <p>Add provider keys, choose agent defaults, adjust permissions, and connect the tools or connectors you want to use.</p>
+            </article>
+            <article class="card workflow-card">
+              <div class="workflow-step">Step 3</div>
+              <h3>Work in Chat, Build, or Subagents</h3>
+              <p>Use the surface that fits the task: quick prompts, workspace execution, or delegated child-agent work with visible tracking.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="screenshots" class="section section-screenshots">
+        <div class="container">
+          <div class="section-heading">
+            <div class="eyebrow">Screenshots</div>
+            <h2>See the core product surfaces.</h2>
+            <p>The app is designed around a few clear working modes so you can stay oriented while tasks, settings, and child-agent runs remain visible.</p>
+          </div>
+          <div class="screenshot-grid">
+            <figure class="card screenshot-card screenshot-card-wide">
+              <img src="./chat-mode.png" alt="Open Deskmate Chat Mode screenshot">
+              <figcaption>
+                <strong>Chat Mode</strong>
+                <span>Fast prompting, follow-ups, slash commands, saved prompts, and file-aware task entry.</span>
+              </figcaption>
+            </figure>
+            <figure class="card screenshot-card">
+              <img src="./build-mode.png" alt="Open Deskmate Build Mode screenshot">
+              <figcaption>
+                <strong>Build Mode</strong>
+                <span>Workspace-aware execution with diffs, logs, terminals, and project context.</span>
+              </figcaption>
+            </figure>
+            <figure class="card screenshot-card">
+              <img src="./settings.png" alt="Open Deskmate Settings screenshot">
+              <figcaption>
+                <strong>Settings</strong>
+                <span>Simple UI for models, permissions, connectors, plugins, voice, and pricing.</span>
+              </figcaption>
+            </figure>
+            <figure class="card screenshot-card screenshot-card-wide">
+              <img src="./subagents.png" alt="Open Deskmate Subagents screenshot">
+              <figcaption>
+                <strong>Subagents</strong>
+                <span>A global control surface for tracked child-agent runs across the app.</span>
+              </figcaption>
+            </figure>
+          </div>
+        </div>
+      </section>
+
+      <section id="use-cases" class="section">
+        <div class="container">
+          <div class="section-heading">
+            <div class="eyebrow">Use cases</div>
+            <h2>Built for practical day-to-day work.</h2>
+            <p>Open Deskmate is designed to support everyday productivity for people who need help turning intent into actual work across files, tasks, and structured workflows.</p>
+          </div>
+          <div class="use-case-grid">
+            <article class="card use-case-card">
+              <h3>Founders</h3>
+              <p>Draft briefs, clean up notes, organize project folders, and keep operational tasks moving without context-switching across tools.</p>
+            </article>
+            <article class="card use-case-card">
+              <h3>Consultants</h3>
+              <p>Prepare deliverables, summarize documents, structure client workspaces, and run more repeatable workflows from one desktop surface.</p>
+            </article>
+            <article class="card use-case-card">
+              <h3>Solo professionals</h3>
+              <p>Use one assistant for writing, planning, file management, and longer-running task execution without needing a complex team setup.</p>
+            </article>
+            <article class="card use-case-card">
+              <h3>Knowledge workers</h3>
+              <p>Turn notes, drafts, reports, folders, and follow-up actions into more manageable workflows with a local-first AI companion.</p>
+            </article>
+            <article class="card use-case-card">
+              <h3>Early contributors</h3>
+              <p>Explore the codebase, test workflows, and help shape a UI-driven open-source desktop agent product while it is still evolving.</p>
+            </article>
+            <article class="card use-case-card">
+              <h3>Small technical teams</h3>
+              <p>Use Build Mode and tracked subagents to support implementation, review diffs, and keep longer-running work grounded in the workspace.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="get-started" class="section section-tinted">
+        <div class="container get-started-grid">
+          <div>
+            <div class="section-heading align-left compact">
+              <div class="eyebrow">Get started</div>
+              <h2>Start with the repo, then build or run locally.</h2>
+              <p>Open Deskmate is served through the repository and designed to be straightforward to evaluate from source.</p>
+            </div>
+            <ol class="steps-list">
+              <li><strong>Open the repository.</strong> Review the README and installation notes on GitHub.</li>
+              <li><strong>Install dependencies.</strong> Use Node.js 20+ and pnpm 9+.</li>
+              <li><strong>Run development or build the app.</strong> Start locally with `pnpm dev` or package for Windows with `pnpm -F @accomplish/desktop build:win`.</li>
+              <li><strong>Configure your providers in the app.</strong> Add your own keys and tune models, permissions, and agents from the settings UI.</li>
+            </ol>
+            <div class="inline-actions">
+              <a class="button button-primary" href="https://github.com/CarlHakim/open-deskmate" target="_blank" rel="noreferrer">Open Repository</a>
+              <a class="button button-secondary" href="https://github.com/CarlHakim/open-deskmate#readme" target="_blank" rel="noreferrer">Read Installation Guide</a>
+            </div>
+          </div>
+          <aside class="card code-card" aria-label="Quick setup commands">
+            <div class="code-card-label">Quick start</div>
+            <pre><code>git clone https://github.com/CarlHakim/open-deskmate.git
+cd open-deskmate
+pnpm install
+pnpm dev</code></pre>
+            <p>For Windows builds, the repository README includes the current prerequisites and packaging steps.</p>
+          </aside>
+        </div>
+      </section>
+
+      <section id="faq" class="section">
+        <div class="container">
+          <div class="section-heading narrow">
+            <div class="eyebrow">FAQ</div>
+            <h2>Questions people are likely to ask first.</h2>
+          </div>
+          <div class="faq-grid">
+            <article class="card faq-card">
+              <h3>Is Open Deskmate open source?</h3>
+              <p>Yes. The project is open source and positioned as a contributor-friendly desktop AI companion built in public.</p>
+            </article>
+            <article class="card faq-card">
+              <h3>Does it run locally?</h3>
+              <p>It is designed as a local-first desktop app. You configure your own providers and operate against local workspaces from the desktop UI.</p>
+            </article>
+            <article class="card faq-card">
+              <h3>Do I need to use a CLI to configure it?</h3>
+              <p>No. A core part of the product direction is making advanced setup manageable from a straightforward settings interface.</p>
+            </article>
+            <article class="card faq-card">
+              <h3>What makes it different from Openwork or OpenClaw?</h3>
+              <p>Open Deskmate focuses on ease of use, desktop operation, and keeping configuration, oversight, and execution visible in the UI.</p>
+            </article>
+            <article class="card faq-card">
+              <h3>What kinds of workflows is it built for?</h3>
+              <p>It is built for practical productivity: quick chat tasks, workspace-aware build flows, delegated subagent work, and configurable connector-backed workflows.</p>
+            </article>
+            <article class="card faq-card">
+              <h3>Can I contribute?</h3>
+              <p>Yes. Early contributors are welcome, and the repository includes a <code>CONTRIBUTING.md</code> file with the current contribution path.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="open-source" class="section">
+        <div class="container open-source-grid">
+          <div>
+            <div class="section-heading align-left compact">
+              <div class="eyebrow">Open source</div>
+              <h2>Built in public and open to contributors.</h2>
+              <p>Open Deskmate is an MIT-licensed project. Contributions are welcome, especially from early users who care about making desktop AI more usable, configurable, and grounded in practical work.</p>
+            </div>
+          </div>
+          <div class="open-source-cards">
+            <article class="card action-card">
+              <h3>Contribute</h3>
+              <p>Fork the repository, create a feature branch, and open a pull request against <code>main</code>.</p>
+              <a href="https://github.com/CarlHakim/open-deskmate/blob/main/CONTRIBUTING.md" target="_blank" rel="noreferrer">Read CONTRIBUTING.md</a>
+            </article>
+            <article class="card action-card">
+              <h3>Follow development</h3>
+              <p>Explore the codebase, screenshots, and evolving desktop workflows directly in the repository.</p>
+              <a href="https://github.com/CarlHakim/open-deskmate" target="_blank" rel="noreferrer">View repository</a>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section section-tinted section-final-cta">
+        <div class="container">
+          <div class="final-cta card glass-card">
+            <div>
+              <div class="eyebrow">Get involved</div>
+              <h2>Explore the repo, try the desktop app, and help shape what comes next.</h2>
+              <p>Open Deskmate is early enough to be shaped by contributors and practical users, but already focused enough to show a clear product direction.</p>
+            </div>
+            <div class="final-cta-actions">
+              <a class="button button-primary" href="https://github.com/CarlHakim/open-deskmate" target="_blank" rel="noreferrer">View on GitHub</a>
+              <a class="button button-secondary" href="https://github.com/CarlHakim/open-deskmate/blob/main/CONTRIBUTING.md" target="_blank" rel="noreferrer">Read CONTRIBUTING.md</a>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="contact" class="section section-contact">
+        <div class="container contact-card card glass-card">
+          <div>
+            <div class="eyebrow">Contact</div>
+            <h2>Questions, collaborations, or early contribution interest?</h2>
+            <p>Reach out directly if you want to talk about the product, contributing, or how Open Deskmate is evolving as a practical desktop AI companion.</p>
+          </div>
+          <div class="contact-actions">
+            <a class="button button-primary" href="mailto:opendeskmate@renewai.nl">opendeskmate@renewai.nl</a>
+            <a class="button button-secondary" href="https://github.com/CarlHakim/open-deskmate" target="_blank" rel="noreferrer">GitHub</a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="container footer-inner">
+        <div>
+          <strong>Open Deskmate</strong>
+          <p>Open-source desktop AI companion for practical everyday productivity.</p>
+        </div>
+        <div class="footer-links">
+          <a href="https://github.com/CarlHakim/open-deskmate" target="_blank" rel="noreferrer">GitHub</a>
+          <span>Built by RenewAI</span>
+        </div>
+      </div>
+    </footer>
+  </div>
 </body>
 </html>
