@@ -309,7 +309,7 @@ packages/
 ## Contact
 
 Questions, collaborations, or support:
-- Email: [carl.hakim@renewai.nl](mailto:carl.hakim@renewai.nl)
+- Email: [opendeskmate@renewai.nl](mailto:opendeskmate@renewai.nl)
 - Website: https://renewai.nl
 - GitHub: https://github.com/CarlHakim
 
