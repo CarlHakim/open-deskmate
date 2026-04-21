@@ -17,6 +17,11 @@
       window.scrollTo(0, 0);
     });
     document.addEventListener('DOMContentLoaded', () => {
+      const footerYear = document.getElementById('footer-year');
+      if (footerYear) {
+        footerYear.textContent = String(new Date().getFullYear());
+      }
+
       const header = document.querySelector('.site-header');
       const toggle = document.querySelector('.menu-toggle');
       const menu = document.getElementById('site-menu');
@@ -739,7 +744,7 @@ pnpm dev</code></pre>
         <div class="footer-brand">
           <strong>Open Deskmate</strong>
           <p>Open-source desktop AI companion for practical everyday productivity.</p>
-          <div class="footer-legal">© 2026 RenewAI B.V. Open source under the MIT License.</div>
+          <div class="footer-legal">© <span id="footer-year">2026</span> RenewAI B.V. Open source under the MIT License.</div>
         </div>
         <div class="footer-links">
           <div class="footer-link-group">
