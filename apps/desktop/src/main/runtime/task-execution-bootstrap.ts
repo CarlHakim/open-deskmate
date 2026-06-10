@@ -3,8 +3,11 @@ import { addTurnLog, updateTurnUsage } from '../store/tokenUsage';
 
 export type TurnUsageAccumulator = {
   inputTokens: number;
+  inputHitTokens?: number;
+  inputMissTokens?: number;
   outputTokens: number;
   cachedInputTokens?: number;
+  costUsd?: number;
 };
 
 export type ActiveTurnRecord = {
@@ -52,6 +55,7 @@ export function initializeTaskTurnTracking(params: {
     summaryInserted: boolean;
     shouldResetSession: boolean;
   };
+  usageProjectId?: string | null;
 }): void {
   params.activeTurnByTaskId.set(params.taskId, {
     turnId: params.turnId,
@@ -77,6 +81,7 @@ export function initializeTaskTurnTracking(params: {
     droppedMessages: params.prepared.droppedMessages,
     summaryInserted: params.prepared.summaryInserted,
     shouldResetSession: params.prepared.shouldResetSession,
+    usageProjectId: params.usageProjectId,
     usage: {
       inputTokens: params.prepared.estimate.promptTokensEst,
       outputTokens: 0,
@@ -99,11 +104,17 @@ export function finalizeTaskTurnTracking(params: {
   let outputTokens: number | undefined;
 
   if (active.acc.inputTokens > 0 || active.acc.outputTokens > 0 || typeof active.acc.cachedInputTokens === 'number') {
+    const inputHitTokens = active.acc.inputHitTokens ?? active.acc.cachedInputTokens;
+    const inputMissTokens = active.acc.inputMissTokens ?? Math.max(0, active.acc.inputTokens - (inputHitTokens ?? 0));
+    const billableInputTokens = (inputHitTokens ?? 0) + inputMissTokens;
     updateTurnUsage(active.turnId, {
       inputTokens: active.acc.inputTokens,
       outputTokens: active.acc.outputTokens,
-      totalTokens: active.acc.inputTokens + active.acc.outputTokens,
+      totalTokens: billableInputTokens + active.acc.outputTokens,
       cachedInputTokens: active.acc.cachedInputTokens,
+      inputHitTokens,
+      inputMissTokens,
+      costUsd: active.acc.costUsd,
       estimated: false,
     });
     inputTokens = active.acc.inputTokens;
@@ -136,6 +147,7 @@ export function hydrateStartedTask(params: {
   params.task.workingDirectory = params.validatedConfig.workingDirectory;
   params.task.attachedFiles = params.validatedConfig.attachedFiles;
   params.task.privacyMode = params.validatedConfig.privacyMode;
+  params.task.usageProjectId = params.validatedConfig.usageProjectId;
   (params.task as Task & { sessionFilePath?: string }).sessionFilePath = params.sessionFilePath;
 }
 

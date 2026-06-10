@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useTaskStore } from '@/stores/taskStore';
 import { useFolderStore } from '@/stores/folderStore';
 import { useAgentStore } from '@/stores/agentStore';
+import { useUsageProjectStore } from '@/stores/usageProjectStore';
 import { getAccomplish } from '@/lib/accomplish';
 import { analytics } from '@/lib/analytics';
 import { staggerContainer } from '@/lib/animations';
@@ -17,7 +18,8 @@ import ConversationListItem from './ConversationListItem';
 import FolderItem from './FolderItem';
 import CreateFolderDialog from './CreateFolderDialog';
 import SettingsDialog from './SettingsDialog';
-import { Settings, MessageSquarePlus, Search, FolderPlus, MoreHorizontal, GripVertical, ChevronRight, ChevronDown, User, Check, CircleHelp, Sun, Moon, Monitor, GitBranch } from 'lucide-react';
+import ProjectManagementDialog from '@/components/usage/ProjectManagementDialog';
+import { Settings, MessageSquarePlus, Search, FolderPlus, MoreHorizontal, GripVertical, ChevronRight, ChevronDown, User, Check, CircleHelp, Sun, Moon, Monitor, GitBranch, Briefcase } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -56,6 +58,25 @@ const PROVIDER_LABELS: Record<string, string> = {
   ollama: 'Ollama',
 };
 
+const CHAT_SIDEBAR_WIDTH_KEY = 'open-deskmate-chat-sidebar-width';
+const CHAT_SIDEBAR_DEFAULT_WIDTH = 280;
+const CHAT_SIDEBAR_MIN_WIDTH = 220;
+const CHAT_SIDEBAR_MAX_WIDTH = 460;
+
+function clampSidebarWidth(value: number): number {
+  return Math.max(CHAT_SIDEBAR_MIN_WIDTH, Math.min(CHAT_SIDEBAR_MAX_WIDTH, Math.round(value)));
+}
+
+function readChatSidebarWidth(): number {
+  try {
+    const raw = window.localStorage.getItem(CHAT_SIDEBAR_WIDTH_KEY);
+    const parsed = raw ? Number(raw) : Number.NaN;
+    return Number.isFinite(parsed) ? clampSidebarWidth(parsed) : CHAT_SIDEBAR_DEFAULT_WIDTH;
+  } catch {
+    return CHAT_SIDEBAR_DEFAULT_WIDTH;
+  }
+}
+
 function formatSelectedModelLabel(model: SelectedModel | null | undefined): string {
   if (!model) return 'Global default';
   const providerId = typeof model.provider === 'string' ? model.provider.trim() : '';
@@ -76,6 +97,8 @@ export default function Sidebar() {
   const navigate = useNavigate();
   const location = useLocation();
   const [showSettings, setShowSettings] = useState(false);
+  const [showProjectManagement, setShowProjectManagement] = useState(false);
+  const [projectManagementInitialProjectId, setProjectManagementInitialProjectId] = useState<string | null>(null);
   const [pendingSettingsSectionQuery, setPendingSettingsSectionQuery] = useState('');
   const [showCreateFolder, setShowCreateFolder] = useState(false);
   const [showAllProjects, setShowAllProjects] = useState(false);
@@ -88,20 +111,75 @@ export default function Sidebar() {
   const [globalSelectedModel, setGlobalSelectedModel] = useState<SelectedModel | null>(null);
   const [apiKeyStatus, setApiKeyStatus] = useState<Record<string, { exists: boolean; prefix?: string }>>({});
   const [agentModelUpdating, setAgentModelUpdating] = useState(false);
+  const [chatSidebarWidth, setChatSidebarWidth] = useState(readChatSidebarWidth);
+  const [sidebarResizing, setSidebarResizing] = useState(false);
 
   const MAX_VISIBLE_PROJECTS = 5;
   const { tasks, loadTasks, updateTaskStatus, addTaskUpdate, insertTask, openLauncher, setTaskFolder } = useTaskStore();
   const { folders, loadFolders, toggleFolderExpanded, reorderFolders } = useFolderStore();
   const { agents, activeAgentId, defaultAgentId, loadAgents, setActiveAgent, upsertAgent } = useAgentStore();
+  const { projects: usageProjects, archivedProjects: archivedUsageProjects, loadProjects: loadUsageProjects } = useUsageProjectStore();
   const { theme, setTheme } = useTheme();
   const activeAgent = agents.find((agent) => agent.id === activeAgentId);
   const isBuildModeRoute = location.pathname === '/build';
   const isSubagentsRoute = location.pathname === '/subagents';
 
-  // Folder drag state
-  const [draggedFolderId, setDraggedFolderId] = useState<string | null>(null);
-  const [dragTargetFolderId, setDragTargetFolderId] = useState<string | null>(null);
   const accomplish = getAccomplish();
+
+  const openProjectManagement = (projectId?: string | null) => {
+    setProjectManagementInitialProjectId(projectId || null);
+    setShowProjectManagement(true);
+  };
+
+  const getUsageProjectColor = (projectId?: string | null): string => {
+    if (!projectId) return '#2dd4bf';
+    return [...usageProjects, ...archivedUsageProjects].find((project) => project.id === projectId)?.color || '#2dd4bf';
+  };
+
+  const startSidebarResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (isBuildModeRoute) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const startX = event.clientX;
+    const startWidth = chatSidebarWidth;
+    setSidebarResizing(true);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const nextWidth = clampSidebarWidth(startWidth + moveEvent.clientX - startX);
+      setChatSidebarWidth(nextWidth);
+    };
+
+    const handlePointerUp = (upEvent: PointerEvent) => {
+      const finalWidth = clampSidebarWidth(startWidth + upEvent.clientX - startX);
+      setChatSidebarWidth(finalWidth);
+      try {
+        window.localStorage.setItem(CHAT_SIDEBAR_WIDTH_KEY, String(finalWidth));
+      } catch {
+        // Ignore storage failures.
+      }
+      setSidebarResizing(false);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
+  };
+
+  const resetSidebarWidth = () => {
+    setChatSidebarWidth(CHAT_SIDEBAR_DEFAULT_WIDTH);
+    try {
+      window.localStorage.setItem(CHAT_SIDEBAR_WIDTH_KEY, String(CHAT_SIDEBAR_DEFAULT_WIDTH));
+    } catch {
+      // Ignore storage failures.
+    }
+  };
 
   useEffect(() => {
     void loadAgents();
@@ -114,6 +192,10 @@ export default function Sidebar() {
   useEffect(() => {
     loadFolders();
   }, [loadFolders, activeAgentId]);
+
+  useEffect(() => {
+    void loadUsageProjects(true);
+  }, [loadUsageProjects]);
 
   useEffect(() => {
     const handleOpenSettings = (event: Event) => {
@@ -154,35 +236,6 @@ export default function Sidebar() {
     e.currentTarget.classList.remove('bg-primary/10');
   };
 
-  // Folder reordering handlers
-  const handleFolderDragStart = (_e: React.DragEvent, folderId: string) => {
-    setDraggedFolderId(folderId);
-  };
-
-  const handleFolderDragOver = (_e: React.DragEvent, folderId: string) => {
-    if (draggedFolderId && draggedFolderId !== folderId) {
-      setDragTargetFolderId(folderId);
-    }
-  };
-
-  const handleFolderDragEnd = () => {
-    if (draggedFolderId && dragTargetFolderId && draggedFolderId !== dragTargetFolderId) {
-      // Reorder folders: move dragged folder to the position of the target folder
-      const currentOrder = sortedFolders.map((f) => f.id);
-      const draggedIndex = currentOrder.indexOf(draggedFolderId);
-      const targetIndex = currentOrder.indexOf(dragTargetFolderId);
-
-      if (draggedIndex !== -1 && targetIndex !== -1) {
-        // Remove dragged item and insert at target position
-        currentOrder.splice(draggedIndex, 1);
-        currentOrder.splice(targetIndex, 0, draggedFolderId);
-        reorderFolders(currentOrder);
-      }
-    }
-    setDraggedFolderId(null);
-    setDragTargetFolderId(null);
-  };
-
   // Subscribe to task status changes (queued -> running) and task updates (complete/error)
   // This ensures sidebar always reflects current task status
   useEffect(() => {
@@ -207,6 +260,7 @@ export default function Sidebar() {
 
   const handleNewConversation = () => {
     analytics.trackNewTask();
+    window.dispatchEvent(new CustomEvent('opendeskmate:new-chat-task'));
     navigate('/');
   };
 
@@ -327,7 +381,26 @@ export default function Sidebar() {
 
   return (
     <>
-      <div className={`flex h-screen flex-col sidebar-modern pt-4 transition-[width] duration-200 ${isBuildModeRoute ? 'w-[56px]' : 'w-[280px]'}`}>
+      <div
+        className={cn(
+          'relative flex h-screen shrink-0 flex-col sidebar-modern pt-4',
+          sidebarResizing ? '' : 'transition-[width] duration-200'
+        )}
+        style={{ width: isBuildModeRoute ? 56 : chatSidebarWidth }}
+      >
+        {!isBuildModeRoute && (
+          <>
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize task sidebar"
+              title="Drag to resize task sidebar"
+              onPointerDown={startSidebarResize}
+              onDoubleClick={resetSidebarWidth}
+              className="absolute right-0 top-0 z-30 h-full w-2 translate-x-1 cursor-col-resize touch-none bg-transparent"
+            />
+          </>
+        )}
         {isBuildModeRoute ? (
           <>
             <div className="px-1.5 pb-2">
@@ -552,6 +625,15 @@ export default function Sidebar() {
                 className="h-9 w-9 rounded-xl hover:bg-accent/80 transition-smooth"
               >
                 <Settings className="h-4 w-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => openProjectManagement()}
+                title="Project Management"
+                className="h-9 w-9 rounded-xl hover:bg-accent/80 transition-smooth"
+              >
+                <Briefcase className="h-4 w-4" />
               </Button>
               <div className="mt-3 flex items-center justify-center overflow-hidden">
                 <img
@@ -806,10 +888,7 @@ export default function Sidebar() {
                           key={folder.id}
                           folder={folder}
                           tasks={getTasksForFolder(folder.id)}
-                          onDragStart={handleFolderDragStart}
-                          onDragOver={handleFolderDragOver}
-                          onDragEnd={handleFolderDragEnd}
-                          isDragTarget={dragTargetFolderId === folder.id}
+                          onOpenBudgetProject={openProjectManagement}
                         />
                       ))}
                       {/* See more button when there are more than 5 projects */}
@@ -850,17 +929,38 @@ export default function Sidebar() {
                                           className={`h-3.5 w-3.5 text-muted-foreground transition-transform ${folder.isExpanded ? 'rotate-90' : ''}`}
                                         />
                                         <div
-                                          className="flex items-center justify-center w-6 h-6 rounded-lg shrink-0"
+                                          className="relative flex items-center justify-center w-6 h-6 rounded-lg shrink-0"
                                           style={{
                                             backgroundColor: folder.color ? `${folder.color}20` : 'hsl(var(--muted) / 0.5)',
                                           }}
+                                          title={folder.usageProjectId ? 'Budget applied' : undefined}
                                         >
                                           <IconComponent
                                             className="h-3.5 w-3.5"
                                             style={{ color: folder.color || 'hsl(var(--muted-foreground))' }}
                                           />
+                                          {folder.usageProjectId && (
+                                            <span
+                                              className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border border-background"
+                                              style={{ backgroundColor: getUsageProjectColor(folder.usageProjectId) }}
+                                            />
+                                          )}
                                         </div>
-                                        <span className="truncate flex-1 font-medium">{folder.name}</span>
+                                        <span className="truncate flex-1 font-medium" title={folder.name}>{folder.name}</span>
+                                        {folder.usageProjectId && (
+                                          <button
+                                            type="button"
+                                            className="rounded-full border border-teal-400/40 bg-teal-400/10 px-1.5 py-0.5 text-[10px] font-medium text-teal-700 hover:bg-teal-400/20"
+                                            title="Open budget in Project Management"
+                                            onClick={(event) => {
+                                              event.stopPropagation();
+                                              setShowAllProjects(false);
+                                              openProjectManagement(folder.usageProjectId);
+                                            }}
+                                          >
+                                            Budget
+                                          </button>
+                                        )}
                                         <span className="text-xs text-muted-foreground/70">
                                           {folderTasks.length}
                                         </span>
@@ -1011,6 +1111,15 @@ export default function Sidebar() {
             >
               <Settings className="h-4 w-4" />
             </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => openProjectManagement()}
+              title="Project Management"
+              className="rounded-xl hover:bg-accent/80 transition-smooth"
+            >
+              <Briefcase className="h-4 w-4" />
+            </Button>
           </div>
         </div>
           </>
@@ -1021,6 +1130,11 @@ export default function Sidebar() {
         open={showSettings}
         onOpenChange={setShowSettings}
         initialSectionQuery={pendingSettingsSectionQuery}
+      />
+      <ProjectManagementDialog
+        open={showProjectManagement}
+        onOpenChange={setShowProjectManagement}
+        initialProjectId={projectManagementInitialProjectId}
       />
       <CreateFolderDialog open={showCreateFolder} onOpenChange={setShowCreateFolder} />
 

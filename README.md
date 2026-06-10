@@ -4,16 +4,23 @@
 
 # OpenDeskmate
 
-An open-source local-first AI agent platform for Windows forked from the Openwork for Mac project. It offers OpenClaw-style capabilities including multi-agent workflows, connector routing, automation loops, tool-driven execution, and tracked subagent orchestration, but with a full desktop settings UI instead of CLI-only setup. Run locally with your own provider keys, configure models, permissions, connectors, plugins, and automation from the app, and install directly on Windows (installer or portable executable) without a cloud dependency.
+An open-source local-first AI work operating system for Windows forked from the Openwork for Mac project. It offers OpenClaw-style capabilities including multi-agent workflows, connector routing, automation loops, tool-driven execution, and tracked subagent orchestration, but with a full desktop settings UI instead of CLI-only setup.
+
+Run locally with your own provider keys, configure models, permissions, connectors, plugins, and automation from the app, and install directly on Windows as an installer or portable executable without a hosted OpenDeskmate cloud dependency.
+
+OpenDeskmate is built for the full loop around AI work: chat, build automation, project budgets, Workboard tracking, Git review, screenshots, notes, documents, saved prompts, reusable workflows, and project handoff.
 
 ---
 
 ## What OpenDeskmate Is For
 
-OpenDeskmate is built for people who want local agent workflows without giving up operational control. It is aimed at casual users, developers, technical operators, and power users who need more than a single chat window:
+OpenDeskmate is built for people who want local agent workflows without giving up operational control. It is aimed at freelancers, agencies, consultants, solo builders, developers, technical operators, and power users who need more than a single chat window:
 
 - Run agent tasks against local files and real project workspaces on Windows.
 - Switch between quick chat interactions and longer-running build workflows.
+- Track AI usage and estimated cost by client, product, internal project, Chat project, Build preset, or Build session.
+- Turn AI output into project work items, rich notes, drawings, documents, RTF exports, and follow-up checklists.
+- Review code changes, Git status, branch state, remotes, commits, pushes, and mismatch recovery from a guided desktop panel.
 - Route connectors, tools, and automation into the right agent with explicit settings.
 - Monitor subagents, runtime permissions, usage, and task state from the desktop UI.
 - Extend the app with skills, plugins, help docs, and connector-backed workflows.
@@ -26,7 +33,9 @@ OpenDeskmate keeps the local-first, agentic power of Openwork and OpenClaw, but 
 
 - Configure models, agents, subagents, permissions, connectors, plugins, schedules, voice features, and pricing from the app.
 - Use Chat Mode for fast prompts or Build Mode for workspace-driven implementation without changing tools.
-- Inspect task history, diffs, terminals, runtime logs, and child-agent runs in one place.
+- Inspect task history, activity timelines, reasoning bubbles, edited-file summaries, terminals, runtime logs, screenshots, and child-agent runs in one place.
+- Use **Project Management** to connect Chat projects, direct Chat tasks, Build presets, and Build sessions to budgets, work items, notes, assignees, documents, drawings, and usage analytics.
+- Use **Changes & Git** to make Git easier for non-experts with repository status, changed file counts, additions/deletions, commit/push guidance, remote setup, branch tools, and mismatch/conflict recovery.
 - Keep advanced capabilities available without making normal setup and operation feel like developer-only infrastructure.
 
 ---
@@ -35,7 +44,13 @@ OpenDeskmate keeps the local-first, agentic power of Openwork and OpenClaw, but 
 
 - **Runs locally** - Your files and secrets stay on your machine by default.
 - **Bring your own AI** - OpenAI, Anthropic, Google, xAI, Ollama, plus custom OpenAI-compatible providers/models.
-- **Chat Mode + Build Mode** - Use fast task/chat flows or switch into a full workspace-oriented build surface with file tree, editor tabs, task history, diff review, runtime logs, and embedded terminal sessions.
+- **Chat Mode + Build Mode** - Use fast task/chat flows or switch into a full workspace-oriented build surface with file tree, editor tabs, task history, runtime preview, screenshots, Changes & Git, runtime logs, and embedded terminal sessions.
+- **Project Management** - Create usage projects with client/project details, owners, assignees, budget contents, budget windows, analytics, notes, documents, drawings, and project work items.
+- **Per-project budgets and usage** - Track input hit tokens/cost, input miss tokens/cost, output tokens/cost, total tokens, estimated cost, warning limits, blocking limits, and tracking-only projects.
+- **Workboard** - Manage AI-related work in Table, Kanban, Timeline, and Calendar views with states, checklist lists, assignees, due dates, progress bars, notes, documents, drawings, and color badges.
+- **Changes & Git** - Review edited files, additions/deletions, staged/unstaged/untracked state, branch/remote/upstream status, commit, push, add remotes, create branches, and resolve mismatches or conflicts.
+- **Runtime screenshots and annotation** - Capture selected areas or full runtime preview pages, annotate with shapes/arrows/text/freehand drawing, export, attach to prompts, or save to project work items.
+- **Answer capture and export** - Copy rich answers, pop out long answers, save Chat/Build answers as formatted project notes, export RTF files, and attach saved files as project documents.
 - **Multi-agent workspaces** - Per-agent role name, avatar, workspace defaults, and model/provider override with global fallback.
 - **Tracked subagents** - Per-agent subagent controls, global subagent monitoring, run/session modes, inherited context rules, and close/archive controls.
 - **Active Automation Mode per agent** - Enable agentic loop behavior with configurable heartbeat schedules.
@@ -47,10 +62,26 @@ OpenDeskmate keeps the local-first, agentic power of Openwork and OpenClaw, but 
 - **User Skills + agent-generated skills** - Create/import/edit/configure skills, private-by-default sharing, versioning, rollback, and test flows.
 - **Plugins** - Discover bundled and managed plugins with manifests, commands, hooks, tools, help docs, diagnostics, and enable/disable lifecycle controls.
 - **Slash commands + launcher flows** - Built-in command surfaces for navigation, agent actions, Build Mode actions, and plugin-contributed commands.
+- **Saved prompts and recipes** - Use bundled recipes, custom saved prompts, categories, one-click insertion, and reusable workflow prompts in Chat Mode and Build Mode.
 - **Desktop + WebChat parity** - Saved prompts, add files, incognito mode, work-in-folder, voice wake/talk mode, model badge, context estimate badge/details, and message copy helpers.
-- **Usage + pricing visibility** - Track token usage globally and add provider pricing to estimate cost inside the app shell.
-- **In-app Help system** - Markdown-driven help pages with sidebar navigation, search, syntax highlighting, asset/link support, and live reload from a user-editable folder.
+- **Activity timeline and recovery** - See model state, tool calls, permissions, errors, retries, final responses, reasoning bubbles, raw logs, and recovery actions when a task stalls.
+- **Usage + pricing visibility** - Track token usage globally and per project, add provider pricing, and estimate cost inside the app shell.
+- **In-app Help system** - Markdown-driven help pages with sidebar navigation, search, syntax highlighting, asset/link support, step-by-step guides, troubleshooting, and live reload from a user-editable folder.
 - **Open source** - MIT licensed and fully transparent.
+
+---
+
+## Newer Work-OS Capabilities
+
+OpenDeskmate has moved beyond a basic chat/build harness into a project-aware AI work surface:
+
+- **Project budgets** let users attach Chat and Build work to a budget project and track costs by project.
+- **Workboard** turns AI output into tasks, checklists, Kanban items, timeline entries, notes, drawings, and linked documents.
+- **Changes & Git** helps inexperienced Git users review file changes, understand branch/remote state, commit, push, and resolve mismatches.
+- **Runtime screenshots** let users capture and annotate active previews, then attach the screenshot to a prompt or save it to project work.
+- **Answer saving** lets users preserve final answers as rich project notes, RTF files, or linked documents.
+- **Activity timelines** make tool calls, model state, reasoning bubbles, errors, and recovery actions visible.
+- **Saved prompts and recipes** make repeat workflows easier to reuse in Chat Mode and Build Mode.
 
 ---
 
@@ -59,8 +90,9 @@ OpenDeskmate keeps the local-first, agentic power of Openwork and OpenClaw, but 
 <table>
   <tr>
     <td valign="top">
-      <p><strong>Build Mode</strong> is the desktop workspace for longer-running implementation tasks. It combines agent chat history with project-aware tooling so you can inspect files, review proposed diffs, monitor runtime logs, work across terminal sessions, and keep tracked subagents visible while the main agent is executing.</p>
-      <p>It is designed for tasks that need persistent workspace context rather than a single chat reply.</p>
+      <p><strong>Build Mode</strong> is the desktop workspace for longer-running implementation tasks. It combines agent chat history with project-aware tooling so you can inspect files, run runtime preview, capture annotated screenshots, monitor runtime logs, work across terminal sessions, and keep tracked subagents visible while the main agent is executing.</p>
+      <p>The <strong>Changes & Git</strong> panel makes file review and Git safer for less experienced users: changed files, total additions/deletions, staged/unstaged/untracked state, branch and remote status, commit, push, add remote, create branch, and mismatch/conflict recovery are surfaced in the UI.</p>
+      <p>Build presets can be attached to project budgets so new sessions inherit cost tracking and project work context.</p>
     </td>
     <td valign="top" width="420">
       <img src="./build-mode.png" alt="OpenDeskmate Build Mode screenshot" width="420" />
@@ -75,7 +107,8 @@ OpenDeskmate keeps the local-first, agentic power of Openwork and OpenClaw, but 
 <table>
   <tr>
     <td valign="top">
-      <p><strong>Chat Mode</strong> is the faster task surface for direct prompting, follow-up questions, slash commands, saved prompts, file attachments, incognito sessions, and work-in-folder flows.</p>
+      <p><strong>Chat Mode</strong> is the faster task surface for direct prompting, follow-up questions, slash commands, saved prompts, file attachments, incognito sessions, project budget selection, image previews, and work-in-folder flows.</p>
+      <p>Answers can be copied with formatting, opened in a larger popout, saved as rich project notes, exported as RTF files, or attached to a project work item as a document link.</p>
       <p>It is optimized for focused agent interaction when you do not need the full Build Mode workspace around the conversation.</p>
     </td>
     <td valign="top" width="420">
@@ -86,12 +119,28 @@ OpenDeskmate keeps the local-first, agentic power of Openwork and OpenClaw, but 
 
 ---
 
+## Project Management, Budgets, And Workboard
+
+OpenDeskmate includes a project-management layer for the work around the agent.
+
+- **Usage projects** group Chat projects, direct Chat tasks, Build presets, and Build sessions into a project budget.
+- **Budget windows** can track money limits, total-token limits, warning mode, or blocking mode.
+- **Usage reports** break down input hit, input miss, output tokens, token costs, total tokens, and total estimated cost.
+- **Analytics** show spend over time, token mix over time, model usage, budget health, and project workload.
+- **Workboard** gives each project Table, Kanban, Timeline, and Calendar views for work items.
+- **Work items** can include state, assignees, due dates, color badges, checklist lists, rich notes, drawings, documents, and progress bars.
+- **Assignees** can be managed as real people, assigned as budget defaults, or overridden on Chat projects and Build presets.
+
+This is the main difference from a normal agent harness: useful AI output can become tracked project work instead of disappearing into chat history.
+
+---
+
 ## Settings
 
 <table>
   <tr>
     <td valign="top">
-      <p><strong>Settings</strong> exposes the operational control surface for the app: model and provider setup, runtime permission policy, connector routing, OAuth configuration, plugin lifecycle, voice wake, automation schedules, usage pricing, and per-agent overrides.</p>
+      <p><strong>Settings</strong> exposes the operational control surface for the app: model and provider setup, runtime permission policy, connector routing, OAuth configuration, plugin lifecycle, voice wake, automation schedules, saved prompts, usage pricing, and per-agent overrides.</p>
       <p>The goal is to keep advanced runtime configuration inside the desktop UI instead of pushing setup into external config files or a CLI-only workflow.</p>
     </td>
     <td valign="top" width="420">

@@ -13,11 +13,35 @@ import type {
   PermissionRequest,
   PermissionResponse,
   TaskProgress,
+  TaskActivityEvent,
   ApiKeyConfig,
   TaskMessage,
+  AutomationDraftRequest,
+  AutomationDraftResult,
   ContextWindowEstimateResponse,
   UsagePricingAutofillResult,
   UsagePricingAutofillRequest,
+  UsageBudgetSettings,
+  UsageBudgetStatus,
+  UsageAssignee,
+  UsageAssigneeInput,
+  UsageAssigneeOverview,
+  UsageAssigneeUpdate,
+  UsageProject,
+  UsageProjectBudgetStatus,
+  UsageProjectBudgetWindow,
+  UsageProjectBudgetWindowInput,
+  UsageProjectBudgetWindowUpdate,
+  UsageProjectKanbanColumn,
+  UsageProjectKanbanColumnInput,
+  UsageProjectKanbanColumnUpdate,
+  UsageProjectInput,
+  UsageProjectAnalytics,
+  UsageProjectSummary,
+  UsageProjectUpdate,
+  UsageProjectWorkItem,
+  UsageProjectWorkItemInput,
+  UsageProjectWorkItemUpdate,
   UsagePeriod,
   UsagePricingSettings,
   UsageSummary,
@@ -40,7 +64,23 @@ import type {
   BuildBuildRequest,
   BuildDiffEnforcementMode,
   BuildFileTreeNode,
+  BuildGitActionResult,
+  BuildGitBackupBranch,
+  BuildGitConflictFile,
+  BuildGitMismatchSummary,
+  BuildGitPullRequestCreateInput,
+  BuildGitPullRequestCreateResult,
+  BuildGitRemoteInput,
+  BuildGitRemoteRepositoryCreateInput,
+  BuildGitRemoteRepositoryCreateResult,
+  BuildGitResolveMismatchInput,
+  BuildGitStageInput,
+  BuildGitStashEntry,
+  BuildGitSummary,
+  BuildGitReflogEntry,
   BuildLogsResponse,
+  BuildQualityCheckRun,
+  BuildQualityCheckRunRequest,
   BuildTaskHistoryListInput,
   BuildTaskSession,
   BuildTaskSessionArchiveInput,
@@ -132,6 +172,7 @@ interface AccomplishAPI {
 
   // Shell
   openExternal(url: string): Promise<void>;
+  openPath(filePath: string): Promise<{ ok: boolean; path: string; error?: string }>;
 
   // Help docs
   listHelpDocs(): Promise<HelpDocsListResponse>;
@@ -154,11 +195,22 @@ interface AccomplishAPI {
   listTasks(agentId?: string): Promise<Task[]>;
   deleteTask(taskId: string): Promise<void>;
   clearTaskHistory(agentId?: string): Promise<void>;
-  listSavedPrompts(): Promise<Array<{ id: string; title: string; content: string; createdAt: string; updatedAt: string }>>;
-  upsertSavedPrompt(payload: { id?: string; title: string; content: string; createdAt?: string; updatedAt?: string }): Promise<{
+  listSavedPrompts(): Promise<Array<{ id: string; title: string; content: string; category: string; createdAt: string; updatedAt: string }>>;
+  listSavedPromptCategories(): Promise<string[]>;
+  createSavedPromptCategory(name: string): Promise<string[]>;
+  renameSavedPromptCategory(payload: { from: string; to: string }): Promise<{
+    categories: string[];
+    prompts: Array<{ id: string; title: string; content: string; category: string; createdAt: string; updatedAt: string }>;
+  }>;
+  deleteSavedPromptCategory(payload: { name: string; replacement?: string }): Promise<{
+    categories: string[];
+    prompts: Array<{ id: string; title: string; content: string; category: string; createdAt: string; updatedAt: string }>;
+  }>;
+  upsertSavedPrompt(payload: { id?: string; title: string; content: string; category?: string; createdAt?: string; updatedAt?: string }): Promise<{
     id: string;
     title: string;
     content: string;
+    category: string;
     createdAt: string;
     updatedAt: string;
   }>;
@@ -173,7 +225,8 @@ interface AccomplishAPI {
     prompt: string,
     taskId?: string,
     attachedFiles?: string[],
-    privacyMode?: 'normal' | 'incognito'
+    privacyMode?: 'normal' | 'incognito',
+    usageProjectId?: string | null
   ): Promise<Task>;
 
   // Proactive assistant (runs only when user clicks the button)
@@ -204,6 +257,33 @@ interface AccomplishAPI {
   listUsageModelsUsed(): Promise<Record<string, string[]>>;
   setUsagePricing(settings: UsagePricingSettings): Promise<UsagePricingSettings>;
   autoFillUsagePricingWithAI(request: UsagePricingAutofillRequest): Promise<UsagePricingAutofillResult>;
+  getUsageBudgets(): Promise<UsageBudgetSettings>;
+  setUsageBudgets(settings: UsageBudgetSettings): Promise<UsageBudgetSettings>;
+  getUsageBudgetStatus(payload?: { agentId?: string }): Promise<UsageBudgetStatus[]>;
+  listUsageProjects(payload?: { includeArchived?: boolean }): Promise<UsageProject[]>;
+  createUsageProject(input: UsageProjectInput): Promise<UsageProject>;
+  updateUsageProject(projectId: string, update: UsageProjectUpdate): Promise<UsageProject>;
+  archiveUsageProject(projectId: string, archived?: boolean): Promise<UsageProject>;
+  listUsageProjectBudgetWindows(payload?: { projectId?: string }): Promise<UsageProjectBudgetWindow[]>;
+  createUsageProjectBudgetWindow(input: UsageProjectBudgetWindowInput): Promise<UsageProjectBudgetWindow>;
+  updateUsageProjectBudgetWindow(windowId: string, update: UsageProjectBudgetWindowUpdate): Promise<UsageProjectBudgetWindow>;
+  deleteUsageProjectBudgetWindow(windowId: string): Promise<{ ok: true }>;
+  getUsageProjectSummary(payload: { projectId: string; startsAt?: string; endsAt?: string | null; windowId?: string }): Promise<UsageProjectSummary>;
+  getUsageProjectAnalytics(payload: { projectId: string; startsAt?: string; endsAt?: string | null; windowId?: string; days?: number }): Promise<UsageProjectAnalytics>;
+  getUsageProjectBudgetStatus(payload?: { projectId?: string }): Promise<UsageProjectBudgetStatus[]>;
+  listUsageProjectWorkItems(payload: { projectId: string; includeArchived?: boolean }): Promise<UsageProjectWorkItem[]>;
+  createUsageProjectWorkItem(input: UsageProjectWorkItemInput): Promise<UsageProjectWorkItem>;
+  updateUsageProjectWorkItem(itemId: string, update: UsageProjectWorkItemUpdate): Promise<UsageProjectWorkItem>;
+  archiveUsageProjectWorkItem(itemId: string, archived?: boolean): Promise<UsageProjectWorkItem>;
+  listUsageProjectKanbanColumns(payload: { projectId: string }): Promise<UsageProjectKanbanColumn[]>;
+  createUsageProjectKanbanColumn(input: UsageProjectKanbanColumnInput): Promise<UsageProjectKanbanColumn>;
+  updateUsageProjectKanbanColumn(columnId: string, update: UsageProjectKanbanColumnUpdate): Promise<UsageProjectKanbanColumn>;
+  deleteUsageProjectKanbanColumn(columnId: string): Promise<{ ok: true }>;
+  listUsageAssignees(payload?: { includeArchived?: boolean }): Promise<UsageAssignee[]>;
+  createUsageAssignee(input: UsageAssigneeInput): Promise<UsageAssignee>;
+  updateUsageAssignee(assigneeId: string, update: UsageAssigneeUpdate): Promise<UsageAssignee>;
+  archiveUsageAssignee(assigneeId: string, archived?: boolean): Promise<UsageAssignee>;
+  getUsageAssigneeOverview(payload?: { assigneeId?: string }): Promise<UsageAssigneeOverview[]>;
 
   // Settings
   getApiKeys(): Promise<ApiKeyConfig[]>;
@@ -221,6 +301,10 @@ interface AccomplishAPI {
   setAgentSpeedMode(mode: 'fast' | 'balanced' | 'deep'): Promise<'fast' | 'balanced' | 'deep'>;
   setBuildDiffEnforcementMode(mode: BuildDiffEnforcementMode): Promise<BuildDiffEnforcementMode>;
   saveDataUrlToFile(dataUrl: string, baseName?: string): Promise<{ filePath: string }>;
+  saveDataUrlToFileAs(dataUrl: string, baseName?: string): Promise<{ filePath?: string; cancelled?: boolean }>;
+  saveTextToFileAs(content: string, options?: { baseName?: string; extension?: string; title?: string }): Promise<{ filePath?: string; cancelled?: boolean }>;
+  captureWindowRect(rect: { x: number; y: number; width: number; height: number }): Promise<{ dataUrl: string }>;
+  captureRuntimePreviewFullPage(url: string): Promise<{ dataUrl: string; width: number; height: number; fullWidth: number; fullHeight: number; clipped: boolean }>;
   setBrowserProfile(profile: string): Promise<string>;
   setWorkspaceRoot(root: string | null): Promise<string | null>;
   getMemoryState(payload?: { agentId?: string; date?: string }): Promise<{
@@ -434,6 +518,8 @@ interface AccomplishAPI {
   stopBuildRuntime(payload: { agentId: string }): Promise<BuildSessionSnapshot>;
   restartBuildRuntime(payload: { agentId: string }): Promise<BuildSessionSnapshot>;
   runBuildCommand(payload: BuildBuildRequest): Promise<{ snapshot: BuildSessionSnapshot; result: BuildRuntimeCommandResult }>;
+  runBuildQualityChecks(payload: BuildQualityCheckRunRequest): Promise<BuildQualityCheckRun>;
+  getBuildQualityChecks(payload: { agentId: string; workspaceRelativePath?: string }): Promise<BuildQualityCheckRun | null>;
   runStartCommandOnce(payload: { agentId: string; workspaceRelativePath?: string; envOverrides?: Record<string, string>; commandOverride?: string }): Promise<{ snapshot: BuildSessionSnapshot; result: BuildRuntimeCommandResult }>;
   getBuildRuntimeLogs(payload: { agentId: string; cursor?: number; limit?: number }): Promise<BuildLogsResponse>;
   clearBuildRuntimeLogs(payload: { agentId: string }): Promise<{ ok: boolean }>;
@@ -468,6 +554,32 @@ interface AccomplishAPI {
     destinationWorkspaceRelativePath?: string;
   }): Promise<{ sourceRelativePath: string; pastedPath: string; mode: 'cut' | 'copy' }>;
   getBuildWorkspaceDiff(payload: { agentId: string; relativePath?: string; maxChars?: number; baselineId?: string }): Promise<BuildWorkspaceDiff>;
+  getBuildGitSummary(payload: { agentId: string; relativePath?: string }): Promise<BuildGitSummary>;
+  getBuildGitMismatchSummary(payload: { agentId: string; relativePath?: string }): Promise<BuildGitMismatchSummary>;
+  resolveBuildGitMismatch(payload: { agentId: string; relativePath?: string } & BuildGitResolveMismatchInput): Promise<BuildGitActionResult>;
+  initBuildGitRepository(payload: { agentId: string; relativePath?: string }): Promise<BuildGitActionResult>;
+  commitBuildGitChanges(payload: { agentId: string; relativePath?: string; message: string }): Promise<BuildGitActionResult>;
+  addBuildGitRemote(payload: { agentId: string; relativePath?: string } & BuildGitRemoteInput): Promise<BuildGitActionResult>;
+  updateBuildGitRemote(payload: { agentId: string; relativePath?: string } & BuildGitRemoteInput): Promise<BuildGitActionResult>;
+  fetchBuildGitRemote(payload: { agentId: string; relativePath?: string }): Promise<BuildGitActionResult>;
+  pullBuildGitBranch(payload: { agentId: string; relativePath?: string }): Promise<BuildGitActionResult>;
+  pushBuildGitBranch(payload: { agentId: string; relativePath?: string; branchName?: string }): Promise<BuildGitActionResult>;
+  switchBuildGitBranch(payload: { agentId: string; relativePath?: string; branchName: string }): Promise<BuildGitActionResult>;
+  createBuildGitBranch(payload: { agentId: string; relativePath?: string; branchName: string }): Promise<BuildGitActionResult>;
+  discardBuildGitChanges(payload: { agentId: string; relativePath?: string; paths: string[] }): Promise<BuildGitActionResult>;
+  getBuildGitConflicts(payload: { agentId: string; relativePath?: string }): Promise<{ files: BuildGitConflictFile[]; summary: BuildGitSummary }>;
+  stageBuildGitFiles(payload: { agentId: string; relativePath?: string } & BuildGitStageInput): Promise<BuildGitActionResult>;
+  finishBuildGitMerge(payload: { agentId: string; relativePath?: string; message?: string }): Promise<BuildGitActionResult>;
+  createBuildGitStash(payload: { agentId: string; relativePath?: string; message?: string }): Promise<BuildGitActionResult>;
+  listBuildGitStashes(payload: { agentId: string; relativePath?: string }): Promise<{ stashes: BuildGitStashEntry[]; summary: BuildGitSummary }>;
+  applyBuildGitStash(payload: { agentId: string; relativePath?: string; stashRef: string }): Promise<BuildGitActionResult>;
+  dropBuildGitStash(payload: { agentId: string; relativePath?: string; stashRef: string }): Promise<BuildGitActionResult>;
+  checkoutBuildGitRemoteBranch(payload: { agentId: string; relativePath?: string; remoteBranchName: string; localBranchName?: string }): Promise<BuildGitActionResult>;
+  createBuildGitRemoteRepository(payload: { agentId: string; relativePath?: string } & BuildGitRemoteRepositoryCreateInput): Promise<BuildGitRemoteRepositoryCreateResult>;
+  createBuildGitPullRequest(payload: { agentId: string; relativePath?: string } & BuildGitPullRequestCreateInput): Promise<BuildGitPullRequestCreateResult>;
+  listBuildGitBackupBranches(payload: { agentId: string; relativePath?: string }): Promise<{ branches: BuildGitBackupBranch[]; summary: BuildGitSummary }>;
+  restoreBuildGitBackupBranch(payload: { agentId: string; relativePath?: string; branchName: string }): Promise<BuildGitActionResult>;
+  listBuildGitReflog(payload: { agentId: string; relativePath?: string }): Promise<{ entries: BuildGitReflogEntry[]; summary: BuildGitSummary }>;
   captureBuildWorkspaceBaseline(payload: { agentId: string; relativePath?: string }): Promise<BuildWorkspaceBaselineCaptureResult>;
   resolveBuildWorkspaceBaseline(payload: { agentId: string; baselineId: string; decision: 'approve' | 'reject' }): Promise<BuildWorkspaceBaselineResolveResult>;
   exportBuildWorkspaceZip(payload: { agentId: string; relativePath?: string; suggestedName?: string }): Promise<{ ok: boolean; filePath?: string; cancelled?: boolean }>;
@@ -538,6 +650,7 @@ interface AccomplishAPI {
   toggleSchedule(scheduleId: string, enabled: boolean): Promise<import('@accomplish/shared').ScheduledTask | null>;
   runScheduleNow(scheduleId: string): Promise<void>;
   getAutomationInfo(): Promise<{ webhookUrl: string; localUrl: string; lanUrls: string[]; publicUrl: string | null; bindMode: 'localhost' | 'all'; port: number }>;
+  draftAutomationFromText(request: AutomationDraftRequest): Promise<AutomationDraftResult>;
 
   // Onboarding
   getOnboardingComplete(): Promise<boolean>;
@@ -570,6 +683,7 @@ interface AccomplishAPI {
 
   // Event subscriptions
   onTaskUpdate(callback: (event: TaskUpdateEvent) => void): () => void;
+  onTaskActivity?(callback: (event: TaskActivityEvent) => void): () => void;
   onTaskCreated?(callback: (task: Task) => void): () => void;
   onTaskUpdateBatch?(callback: (event: { taskId: string; messages: TaskMessage[] }) => void): () => void;
   onPermissionRequest(callback: (request: PermissionRequest) => void): () => void;
@@ -586,11 +700,12 @@ interface AccomplishAPI {
 
   // Folder operations (synced with webchat)
   listFolders(): Promise<import('@accomplish/shared').Folder[]>;
-  createFolder(config: { name: string; icon?: string; color?: string }): Promise<import('@accomplish/shared').Folder>;
-  updateFolder(folderId: string, config: { name?: string; icon?: string; color?: string; isExpanded?: boolean; order?: number }): Promise<import('@accomplish/shared').Folder | undefined>;
+  createFolder(config: { name: string; icon?: string; color?: string; usageProjectId?: string | null; assigneeIds?: string[] | null }): Promise<import('@accomplish/shared').Folder>;
+  updateFolder(folderId: string, config: { name?: string; icon?: string; color?: string; usageProjectId?: string | null; assigneeIds?: string[] | null; isExpanded?: boolean; order?: number }): Promise<import('@accomplish/shared').Folder | undefined>;
   deleteFolder(folderId: string): Promise<{ success: boolean }>;
   getTaskFolderAssignments(): Promise<Record<string, string>>;
-  assignTaskToFolder(taskId: string, folderId: string | null): Promise<{ success: boolean }>;
+  assignTaskToFolder(taskId: string, folderId: string | null): Promise<{ success: boolean; usageProjectId?: string | null }>;
+  assignTaskToUsageProject(taskId: string, usageProjectId: string | null): Promise<{ success: boolean; usageProjectId?: string | null }>;
 }
 
 interface AccomplishShell {

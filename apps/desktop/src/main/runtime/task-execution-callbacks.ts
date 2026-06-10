@@ -1,8 +1,9 @@
-import type { OpenCodeMessage, TaskResult, TaskStatus } from '@accomplish/shared';
+import type { OpenCodeMessage, TaskActivityEvent, TaskResult, TaskStatus } from '@accomplish/shared';
 import type { TaskCallbacks } from '../opencode/task-manager';
 import { enqueueWebPermissionRequest } from '../services/webhook-permissions';
 import { applyTaskCompletionLifecycle, applyTaskErrorLifecycle, type TaskGatewaySessionContext } from './task-execution-lifecycle';
 import { finalizeTaskTurnTracking, type ActiveTurnRecord } from './task-execution-bootstrap';
+import { TaskActivityRuntime } from './task-activity';
 
 export function createTaskExecutionCallbacks(params: {
   taskId: string;
@@ -26,6 +27,7 @@ export function createTaskExecutionCallbacks(params: {
   addTaskMessage: (taskId: string, message: import('@accomplish/shared').TaskMessage) => void;
   notifyTaskUpdate: (payload: unknown) => void;
   notifyTaskProgress: (payload: unknown) => void;
+  notifyTaskActivity: (payload: TaskActivityEvent) => void;
   notifyPermissionRequest: (request: unknown) => void;
   notifyDebugLog: (payload: unknown) => void;
   notifyStatusChange: (payload: unknown) => void;
@@ -38,6 +40,12 @@ export function createTaskExecutionCallbacks(params: {
     request: import('@accomplish/shared').PermissionRequest;
   }) => void | Promise<void>;
 }): TaskCallbacks {
+  const activity = new TaskActivityRuntime({
+    taskId: params.taskId,
+    agentId: params.agentId,
+    emit: params.notifyTaskActivity,
+  });
+
   return {
     onMessage: (message: OpenCodeMessage) => {
       params.reconcileUsageFromOpenCodeMessage(params.taskId, message);
@@ -45,6 +53,7 @@ export function createTaskExecutionCallbacks(params: {
       const taskMessage = params.toTaskMessage(message);
       if (!taskMessage) return;
       params.addTaskMessage(params.taskId, taskMessage);
+      activity.recordTaskMessage(taskMessage);
       params.notifyTaskUpdate({
         taskId: params.taskId,
         type: 'message',
@@ -52,14 +61,19 @@ export function createTaskExecutionCallbacks(params: {
       });
     },
     onProgress: (progress: { stage: string; message?: string }) => {
+      activity.emitStarted(progress.message);
       params.notifyTaskProgress({ taskId: params.taskId, ...progress });
     },
     onPermissionRequest: (request: unknown) => {
       const permissionRequest = params.toPermissionRequest(request);
+      activity.recordPermissionRequested(permissionRequest?.toolName || permissionRequest?.question || 'Waiting for user response.');
       if (permissionRequest && params.autoResolvePermissionRequest) {
         void Promise.resolve(params.autoResolvePermissionRequest(permissionRequest))
           .then((handled) => {
-            if (handled) return;
+            if (handled) {
+              activity.recordPermissionResolved('Permission policy resolved this request.');
+              return;
+            }
             try {
               enqueueWebPermissionRequest(request);
             } catch (err) {
@@ -108,6 +122,7 @@ export function createTaskExecutionCallbacks(params: {
         error: wasSuccess ? undefined : (result.status === 'interrupted' ? 'Task interrupted' : 'Task failed'),
       });
 
+      activity.recordCompletion(result);
       applyTaskCompletionLifecycle({
         taskId: params.taskId,
         agentId: params.agentId,
@@ -121,6 +136,7 @@ export function createTaskExecutionCallbacks(params: {
       });
 
       params.resolveCompletion(result);
+      activity.dispose();
     },
     onError: (error: Error) => {
       const { inputTokens: finalInputTokens, outputTokens: finalOutputTokens } = finalizeTaskTurnTracking({
@@ -134,6 +150,7 @@ export function createTaskExecutionCallbacks(params: {
         error: error.message,
       });
 
+      activity.recordError(error);
       applyTaskErrorLifecycle({
         taskId: params.taskId,
         agentId: params.agentId,
@@ -146,6 +163,7 @@ export function createTaskExecutionCallbacks(params: {
         emitSystemMessage: params.emitSystemMessage,
       });
       params.rejectCompletion(error);
+      activity.dispose();
     },
     onDebug: (log: { type: string; message: string; data?: unknown }) => {
       if (params.getDebugMode()) {

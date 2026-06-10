@@ -2,6 +2,29 @@
 
 Use **Settings -> Permission Policy** to control how file operations, runtime permission prompts, and executor built-ins are handled.
 
+## When To Use It
+
+Use this section when you need stricter file safety, fewer permission prompts, per-agent policy differences, or a clear audit of allow/block decisions.
+
+## Quick Steps
+
+1. Open **Settings > Permission Policy**.
+2. Review the global file and runtime defaults.
+3. Add allow/block rules only when needed.
+4. Configure agent overrides for agents that need different behavior.
+5. Use executor preview to confirm effective rules.
+6. Check the audit list after running a task.
+
+## Step-By-Step: Add An Agent Override
+
+1. Select the agent in the policy UI.
+2. Enable an agent permission profile.
+3. Set file policy behavior.
+4. Set runtime permission defaults.
+5. Add tool allow/block rules if needed.
+6. Review executor preview.
+7. Save and run a small test task.
+
 ## Main Areas
 
 - **File policy**
@@ -49,6 +72,13 @@ The Settings UI now highlights:
 - live effective outcomes for each built-in row
 
 Each conflict block includes direct cleanup actions so you can align or reset rules without editing raw lists manually.
+
+## Troubleshooting
+
+- If a tool is unexpectedly blocked, check effective rules in executor preview.
+- If a prompt appears too often, review default tool and question decisions.
+- If global and agent rules conflict, use the conflict cleanup actions.
+- If you are unsure which rule applied, search the audit log.
 
 ## Related Pages
 

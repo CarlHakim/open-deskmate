@@ -16,7 +16,73 @@
       "id": "build-mode",
       "title": "Build Mode",
       "file": "build-mode.md",
-      "description": "Workspace, runtime, editor, terminals, logs, and diff workflow."
+      "description": "Workspace, runtime, editor, terminals, logs, AI Build Operator, and project work workflow."
+    },
+    {
+      "id": "project-management",
+      "title": "Project Management",
+      "file": "project-management.md",
+      "description": "Usage projects, budget contents, work assignment, metadata, notes, and project organization."
+    },
+    {
+      "id": "project-budgets-and-usage",
+      "title": "Project Budgets And Usage",
+      "file": "project-budgets-and-usage.md",
+      "description": "Per-project usage tracking, budget windows, token/cost breakdowns, warn and block behavior."
+    },
+    {
+      "id": "workboard",
+      "title": "Workboard",
+      "file": "workboard.md",
+      "description": "Table, Kanban, Timeline, Calendar, lists, notes, drawings, documents, and work item tracking."
+    },
+    {
+      "id": "changes-and-git",
+      "title": "Changes And Git",
+      "file": "changes-and-git.md",
+      "description": "Build Mode file changes, Git status, commit, push, remotes, branches, mismatch and conflict flows."
+    },
+    {
+      "id": "runtime-screenshots",
+      "title": "Runtime Screenshots",
+      "file": "runtime-screenshots.md",
+      "description": "Capture Runtime Preview areas or full pages, annotate screenshots, export, attach, or save to project documents."
+    },
+    {
+      "id": "saved-prompts-and-recipes",
+      "title": "Saved Prompts And Recipes",
+      "file": "saved-prompts-and-recipes.md",
+      "description": "Prompt recipes, saved prompts, categories, insertion, and management."
+    },
+    {
+      "id": "saving-answers-and-exports",
+      "title": "Saving Answers And Exports",
+      "file": "saving-answers-and-exports.md",
+      "description": "Copy answers with formatting, save notes, export RTF files, and attach exports to project work items."
+    },
+    {
+      "id": "activity-timeline-and-recovery",
+      "title": "Activity Timeline And Recovery",
+      "file": "activity-timeline-and-recovery.md",
+      "description": "Task activity events, reasoning bubbles, stalled answer detection, and recovery actions."
+    },
+    {
+      "id": "images-in-chat",
+      "title": "Images In Chat",
+      "file": "images-in-chat.md",
+      "description": "Inline images, thumbnails, previews, zoom, carousel, and provider image-history behavior."
+    },
+    {
+      "id": "assignees",
+      "title": "Assignees",
+      "file": "assignees.md",
+      "description": "People directory, budget defaults, Chat/Build overrides, workload overview, and owner versus assignee roles."
+    },
+    {
+      "id": "build-layout-and-sections",
+      "title": "Build Mode Layout And Sections",
+      "file": "build-layout-and-sections.md",
+      "description": "Resizable panels, section visibility, locks, and AI Build Operator Only mode."
     },
     {
       "id": "slash-commands",

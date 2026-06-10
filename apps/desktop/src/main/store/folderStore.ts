@@ -24,6 +24,22 @@ function generateFolderId(): string {
   return `folder_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 }
 
+function normalizeAssigneeIds(value: unknown): string[] | null | undefined {
+  if (value === null) return null;
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) return undefined;
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const item of value) {
+    const id = String(item ?? '').trim().slice(0, 128);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+    if (ids.length >= 80) break;
+  }
+  return ids;
+}
+
 /**
  * Migrate folders without agentId to the default 'main' agent
  */
@@ -77,6 +93,8 @@ export function createFolder(config: FolderConfig, agentId?: string): Folder {
     name: config.name,
     icon: config.icon,
     color: config.color,
+    usageProjectId: config.usageProjectId ?? null,
+    assigneeIds: normalizeAssigneeIds(config.assigneeIds) ?? null,
     agentId,
     isExpanded: true,
     order: folders.length,
@@ -98,9 +116,14 @@ export function updateFolder(folderId: string, config: FolderUpdateConfig): Fold
   const index = folders.findIndex((f) => f.id === folderId);
   if (index === -1) return undefined;
 
+  const nextAssigneeIds = Object.prototype.hasOwnProperty.call(config, 'assigneeIds')
+    ? (normalizeAssigneeIds(config.assigneeIds) ?? null)
+    : (folders[index].assigneeIds ?? null);
+
   const updatedFolder = {
     ...folders[index],
     ...config,
+    assigneeIds: nextAssigneeIds,
     updatedAt: now,
   };
 

@@ -442,6 +442,7 @@ function createWindow() {
       preload: preloadPath,
       nodeIntegration: false,
       contextIsolation: true,
+      spellcheck: true,
     },
   });
 
@@ -454,6 +455,9 @@ function createWindow() {
   });
 
   mainWindow.webContents.on('context-menu', (_event, params) => {
+    const currentWindow = mainWindow;
+    if (!currentWindow || currentWindow.isDestroyed()) return;
+
     const hasSelection = Boolean(params.selectionText && params.selectionText.trim().length > 0);
     const isEditable = Boolean(params.isEditable);
     if (!hasSelection && !isEditable) return;
@@ -461,6 +465,34 @@ function createWindow() {
     const template: MenuItemConstructorOptions[] = [];
 
     if (isEditable) {
+      if (params.misspelledWord) {
+        const suggestions = params.dictionarySuggestions?.slice(0, 8) ?? [];
+        if (suggestions.length > 0) {
+          suggestions.forEach((suggestion) => {
+            template.push({
+              label: suggestion,
+              click: () => {
+                if (!currentWindow.isDestroyed()) {
+                  currentWindow.webContents.replaceMisspelling(suggestion);
+                }
+              },
+            });
+          });
+        } else {
+          template.push({ label: 'No spelling suggestions', enabled: false });
+        }
+
+        template.push({
+          label: `Add "${params.misspelledWord}" to dictionary`,
+          click: () => {
+            if (!currentWindow.isDestroyed()) {
+              currentWindow.webContents.session.addWordToSpellCheckerDictionary(params.misspelledWord);
+            }
+          },
+        });
+        template.push({ type: 'separator' as const });
+      }
+
       template.push(
         { role: 'undo' as const, enabled: params.editFlags.canUndo },
         { role: 'redo' as const, enabled: params.editFlags.canRedo },
@@ -482,7 +514,7 @@ function createWindow() {
     template.push({ role: 'selectAll' as const });
 
     const menu = Menu.buildFromTemplate(template);
-    menu.popup({ window: mainWindow ?? undefined });
+    menu.popup({ window: currentWindow });
   });
 
   // Maximize window by default

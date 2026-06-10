@@ -11,6 +11,13 @@ export interface Folder {
   color?: string;
   /** Agent this folder belongs to */
   agentId?: string;
+  /** Optional budget/cost tracking project assigned to this chat project */
+  usageProjectId?: string | null;
+  /**
+   * People assigned to this Chat project.
+   * null/undefined inherits from the assigned budget; [] explicitly means no assignees.
+   */
+  assigneeIds?: string[] | null;
   /** Whether the folder is expanded in the UI */
   isExpanded: boolean;
   /** Order position for sorting */
@@ -25,12 +32,16 @@ export interface FolderConfig {
   name: string;
   icon?: string;
   color?: string;
+  usageProjectId?: string | null;
+  assigneeIds?: string[] | null;
 }
 
 export interface FolderUpdateConfig {
   name?: string;
   icon?: string;
   color?: string;
+  usageProjectId?: string | null;
+  assigneeIds?: string[] | null;
   isExpanded?: boolean;
   order?: number;
 }

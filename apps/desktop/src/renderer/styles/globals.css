@@ -129,6 +129,23 @@
   background: hsl(var(--muted-foreground));
 }
 
+/* Make native date picker icons readable on dark backgrounds. */
+.dark input[type='date']::-webkit-calendar-picker-indicator,
+.dark input[type='datetime-local']::-webkit-calendar-picker-indicator,
+.dark input[type='month']::-webkit-calendar-picker-indicator,
+.dark input[type='week']::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  filter: invert(1) brightness(1.7) saturate(0.8);
+  opacity: 0.9;
+}
+
+.dark input[type='date']::-webkit-calendar-picker-indicator:hover,
+.dark input[type='datetime-local']::-webkit-calendar-picker-indicator:hover,
+.dark input[type='month']::-webkit-calendar-picker-indicator:hover,
+.dark input[type='week']::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+}
+
 /* Scoped thin scrollbar for multiline follow-up input */
 .followup-textarea-scrollbar {
   scrollbar-width: thin;

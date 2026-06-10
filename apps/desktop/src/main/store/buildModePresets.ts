@@ -36,6 +36,22 @@ function normalizeText(input: unknown, fallback = ''): string {
   return input.trim();
 }
 
+function normalizeAssigneeIds(value: unknown): string[] | null | undefined {
+  if (value === null) return null;
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) return undefined;
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const item of value) {
+    const id = normalizeText(item).slice(0, 128);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+    if (ids.length >= 80) break;
+  }
+  return ids;
+}
+
 function normalizeEnvProfiles(value: unknown): BuildEnvProfile[] {
   if (!Array.isArray(value)) return [];
   const next: BuildEnvProfile[] = [];
@@ -140,6 +156,9 @@ function listAllPresets(): BuildProjectPreset[] {
             : undefined),
         buildCommand: normalizeText(entry.commands?.buildCommand) || undefined,
         runCommand: normalizeText(entry.commands?.runCommand) || undefined,
+        testCommand: normalizeText(entry.commands?.testCommand) || undefined,
+        lintCommand: normalizeText(entry.commands?.lintCommand) || undefined,
+        typecheckCommand: normalizeText(entry.commands?.typecheckCommand) || undefined,
       };
       const envProfiles = normalizeEnvProfiles(entry.envProfiles);
       const activeEnvProfileId = normalizeId(entry.activeEnvProfileId || '', '') || undefined;
@@ -148,6 +167,8 @@ function listAllPresets(): BuildProjectPreset[] {
         agentId,
         name: normalizeText(entry.name, 'Build preset').slice(0, 120) || 'Build preset',
         workspaceRelativePath: normalizeText(entry.workspaceRelativePath, '.').slice(0, 300) || '.',
+        usageProjectId: normalizeId(entry.usageProjectId || '', '') || null,
+        assigneeIds: normalizeAssigneeIds(entry.assigneeIds) ?? null,
         commands,
         envProfiles,
         activeEnvProfileId,
@@ -160,10 +181,15 @@ function listAllPresets(): BuildProjectPreset[] {
         || next.agentId !== entry.agentId
         || next.name !== entry.name
         || next.workspaceRelativePath !== entry.workspaceRelativePath
+        || next.usageProjectId !== (entry.usageProjectId ?? null)
+        || JSON.stringify(next.assigneeIds || null) !== JSON.stringify(entry.assigneeIds ?? null)
         || next.commands.startCommand !== entry.commands?.startCommand
         || JSON.stringify(next.commands.startEntries || []) !== JSON.stringify(entry.commands?.startEntries || [])
         || next.commands.buildCommand !== entry.commands?.buildCommand
         || next.commands.runCommand !== entry.commands?.runCommand
+        || next.commands.testCommand !== entry.commands?.testCommand
+        || next.commands.lintCommand !== entry.commands?.lintCommand
+        || next.commands.typecheckCommand !== entry.commands?.typecheckCommand
         || JSON.stringify(next.envProfiles) !== JSON.stringify(entry.envProfiles || [])
         || next.activeEnvProfileId !== entry.activeEnvProfileId
       ) {
@@ -213,6 +239,9 @@ export function upsertBuildModePreset(input: BuildProjectPresetInput): BuildProj
         : undefined),
     buildCommand: normalizeText(input.commands?.buildCommand) || undefined,
     runCommand: normalizeText(input.commands?.runCommand) || undefined,
+    testCommand: normalizeText(input.commands?.testCommand) || undefined,
+    lintCommand: normalizeText(input.commands?.lintCommand) || undefined,
+    typecheckCommand: normalizeText(input.commands?.typecheckCommand) || undefined,
   };
 
   const envProfiles = normalizeEnvProfiles(input.envProfiles ?? existing?.envProfiles ?? []);
@@ -227,6 +256,12 @@ export function upsertBuildModePreset(input: BuildProjectPresetInput): BuildProj
     agentId,
     name: normalizeText(input.name, existing?.name || 'Build preset').slice(0, 120) || 'Build preset',
     workspaceRelativePath: normalizeText(input.workspaceRelativePath, existing?.workspaceRelativePath || '.').slice(0, 300) || '.',
+    usageProjectId: input.usageProjectId !== undefined
+      ? (normalizeId(input.usageProjectId || '', '') || null)
+      : (existing?.usageProjectId ?? null),
+    assigneeIds: input.assigneeIds !== undefined
+      ? (normalizeAssigneeIds(input.assigneeIds) ?? null)
+      : (existing?.assigneeIds ?? null),
     commands,
     envProfiles,
     activeEnvProfileId,

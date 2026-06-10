@@ -2,6 +2,10 @@
 
 Use this section to choose where inference runs and how provider credentials/models are configured.
 
+## When To Use It
+
+Use this section when tasks are using the wrong model, a provider key needs adding, a local model should be selected, or a custom provider/model needs to be configured.
+
 ## Key Settings
 
 - **Cloud / Local tabs**
@@ -33,7 +37,7 @@ Use this section to choose where inference runs and how provider credentials/mod
   - `Models` field (line format):
     - `id|name|context|max_output|vision(true/false)`
 
-## Common Setup Flow
+## Quick Steps
 
 1. Choose **Cloud** or **Local**.
 2. Select model.
@@ -41,6 +45,16 @@ Use this section to choose where inference runs and how provider credentials/mod
 4. If Cloud, add/update provider API key(s).
 5. Optionally add custom provider definitions and models.
 6. Run a quick test task.
+
+## Step-By-Step: Add A Custom Provider Model
+
+1. Open **Settings > Model & API settings**.
+2. Add a provider ID and display name.
+3. Enter the provider base URL.
+4. Choose whether the provider requires an API key.
+5. Add one model per line using `id|name|context|max_output|vision`.
+6. Save the provider.
+7. Select the model from the model picker or an agent override.
 
 ## Model Line Example
 
@@ -54,6 +68,13 @@ minimax-chat|MiniMax Chat|128000|8192|true
 - `context` and `max_output` must be numbers.
 - `vision` must be `true` or `false`.
 - At least one model line is required for custom providers.
+
+## Troubleshooting
+
+- If a task fails immediately, check the API key and selected provider/model.
+- If a custom model does not appear, confirm the model line has exactly 5 fields.
+- If a reasoning model behaves like a normal model, confirm the provider and model support reasoning output.
+- If local models do not load, check that Ollama is running and the URL is correct.
 
 ## Related Sections
 

@@ -1,6 +1,6 @@
 {
   "name": "@accomplish/desktop",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "Open Deskmate Desktop App",
@@ -74,7 +74,7 @@
     "lucide-react": "^0.454.0",
     "mammoth": "^1.11.0",
     "node-pty": "^1.1.0",
-    "opencode-ai": "1.1.16",
+    "opencode-ai": "1.15.11",
     "pdf-parse": "^2.4.5",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
@@ -167,6 +167,7 @@
     "asar": true,
     "asarUnpack": [
       "node_modules/opencode-ai/bin/opencode",
+      "node_modules/opencode-ai/bin/opencode.exe",
       "node_modules/opencode-ai/package.json",
       "node_modules/opencode-windows-x64/bin/opencode.exe",
       "node_modules/node-pty/build/**/*.node",

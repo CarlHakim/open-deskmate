@@ -1207,6 +1207,10 @@ code {
   color: var(--secondary);
 }
 
+.feature-kicker + h3 {
+  margin-top: 14px;
+}
+
 .feature-card {
   position: relative;
 }

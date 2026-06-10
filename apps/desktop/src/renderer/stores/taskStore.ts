@@ -7,6 +7,7 @@ import type {
   PermissionRequest,
   PermissionResponse,
   TaskMessage,
+  TaskActivityEvent,
 } from '@accomplish/shared';
 import { getAccomplish } from '../lib/accomplish';
 import { useAgentStore } from './agentStore';
@@ -49,12 +50,14 @@ interface TaskState {
   // Actions
   startTask: (config: TaskConfig) => Promise<Task | null>;
   setSetupProgress: (taskId: string | null, message: string | null) => void;
-  sendFollowUp: (message: string, attachedFiles?: string[]) => Promise<void>;
+  sendFollowUp: (message: string, attachedFiles?: string[], usageProjectId?: string | null) => Promise<void>;
+  setTaskUsageProject: (taskId: string, usageProjectId: string | null) => Promise<void>;
   cancelTask: () => Promise<void>;
   interruptTask: () => Promise<void>;
   setPermissionRequest: (request: PermissionRequest | null) => void;
   respondToPermission: (response: PermissionResponse) => Promise<void>;
   addTaskUpdate: (event: TaskUpdateEvent) => void;
+  addTaskActivity: (event: TaskActivityEvent) => void;
   addTaskUpdateBatch: (event: TaskUpdateBatchEvent) => void;
   updateTaskStatus: (taskId: string, status: TaskStatus) => void;
   setTaskSummary: (taskId: string, summary: string) => void;
@@ -78,6 +81,7 @@ const deletedTaskIds = new Set<string>();
 
 // Cache for folder assignments (synced with main process via IPC)
 let folderAssignmentsCache: Record<string, string> = {};
+const taskUsageProjectAssignmentSeq = new Map<string, number>();
 
 function markTaskDeleted(taskId: string): void {
   deletedTaskIds.add(taskId);
@@ -121,16 +125,35 @@ async function assignTaskToFolderIPC(taskId: string, folderId: string | null): P
     return;
   }
   try {
-    await window.accomplish.assignTaskToFolder(taskId, folderId);
+    const result = await window.accomplish.assignTaskToFolder(taskId, folderId);
     // Update cache
     if (folderId) {
       folderAssignmentsCache[taskId] = folderId;
     } else {
       delete folderAssignmentsCache[taskId];
     }
+    if (result && Object.prototype.hasOwnProperty.call(result, 'usageProjectId')) {
+      const usageProjectId = result.usageProjectId ?? null;
+      useTaskStore.setState((state) => ({
+        tasks: state.tasks.map((task) => (
+          task.id === taskId ? { ...task, usageProjectId } : task
+        )),
+        currentTask: state.currentTask?.id === taskId
+          ? { ...state.currentTask, usageProjectId }
+          : state.currentTask,
+      }));
+    }
   } catch (err) {
     console.warn('Failed to assign task to folder via IPC:', err);
   }
+}
+
+async function assignTaskToUsageProjectIPC(taskId: string, usageProjectId: string | null): Promise<string | null> {
+  if (typeof window === 'undefined' || !window.accomplish) {
+    return usageProjectId;
+  }
+  const result = await window.accomplish.assignTaskToUsageProject(taskId, usageProjectId);
+  return result?.usageProjectId ?? usageProjectId;
 }
 
 export const useTaskStore = create<TaskState>((set, get) => ({
@@ -208,7 +231,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }
   },
 
-  sendFollowUp: async (message: string, attachedFiles?: string[]) => {
+  sendFollowUp: async (message: string, attachedFiles?: string[], usageProjectId?: string | null) => {
     const accomplish = getAccomplish();
     const { currentTask, startTask } = get();
     if (!currentTask) {
@@ -225,6 +248,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       ? rawSessionId
       : null;
 
+    const nextUsageProjectId = usageProjectId !== undefined ? usageProjectId : currentTask.usageProjectId ?? null;
+
     // If no session but task was interrupted, start a fresh task with the new message
     if (!sessionId && currentTask.status === 'interrupted') {
       void accomplish.logEvent({
@@ -232,7 +257,12 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         message: 'UI follow-up: starting fresh task (no session from interrupted task)',
         context: { taskId: currentTask.id },
       });
-      await startTask({ prompt: message, attachedFiles, privacyMode: currentTask.privacyMode ?? 'normal' });
+      await startTask({
+        prompt: message,
+        attachedFiles,
+        privacyMode: currentTask.privacyMode ?? 'normal',
+        usageProjectId: nextUsageProjectId,
+      });
       return;
     }
 
@@ -263,11 +293,12 @@ export const useTaskStore = create<TaskState>((set, get) => ({
             ...state.currentTask,
             status: 'running',
             result: undefined,
+            usageProjectId: nextUsageProjectId,
             messages: [...state.currentTask.messages, userMessage],
           }
         : null,
       tasks: state.tasks.map((t) =>
-        t.id === taskId ? { ...t, status: 'running' as TaskStatus } : t
+        t.id === taskId ? { ...t, status: 'running' as TaskStatus, usageProjectId: nextUsageProjectId } : t
       ),
     }));
 
@@ -282,17 +313,18 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         message,
         currentTask.id,
         attachedFiles,
-        currentTask.privacyMode ?? 'normal'
+        currentTask.privacyMode ?? 'normal',
+        nextUsageProjectId
       );
 
       // Update status based on response (could be 'running' or 'queued')
       set((state) => ({
         currentTask: state.currentTask
-          ? { ...state.currentTask, status: task.status }
+          ? { ...state.currentTask, status: task.status, usageProjectId: task.usageProjectId ?? nextUsageProjectId }
           : null,
         isLoading: task.status === 'queued',
         tasks: state.tasks.map((t) =>
-          t.id === taskId ? { ...t, status: task.status } : t
+          t.id === taskId ? { ...t, status: task.status, usageProjectId: task.usageProjectId ?? nextUsageProjectId } : t
         ),
       }));
     } catch (err) {
@@ -311,6 +343,42 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         message: 'UI follow-up failed',
         context: { taskId: currentTask.id, error: err instanceof Error ? err.message : String(err) },
       });
+    }
+  },
+
+  setTaskUsageProject: async (taskId: string, usageProjectId: string | null) => {
+    const nextUsageProjectId = usageProjectId || null;
+    const sequence = (taskUsageProjectAssignmentSeq.get(taskId) ?? 0) + 1;
+    taskUsageProjectAssignmentSeq.set(taskId, sequence);
+    const previousUsageProjectId = get().currentTask?.id === taskId
+      ? get().currentTask?.usageProjectId ?? null
+      : get().tasks.find((task) => task.id === taskId)?.usageProjectId ?? null;
+
+    const applyUsageProject = (projectId: string | null) => {
+      set((state) => ({
+        tasks: state.tasks.map((task) => (
+          task.id === taskId ? { ...task, usageProjectId: projectId } : task
+        )),
+        currentTask: state.currentTask?.id === taskId
+          ? { ...state.currentTask, usageProjectId: projectId }
+          : state.currentTask,
+      }));
+    };
+
+    applyUsageProject(nextUsageProjectId);
+
+    try {
+      const savedUsageProjectId = await assignTaskToUsageProjectIPC(taskId, nextUsageProjectId);
+      if (taskUsageProjectAssignmentSeq.get(taskId) === sequence) {
+        applyUsageProject(savedUsageProjectId);
+        set({ error: null });
+      }
+    } catch (err) {
+      if (taskUsageProjectAssignmentSeq.get(taskId) === sequence) {
+        applyUsageProject(previousUsageProjectId);
+        set({ error: err instanceof Error ? err.message : 'Failed to save task budget project' });
+      }
+      throw err;
     }
   },
 
@@ -412,6 +480,21 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         };
       }
 
+      if (event.type === 'activity' && event.activity) {
+        const appendActivity = (task: Task): Task => {
+          const activity = task.activity || [];
+          if (activity.some((item) => item.id === event.activity?.id)) return task;
+          return {
+            ...task,
+            activity: [...activity, event.activity!].slice(-120),
+          };
+        };
+        if (isCurrentTask && state.currentTask) {
+          updatedCurrentTask = appendActivity(state.currentTask);
+        }
+        updatedTasks = state.tasks.map((task) => task.id === event.taskId ? appendActivity(task) : task);
+      }
+
       // Handle complete events
       if (event.type === 'complete' && event.result) {
         // Map result status to task status
@@ -462,6 +545,43 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         currentTask: updatedCurrentTask,
         tasks: updatedTasks,
         isLoading: false,
+      };
+    });
+  },
+
+  addTaskActivity: (event: TaskActivityEvent) => {
+    const { currentTask, tasks } = get();
+    if (deletedTaskIds.has(event.taskId)) {
+      return;
+    }
+    if (!isKnownTask(event.taskId, currentTask?.id ?? null, tasks)) {
+      return;
+    }
+
+    set((state) => {
+      if (deletedTaskIds.has(event.taskId)) {
+        return state;
+      }
+      if (!isKnownTask(event.taskId, state.currentTask?.id ?? null, state.tasks)) {
+        return state;
+      }
+
+      const mergeActivity = (task: Task): Task => {
+        const activity = task.activity || [];
+        if (activity.some((item) => item.id === event.id)) return task;
+        return {
+          ...task,
+          activity: [...activity, event]
+            .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+            .slice(-120),
+        };
+      };
+
+      return {
+        currentTask: state.currentTask?.id === event.taskId
+          ? mergeActivity(state.currentTask)
+          : state.currentTask,
+        tasks: state.tasks.map((task) => task.id === event.taskId ? mergeActivity(task) : task),
       };
     });
   },

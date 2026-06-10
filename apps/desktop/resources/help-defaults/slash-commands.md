@@ -2,6 +2,27 @@
 
 OpenDeskmate uses one shared command registry across supported prompt inputs and the global `Cmd+K` launcher.
 
+## When To Use It
+
+Use slash commands when you want to navigate, stop a task, open settings, manage subagents, or control Build runtime without leaving the keyboard.
+
+## Quick Steps
+
+1. Click a supported prompt input or open `Cmd+K`.
+2. Type `/`.
+3. Keep typing to filter commands.
+4. Use `ArrowUp` and `ArrowDown` to choose a command.
+5. Press `Enter` or `Tab` to run it.
+6. Press `Escape` to close the menu.
+
+## Step-By-Step: Stop A Running Task
+
+1. Click the Chat follow-up prompt or Build prompt while a task is running.
+2. Type `/stop`.
+3. Choose the stop command.
+4. Press `Enter`.
+5. Confirm the task status changes to stopped.
+
 ## Where Slash Commands Work
 
 - **Home prompt**
@@ -81,6 +102,13 @@ OpenDeskmate uses one shared command registry across supported prompt inputs and
 - `/save-skill` only appears for completed chat tasks that can be saved as a skill.
 - `/subagents-refresh` only appears when the current Chat or Build task has tracked subagents.
 - Build runtime commands only appear when the relevant Build action is available.
+
+## Troubleshooting
+
+- If a command does not appear, check whether it is available on the current page and current task state.
+- If `/stop` is missing, there may be no running task to stop.
+- If Build runtime commands are missing, switch to Build Mode and confirm the runtime controls are available.
+- If the slash menu closes unexpectedly, type `/` again or use `Cmd+K` for the global command palette.
 
 ## Related Pages
 

@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { getAccomplish } from '@/lib/accomplish';
 import { useAgentStore } from '@/stores/agentStore';
 import { cn } from '@/lib/utils';
@@ -81,37 +82,51 @@ export default function ModeSwitch({ className }: ModeSwitchProps) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <div className={cn('inline-flex items-center rounded-full border border-border/70 bg-muted/40 p-1', className)}>
-        <button
-          type="button"
-          onClick={() => void handleChatModeClick()}
-          disabled={switchBusy}
-          className={cn(
-            'inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors disabled:pointer-events-none disabled:opacity-60',
-            !inBuildMode
-              ? 'bg-background text-foreground shadow-soft'
-              : 'text-muted-foreground hover:text-foreground'
-          )}
-          title="Switch to Chat Mode"
-        >
-          <MessageSquare className="h-3.5 w-3.5" />
-          Chat Mode
-        </button>
-        <button
-          type="button"
-          onClick={() => navigate('/build')}
-          className={cn(
-            'inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors',
-            inBuildMode
-              ? 'bg-background text-foreground shadow-soft'
-              : 'text-muted-foreground hover:text-foreground'
-          )}
-          title="Switch to Build Mode"
-        >
-          <Hammer className="h-3.5 w-3.5" />
-          Build Mode
-        </button>
-      </div>
+      <TooltipProvider delayDuration={250}>
+        <div className={cn('inline-flex items-center rounded-full border border-border/70 bg-muted/40 p-1', className)}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={() => void handleChatModeClick()}
+                disabled={switchBusy}
+                className={cn(
+                  'inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors disabled:pointer-events-none disabled:opacity-60',
+                  !inBuildMode
+                    ? 'bg-background text-foreground shadow-soft'
+                    : 'text-muted-foreground hover:text-foreground'
+                )}
+              >
+                <MessageSquare className="h-3.5 w-3.5" />
+                Chat Mode
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" align="center" sideOffset={10} collisionPadding={12} className="text-[11px]">
+              Switch to Chat Mode
+            </TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={() => navigate('/build')}
+                className={cn(
+                  'inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors',
+                  inBuildMode
+                    ? 'bg-background text-foreground shadow-soft'
+                    : 'text-muted-foreground hover:text-foreground'
+                )}
+              >
+                <Hammer className="h-3.5 w-3.5" />
+                Build Mode
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" align="center" sideOffset={10} collisionPadding={12} className="text-[11px]">
+              Switch to Build Mode
+            </TooltipContent>
+          </Tooltip>
+        </div>
+      </TooltipProvider>
     </>
   );
 }

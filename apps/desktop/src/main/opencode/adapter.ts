@@ -101,13 +101,18 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
   private hasPtyOutput: boolean = false;
   private streamParser: StreamParser;
   private currentSessionId: string | null = null;
+  private requestedSessionId: string | null = null;
   private currentTaskId: string | null = null;
+  private currentTaskStartedAtMs: number | null = null;
   private currentConfigPath: string | null = null;
   private messages: TaskMessage[] = [];
   private rawOutputBuffer = '';
   private hasParsedMessages = false;
   private hasCompleted: boolean = false;
   private pendingComplete: TaskResult | null = null;
+  private lastStepFinishReason: string | null = null;
+  private sawAssistantText: boolean = false;
+  private sawAssistantTextAfterLastToolFinish: boolean = false;
   private completeTimer: NodeJS.Timeout | null = null;
   private interruptForceKillTimer: NodeJS.Timeout | null = null;
   private isDisposed: boolean = false;
@@ -145,12 +150,17 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
 
     const taskId = config.taskId || this.generateTaskId();
     this.currentTaskId = taskId;
-    this.currentSessionId = null;
+    this.currentTaskStartedAtMs = Date.now();
+    this.requestedSessionId = config.sessionId || null;
+    this.currentSessionId = config.sessionId || null;
     this.messages = [];
     this.rawOutputBuffer = '';
     this.hasParsedMessages = false;
     this.streamParser.reset();
     this.hasCompleted = false;
+    this.lastStepFinishReason = null;
+    this.sawAssistantTextAfterLastToolFinish = false;
+    this.sawAssistantText = false;
     this.wasInterrupted = false;
     // Clean up previous child process if adapter is reused
     if (this.childProcess) {
@@ -206,10 +216,14 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
     this.emit('debug', { type: 'info', message: argsMsg, data: { args: allArgs } });
     this.emit('debug', { type: 'info', message: cwdMsg });
 
-    // Windows: always prefer PTY because some OpenCode exe builds can hang when
-    // spawned without a console/PTY. We only allow explicit no-PTY via
-    // OPENDESKMATE_WINDOWS_FORCE_NO_PTY=1 for emergency troubleshooting.
-    const usePtyOnWindows = process.env.OPENDESKMATE_WINDOWS_FORCE_NO_PTY !== '1';
+    // Windows: prefer stdout pipes for the native OpenCode exe. PTY line wrapping can
+    // corrupt or drop long JSON events after tool calls, which makes runs appear to stop
+    // after webfetch. Keep an escape hatch for older OpenCode builds that require a PTY.
+    const forcePtyOnWindows = process.env.OPENDESKMATE_WINDOWS_FORCE_PTY === '1';
+    const forceNoPtyOnWindows = process.env.OPENDESKMATE_WINDOWS_FORCE_NO_PTY === '1';
+    const isNativeWindowsOpenCodeExe = path.basename(command).toLowerCase() === 'opencode.exe';
+    const usePtyOnWindows =
+      forcePtyOnWindows || (!forceNoPtyOnWindows && !isNativeWindowsOpenCodeExe);
 
     if (process.platform === 'win32') {
       const stringEnv = Object.fromEntries(
@@ -469,9 +483,8 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
     this.childProcess = spawn(params.command, args, {
       cwd: params.cwd,
       env: params.env,
-      // NOTE: Some Windows CLIs (including the bundled OpenCode exe) may hang if spawned
-      // without a console. We still hide the window here because this is a fallback path
-      // when PTY is unavailable; callers should strongly prefer PTY on win32.
+      // Keep the native exe hidden while using stdout pipes for JSON-mode output.
+      // A PTY can be forced with OPENDESKMATE_WINDOWS_FORCE_PTY=1 if needed.
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -914,10 +927,21 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
     });
   }
 
+  private rememberSessionId(message: OpenCodeMessage): void {
+    const sessionId =
+      (message as { sessionID?: unknown }).sessionID ??
+      (message as { part?: { sessionID?: unknown } }).part?.sessionID;
+    if (typeof sessionId === 'string' && sessionId.trim()) {
+      this.currentSessionId = sessionId.trim();
+    }
+  }
+
   private handleMessage(message: OpenCodeMessage): void {
     if (this.verboseStreamLogs) {
       console.log('[OpenCode Adapter] Handling message type:', message.type);
     }
+
+    this.rememberSessionId(message);
 
     switch (message.type) {
       // Step start event
@@ -930,12 +954,13 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
 
       // Text content event
       case 'text':
-        if (!this.currentSessionId && typeof message.part.sessionID === 'string' && message.part.sessionID.trim()) {
-          this.currentSessionId = message.part.sessionID;
-        }
         this.emit('message', message);
 
         if (message.part.text) {
+          this.sawAssistantText = true;
+          if (this.lastStepFinishReason === 'tool_use' || this.lastStepFinishReason === 'tool-calls') {
+            this.sawAssistantTextAfterLastToolFinish = true;
+          }
           const taskMessage: TaskMessage = {
             id: this.generateMessageId(),
             type: 'assistant',
@@ -1038,8 +1063,9 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
         // Forward step_finish so the app can reconcile provider-reported usage (tokens) even
         // though it isn't shown as a chat message.
         this.emit('message', message);
+        this.lastStepFinishReason = message.part.reason;
         // Only complete if reason is 'stop' or 'end_turn' (final completion)
-        // 'tool_use' means there are more steps coming
+        // 'tool_use'/'tool-calls' means there are more steps coming
         if (message.part.reason === 'stop' || message.part.reason === 'end_turn') {
           this.scheduleComplete({
             status: 'success',
@@ -1051,8 +1077,10 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
             sessionId: this.currentSessionId || undefined,
             error: 'Task failed',
           });
+        } else if (message.part.reason === 'tool_use' || message.part.reason === 'tool-calls') {
+          this.sawAssistantTextAfterLastToolFinish = false;
         }
-        // 'tool_use' reason means agent is continuing, don't emit complete
+        // 'tool_use'/'tool-calls' reason means agent is continuing, don't emit complete
         break;
 
       // Error event
@@ -1094,6 +1122,113 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
     this.emit('permission-request', permissionRequest);
   }
 
+  private recoverFinalAssistantMessageFromExport(): boolean {
+    const sessionId = this.currentSessionId || this.requestedSessionId;
+    if (!sessionId) {
+      return false;
+    }
+
+    try {
+      const { command, args: baseArgs } = getOpenCodeCliPath();
+      const exportArgs = [...baseArgs, 'export', sessionId];
+      const env = { ...process.env };
+      if (this.currentConfigPath) {
+        env.OPENCODE_CONFIG = this.currentConfigPath;
+      }
+
+      const result = spawnSync(command, exportArgs, {
+        encoding: 'utf-8',
+        env,
+        timeout: 10_000,
+        windowsHide: true,
+        shell: process.platform === 'win32' && command.toLowerCase().endsWith('.cmd'),
+      });
+
+      if (result.error || !result.stdout) {
+        return false;
+      }
+
+      const raw = String(result.stdout).replace(/^\uFEFF/, '');
+      const jsonStart = raw.indexOf('{');
+      if (jsonStart < 0) {
+        return false;
+      }
+
+      const exported = JSON.parse(raw.slice(jsonStart)) as {
+        messages?: Array<{
+          info?: {
+            id?: string;
+            role?: string;
+            time?: {
+              created?: number;
+              completed?: number;
+            };
+          };
+          parts?: Array<{
+            id?: string;
+            type?: string;
+            text?: string;
+            reason?: string;
+          }>;
+        }>;
+      };
+
+      const messages = Array.isArray(exported.messages) ? exported.messages : [];
+      for (let i = messages.length - 1; i >= 0; i -= 1) {
+        const exportedMessage = messages[i];
+        if (exportedMessage?.info?.role !== 'assistant') {
+          continue;
+        }
+        const createdAt = exportedMessage.info.time?.created;
+        if (
+          this.currentTaskStartedAtMs &&
+          typeof createdAt === 'number' &&
+          createdAt < this.currentTaskStartedAtMs - 5_000
+        ) {
+          continue;
+        }
+        const parts = Array.isArray(exportedMessage.parts) ? exportedMessage.parts : [];
+        const finish = [...parts].reverse().find((part) => part.type === 'step-finish');
+        if (finish?.reason !== 'stop' && finish?.reason !== 'end_turn') {
+          continue;
+        }
+        const textPart = [...parts].reverse().find(
+          (part) => part.type === 'text' && typeof part.text === 'string' && part.text.trim()
+        );
+        if (!textPart?.text) {
+          continue;
+        }
+
+        const partId = textPart.id || this.generateMessageId();
+        const messageId = exportedMessage.info?.id || this.generateMessageId();
+        const synthetic: OpenCodeMessage = {
+          type: 'text',
+          timestamp: Date.now(),
+          sessionID: sessionId,
+          part: {
+            id: partId,
+            sessionID: sessionId,
+            messageID: messageId,
+            type: 'text',
+            text: textPart.text,
+          },
+        };
+        console.warn('[OpenCode Adapter] Recovered final assistant message from opencode export:', {
+          sessionId,
+          messageId,
+          textLength: textPart.text.length,
+        });
+        this.handleMessage(synthetic);
+        this.lastStepFinishReason = finish.reason;
+        return true;
+      }
+    } catch (error) {
+      console.warn('[OpenCode Adapter] Failed to recover final assistant message from opencode export:', error);
+    }
+
+    return false;
+  }
+
   private handleProcessExit(code: number | null): void {
     this.clearInterruptForceKillTimer();
 
@@ -1126,11 +1261,23 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
           status: 'interrupted',
           sessionId: this.currentSessionId || undefined,
         });
+      } else if (this.lastStepFinishReason === 'tool_use' || this.lastStepFinishReason === 'tool-calls') {
+        if (this.sawAssistantTextAfterLastToolFinish || this.recoverFinalAssistantMessageFromExport()) {
+          this.emit('complete', {
+            status: 'success',
+            sessionId: this.currentSessionId || this.requestedSessionId || undefined,
+          });
+        } else {
+          this.emit('error', new Error('OpenCode CLI exited after a tool call without a final assistant response'));
+        }
       } else if (code === 0) {
+        if (!this.sawAssistantText) {
+          this.recoverFinalAssistantMessageFromExport();
+        }
         // Normal exit without result message
         this.emit('complete', {
           status: 'success',
-          sessionId: this.currentSessionId || undefined,
+          sessionId: this.currentSessionId || this.requestedSessionId || undefined,
         });
       } else if (code !== null) {
         // Error exit
@@ -1140,6 +1287,8 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
 
     this.ptyProcess = null;
     this.currentTaskId = null;
+    this.currentTaskStartedAtMs = null;
+    this.requestedSessionId = null;
   }
 
   private scheduleComplete(result: TaskResult): void {

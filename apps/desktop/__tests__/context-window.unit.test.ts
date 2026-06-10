@@ -96,9 +96,11 @@ describe('normalizeOpenCodeUsage', () => {
     const usage = normalizeOpenCodeUsage(msg);
     expect(usage).not.toBeNull();
     expect(usage?.inputTokens).toBe(10);
-    expect(usage?.outputTokens).toBe(5);
-    expect(usage?.totalTokens).toBe(17);
+    expect(usage?.outputTokens).toBe(7);
+    expect(usage?.totalTokens).toBe(20);
     expect(usage?.cachedInputTokens).toBe(3);
+    expect(usage?.inputHitTokens).toBe(3);
+    expect(usage?.inputMissTokens).toBe(10);
     expect(usage?.estimated).toBe(false);
   });
 });

@@ -91,12 +91,28 @@ export function reconcileUsageFromOpenCodeMessage(taskId: string, message: OpenC
   if (typeof usage.cachedInputTokens === 'number') {
     active.acc.cachedInputTokens = (active.acc.cachedInputTokens ?? 0) + usage.cachedInputTokens;
   }
+  if (typeof usage.inputHitTokens === 'number') {
+    active.acc.inputHitTokens = (active.acc.inputHitTokens ?? 0) + usage.inputHitTokens;
+  }
+  if (typeof usage.inputMissTokens === 'number') {
+    active.acc.inputMissTokens = (active.acc.inputMissTokens ?? 0) + usage.inputMissTokens;
+  }
+  if (typeof usage.costUsd === 'number') {
+    active.acc.costUsd = (active.acc.costUsd ?? 0) + usage.costUsd;
+  }
+
+  const inputHitTokens = active.acc.inputHitTokens ?? active.acc.cachedInputTokens;
+  const inputMissTokens = active.acc.inputMissTokens ?? Math.max(0, active.acc.inputTokens - (inputHitTokens ?? 0));
+  const billableInputTokens = (inputHitTokens ?? 0) + inputMissTokens;
 
   updateTurnUsage(active.turnId, {
     inputTokens: active.acc.inputTokens,
     outputTokens: active.acc.outputTokens,
-    totalTokens: active.acc.inputTokens + active.acc.outputTokens,
+    totalTokens: billableInputTokens + active.acc.outputTokens,
     cachedInputTokens: active.acc.cachedInputTokens,
+    inputHitTokens,
+    inputMissTokens,
+    costUsd: active.acc.costUsd,
     estimated: false,
   });
 
@@ -108,6 +124,9 @@ export function reconcileUsageFromOpenCodeMessage(taskId: string, message: OpenC
       inputTokens: active.acc.inputTokens,
       outputTokens: active.acc.outputTokens,
       cachedInputTokens: active.acc.cachedInputTokens ?? 0,
+      inputHitTokens: active.acc.inputHitTokens ?? active.acc.cachedInputTokens ?? 0,
+      inputMissTokens: active.acc.inputMissTokens ?? 0,
+      costUsd: active.acc.costUsd,
       reason,
     });
   }

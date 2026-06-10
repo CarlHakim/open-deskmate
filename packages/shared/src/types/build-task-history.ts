@@ -1,5 +1,6 @@
 import type {
   BuildLogEntry,
+  BuildQualityCheckRun,
   BuildSessionSnapshot,
   BuildWorkspaceDiff,
   BuildWorkspaceFingerprint,
@@ -38,9 +39,11 @@ export interface BuildSessionExecutionState {
   goalPrompt: string;
   workspaceRelativePath: string;
   selectedPresetId?: string | null;
+  usageProjectId?: string | null;
   latestSnapshot?: BuildSessionSnapshot;
   latestDiff?: BuildWorkspaceDiff | null;
   latestFingerprint?: BuildWorkspaceFingerprint | null;
+  latestQualityCheckRun?: BuildQualityCheckRun | null;
   runtimeLogs: BuildLogEntry[];
 }
 
@@ -84,6 +87,11 @@ export interface BuildTaskSessionListItem {
   lifecycleStatus: BuildSessionLifecycleStatus;
   pinned?: boolean;
   tokenTotal?: number;
+  workspaceRelativePath?: string;
+  selectedPresetId?: string | null;
+  usageProjectId?: string | null;
+  runCount?: number;
+  latestRunStatus?: TaskStatus;
   createdAt: string;
   updatedAt: string;
   lastActivityAt: string;
@@ -107,6 +115,7 @@ export interface BuildTaskSessionCreateInput {
   goalPrompt: string;
   workspaceRelativePath: string;
   selectedPresetId?: string | null;
+  usageProjectId?: string | null;
 }
 
 export interface BuildTaskSessionUpdateInput {
@@ -115,11 +124,13 @@ export interface BuildTaskSessionUpdateInput {
   goalPrompt?: string;
   workspaceRelativePath?: string;
   selectedPresetId?: string | null;
+  usageProjectId?: string | null;
   messages?: TaskMessage[];
   runtimeLogs?: BuildLogEntry[];
   latestSnapshot?: BuildSessionSnapshot;
   latestDiff?: BuildWorkspaceDiff | null;
   latestFingerprint?: BuildWorkspaceFingerprint | null;
+  latestQualityCheckRun?: BuildQualityCheckRun | null;
   activeRun?: BuildSessionRun;
 }
 

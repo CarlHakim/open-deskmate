@@ -14,6 +14,22 @@ import type {
   AppConnectorRuntimeTestResult,
   BuildBuildRequest,
   BuildDiffEnforcementMode,
+  BuildGitActionResult,
+  BuildGitBackupBranch,
+  BuildGitConflictFile,
+  BuildGitMismatchSummary,
+  BuildGitPullRequestCreateInput,
+  BuildGitPullRequestCreateResult,
+  BuildGitRemoteInput,
+  BuildGitRemoteRepositoryCreateInput,
+  BuildGitRemoteRepositoryCreateResult,
+  BuildGitStageInput,
+  BuildGitResolveMismatchInput,
+  BuildGitStashEntry,
+  BuildGitSummary,
+  BuildGitReflogEntry,
+  BuildQualityCheckRun,
+  BuildQualityCheckRunRequest,
   BuildTaskHistoryListInput,
   BuildTaskSession,
   BuildTaskSessionArchiveInput,
@@ -52,7 +68,30 @@ import type {
   PermissionResponse,
   ProviderConfig,
   TaskConfig,
+  AutomationDraftRequest,
+  AutomationDraftResult,
   UsagePeriod,
+  UsageBudgetSettings,
+  UsageBudgetStatus,
+  UsageAssignee,
+  UsageAssigneeInput,
+  UsageAssigneeOverview,
+  UsageAssigneeUpdate,
+  UsageProject,
+  UsageProjectBudgetStatus,
+  UsageProjectBudgetWindow,
+  UsageProjectBudgetWindowInput,
+  UsageProjectBudgetWindowUpdate,
+  UsageProjectKanbanColumn,
+  UsageProjectKanbanColumnInput,
+  UsageProjectKanbanColumnUpdate,
+  UsageProjectInput,
+  UsageProjectAnalytics,
+  UsageProjectSummary,
+  UsageProjectUpdate,
+  UsageProjectWorkItem,
+  UsageProjectWorkItemInput,
+  UsageProjectWorkItemUpdate,
   UsagePricingAutofillRequest,
   UsagePricingAutofillResult,
   UsagePricingSettings,
@@ -76,6 +115,8 @@ const accomplishAPI = {
   // Shell
   openExternal: (url: string): Promise<void> =>
     ipcRenderer.invoke('shell:open-external', url),
+  openPath: (filePath: string): Promise<{ ok: boolean; path: string; error?: string }> =>
+    ipcRenderer.invoke('shell:open-path', filePath),
 
   // Help docs
   listHelpDocs: (): Promise<HelpDocsListResponse> =>
@@ -112,12 +153,25 @@ const accomplishAPI = {
   deleteTask: (taskId: string): Promise<void> =>
     ipcRenderer.invoke('task:delete', taskId),
   clearTaskHistory: (agentId?: string): Promise<void> => ipcRenderer.invoke('task:clear-history', agentId),
-  listSavedPrompts: (): Promise<Array<{ id: string; title: string; content: string; createdAt: string; updatedAt: string }>> =>
+  listSavedPrompts: (): Promise<Array<{ id: string; title: string; content: string; category: string; createdAt: string; updatedAt: string }>> =>
     ipcRenderer.invoke('saved-prompts:list'),
-  upsertSavedPrompt: (payload: { id?: string; title: string; content: string; createdAt?: string; updatedAt?: string }): Promise<{
+  listSavedPromptCategories: (): Promise<string[]> =>
+    ipcRenderer.invoke('saved-prompts:categories:list'),
+  createSavedPromptCategory: (name: string): Promise<string[]> =>
+    ipcRenderer.invoke('saved-prompts:categories:create', name),
+  renameSavedPromptCategory: (payload: { from: string; to: string }): Promise<{
+    categories: string[];
+    prompts: Array<{ id: string; title: string; content: string; category: string; createdAt: string; updatedAt: string }>;
+  }> => ipcRenderer.invoke('saved-prompts:categories:rename', payload),
+  deleteSavedPromptCategory: (payload: { name: string; replacement?: string }): Promise<{
+    categories: string[];
+    prompts: Array<{ id: string; title: string; content: string; category: string; createdAt: string; updatedAt: string }>;
+  }> => ipcRenderer.invoke('saved-prompts:categories:delete', payload),
+  upsertSavedPrompt: (payload: { id?: string; title: string; content: string; category?: string; createdAt?: string; updatedAt?: string }): Promise<{
     id: string;
     title: string;
     content: string;
+    category: string;
     createdAt: string;
     updatedAt: string;
   }> => ipcRenderer.invoke('saved-prompts:upsert', payload),
@@ -134,9 +188,10 @@ const accomplishAPI = {
     prompt: string,
     taskId?: string,
     attachedFiles?: string[],
-    privacyMode?: 'normal' | 'incognito'
+    privacyMode?: 'normal' | 'incognito',
+    usageProjectId?: string | null
   ): Promise<unknown> =>
-    ipcRenderer.invoke('session:resume', sessionId, prompt, taskId, attachedFiles, privacyMode),
+    ipcRenderer.invoke('session:resume', sessionId, prompt, taskId, attachedFiles, privacyMode, usageProjectId),
 
   // Proactive assistant (runs only when user clicks the button)
   planNextJobs: (agentId?: string): Promise<unknown> =>
@@ -164,6 +219,60 @@ const accomplishAPI = {
     ipcRenderer.invoke('usage:pricing:set', settings),
   autoFillUsagePricingWithAI: (request: UsagePricingAutofillRequest): Promise<UsagePricingAutofillResult> =>
     ipcRenderer.invoke('usage:pricing:autofill', request),
+  getUsageBudgets: (): Promise<UsageBudgetSettings> =>
+    ipcRenderer.invoke('usage:budgets:get'),
+  setUsageBudgets: (settings: UsageBudgetSettings): Promise<UsageBudgetSettings> =>
+    ipcRenderer.invoke('usage:budgets:set', settings),
+  getUsageBudgetStatus: (payload?: { agentId?: string }): Promise<UsageBudgetStatus[]> =>
+    ipcRenderer.invoke('usage:budget-status:get', payload),
+  listUsageProjects: (payload?: { includeArchived?: boolean }): Promise<UsageProject[]> =>
+    ipcRenderer.invoke('usage:projects:list', payload),
+  createUsageProject: (input: UsageProjectInput): Promise<UsageProject> =>
+    ipcRenderer.invoke('usage:projects:create', input),
+  updateUsageProject: (projectId: string, update: UsageProjectUpdate): Promise<UsageProject> =>
+    ipcRenderer.invoke('usage:projects:update', projectId, update),
+  archiveUsageProject: (projectId: string, archived?: boolean): Promise<UsageProject> =>
+    ipcRenderer.invoke('usage:projects:archive', projectId, archived),
+  listUsageProjectBudgetWindows: (payload?: { projectId?: string }): Promise<UsageProjectBudgetWindow[]> =>
+    ipcRenderer.invoke('usage:project-budget-windows:list', payload),
+  createUsageProjectBudgetWindow: (input: UsageProjectBudgetWindowInput): Promise<UsageProjectBudgetWindow> =>
+    ipcRenderer.invoke('usage:project-budget-windows:create', input),
+  updateUsageProjectBudgetWindow: (windowId: string, update: UsageProjectBudgetWindowUpdate): Promise<UsageProjectBudgetWindow> =>
+    ipcRenderer.invoke('usage:project-budget-windows:update', windowId, update),
+  deleteUsageProjectBudgetWindow: (windowId: string): Promise<{ ok: true }> =>
+    ipcRenderer.invoke('usage:project-budget-windows:delete', windowId),
+  getUsageProjectSummary: (payload: { projectId: string; startsAt?: string; endsAt?: string | null; windowId?: string }): Promise<UsageProjectSummary> =>
+    ipcRenderer.invoke('usage:project-summary:get', payload),
+  getUsageProjectAnalytics: (payload: { projectId: string; startsAt?: string; endsAt?: string | null; windowId?: string; days?: number }): Promise<UsageProjectAnalytics> =>
+    ipcRenderer.invoke('usage:project-analytics:get', payload),
+  getUsageProjectBudgetStatus: (payload?: { projectId?: string }): Promise<UsageProjectBudgetStatus[]> =>
+    ipcRenderer.invoke('usage:project-budget-status:get', payload),
+  listUsageProjectWorkItems: (payload: { projectId: string; includeArchived?: boolean }): Promise<UsageProjectWorkItem[]> =>
+    ipcRenderer.invoke('usage:project-work-items:list', payload),
+  createUsageProjectWorkItem: (input: UsageProjectWorkItemInput): Promise<UsageProjectWorkItem> =>
+    ipcRenderer.invoke('usage:project-work-items:create', input),
+  updateUsageProjectWorkItem: (itemId: string, update: UsageProjectWorkItemUpdate): Promise<UsageProjectWorkItem> =>
+    ipcRenderer.invoke('usage:project-work-items:update', itemId, update),
+  archiveUsageProjectWorkItem: (itemId: string, archived?: boolean): Promise<UsageProjectWorkItem> =>
+    ipcRenderer.invoke('usage:project-work-items:archive', itemId, archived),
+  listUsageProjectKanbanColumns: (payload: { projectId: string }): Promise<UsageProjectKanbanColumn[]> =>
+    ipcRenderer.invoke('usage:project-kanban-columns:list', payload),
+  createUsageProjectKanbanColumn: (input: UsageProjectKanbanColumnInput): Promise<UsageProjectKanbanColumn> =>
+    ipcRenderer.invoke('usage:project-kanban-columns:create', input),
+  updateUsageProjectKanbanColumn: (columnId: string, update: UsageProjectKanbanColumnUpdate): Promise<UsageProjectKanbanColumn> =>
+    ipcRenderer.invoke('usage:project-kanban-columns:update', columnId, update),
+  deleteUsageProjectKanbanColumn: (columnId: string): Promise<{ ok: true }> =>
+    ipcRenderer.invoke('usage:project-kanban-columns:delete', columnId),
+  listUsageAssignees: (payload?: { includeArchived?: boolean }): Promise<UsageAssignee[]> =>
+    ipcRenderer.invoke('usage:assignees:list', payload),
+  createUsageAssignee: (input: UsageAssigneeInput): Promise<UsageAssignee> =>
+    ipcRenderer.invoke('usage:assignees:create', input),
+  updateUsageAssignee: (assigneeId: string, update: UsageAssigneeUpdate): Promise<UsageAssignee> =>
+    ipcRenderer.invoke('usage:assignees:update', assigneeId, update),
+  archiveUsageAssignee: (assigneeId: string, archived?: boolean): Promise<UsageAssignee> =>
+    ipcRenderer.invoke('usage:assignees:archive', assigneeId, archived),
+  getUsageAssigneeOverview: (payload?: { assigneeId?: string }): Promise<UsageAssigneeOverview[]> =>
+    ipcRenderer.invoke('usage:assignee-overview:get', payload),
 
   // Settings
   getApiKeys: (): Promise<unknown[]> => ipcRenderer.invoke('settings:api-keys'),
@@ -199,6 +308,14 @@ const accomplishAPI = {
     ipcRenderer.invoke('settings:set-build-diff-enforcement-mode', mode),
   saveDataUrlToFile: (dataUrl: string, baseName?: string): Promise<{ filePath: string }> =>
     ipcRenderer.invoke('files:save-data-url', { dataUrl, baseName }),
+  saveDataUrlToFileAs: (dataUrl: string, baseName?: string): Promise<{ filePath?: string; cancelled?: boolean }> =>
+    ipcRenderer.invoke('files:save-data-url-as', { dataUrl, baseName }),
+  saveTextToFileAs: (content: string, options?: { baseName?: string; extension?: string; title?: string }): Promise<{ filePath?: string; cancelled?: boolean }> =>
+    ipcRenderer.invoke('files:save-text-as', { content, ...options }),
+  captureWindowRect: (rect: { x: number; y: number; width: number; height: number }): Promise<{ dataUrl: string }> =>
+    ipcRenderer.invoke('window:capture-rect', rect),
+  captureRuntimePreviewFullPage: (url: string): Promise<{ dataUrl: string; width: number; height: number; fullWidth: number; fullHeight: number; clipped: boolean }> =>
+    ipcRenderer.invoke('runtime-preview:capture-full-page', { url }),
   setBrowserProfile: (profile: string): Promise<string> =>
     ipcRenderer.invoke('settings:set-browser-profile', profile),
   setWorkspaceRoot: (root: string | null): Promise<string | null> =>
@@ -475,6 +592,10 @@ const accomplishAPI = {
     ipcRenderer.invoke('build-mode:runtime:restart', payload),
   runBuildCommand: (payload: BuildBuildRequest): Promise<{ snapshot: BuildSessionSnapshot; result: BuildRuntimeCommandResult }> =>
     ipcRenderer.invoke('build-mode:runtime:run-build', payload),
+  runBuildQualityChecks: (payload: BuildQualityCheckRunRequest): Promise<BuildQualityCheckRun> =>
+    ipcRenderer.invoke('build-mode:quality-checks:run', payload),
+  getBuildQualityChecks: (payload: { agentId: string; workspaceRelativePath?: string }): Promise<BuildQualityCheckRun | null> =>
+    ipcRenderer.invoke('build-mode:quality-checks:get', payload),
   runStartCommandOnce: (payload: { agentId: string; workspaceRelativePath?: string; envOverrides?: Record<string, string>; commandOverride?: string }): Promise<{ snapshot: BuildSessionSnapshot; result: BuildRuntimeCommandResult }> =>
     ipcRenderer.invoke('build-mode:runtime:run-once', payload),
   getBuildRuntimeLogs: (payload: { agentId: string; cursor?: number; limit?: number }): Promise<BuildLogsResponse> =>
@@ -539,6 +660,58 @@ const accomplishAPI = {
     ipcRenderer.invoke('build-mode:files:paste', payload),
   getBuildWorkspaceDiff: (payload: { agentId: string; relativePath?: string; maxChars?: number; baselineId?: string }): Promise<BuildWorkspaceDiff> =>
     ipcRenderer.invoke('build-mode:workspace:diff', payload),
+  getBuildGitSummary: (payload: { agentId: string; relativePath?: string }): Promise<BuildGitSummary> =>
+    ipcRenderer.invoke('build-mode:git:summary', payload),
+  getBuildGitMismatchSummary: (payload: { agentId: string; relativePath?: string }): Promise<BuildGitMismatchSummary> =>
+    ipcRenderer.invoke('build-mode:git:mismatch:summary', payload),
+  resolveBuildGitMismatch: (payload: { agentId: string; relativePath?: string } & BuildGitResolveMismatchInput): Promise<BuildGitActionResult> =>
+    ipcRenderer.invoke('build-mode:git:mismatch:resolve', payload),
+  initBuildGitRepository: (payload: { agentId: string; relativePath?: string }): Promise<BuildGitActionResult> =>
+    ipcRenderer.invoke('build-mode:git:init', payload),
+  commitBuildGitChanges: (payload: { agentId: string; relativePath?: string; message: string }): Promise<BuildGitActionResult> =>
+    ipcRenderer.invoke('build-mode:git:commit', payload),
+  addBuildGitRemote: (payload: { agentId: string; relativePath?: string } & BuildGitRemoteInput): Promise<BuildGitActionResult> =>
+    ipcRenderer.invoke('build-mode:git:remote:add', payload),
+  updateBuildGitRemote: (payload: { agentId: string; relativePath?: string } & BuildGitRemoteInput): Promise<BuildGitActionResult> =>
+    ipcRenderer.invoke('build-mode:git:remote:update', payload),
+  fetchBuildGitRemote: (payload: { agentId: string; relativePath?: string }): Promise<BuildGitActionResult> =>
+    ipcRenderer.invoke('build-mode:git:fetch', payload),
+  pullBuildGitBranch: (payload: { agentId: string; relativePath?: string }): Promise<BuildGitActionResult> =>
+    ipcRenderer.invoke('build-mode:git:pull', payload),
+  pushBuildGitBranch: (payload: { agentId: string; relativePath?: string; branchName?: string }): Promise<BuildGitActionResult> =>
+    ipcRenderer.invoke('build-mode:git:push', payload),
+  switchBuildGitBranch: (payload: { agentId: string; relativePath?: string; branchName: string }): Promise<BuildGitActionResult> =>
+    ipcRenderer.invoke('build-mode:git:branch:switch', payload),
+  createBuildGitBranch: (payload: { agentId: string; relativePath?: string; branchName: string }): Promise<BuildGitActionResult> =>
+    ipcRenderer.invoke('build-mode:git:branch:create', payload),
+  discardBuildGitChanges: (payload: { agentId: string; relativePath?: string; paths: string[] }): Promise<BuildGitActionResult> =>
+    ipcRenderer.invoke('build-mode:git:discard', payload),
+  getBuildGitConflicts: (payload: { agentId: string; relativePath?: string }): Promise<{ files: BuildGitConflictFile[]; summary: BuildGitSummary }> =>
+    ipcRenderer.invoke('build-mode:git:conflicts:get', payload),
+  stageBuildGitFiles: (payload: { agentId: string; relativePath?: string } & BuildGitStageInput): Promise<BuildGitActionResult> =>
+    ipcRenderer.invoke('build-mode:git:stage-files', payload),
+  finishBuildGitMerge: (payload: { agentId: string; relativePath?: string; message?: string }): Promise<BuildGitActionResult> =>
+    ipcRenderer.invoke('build-mode:git:finish-merge', payload),
+  createBuildGitStash: (payload: { agentId: string; relativePath?: string; message?: string }): Promise<BuildGitActionResult> =>
+    ipcRenderer.invoke('build-mode:git:stash:create', payload),
+  listBuildGitStashes: (payload: { agentId: string; relativePath?: string }): Promise<{ stashes: BuildGitStashEntry[]; summary: BuildGitSummary }> =>
+    ipcRenderer.invoke('build-mode:git:stash:list', payload),
+  applyBuildGitStash: (payload: { agentId: string; relativePath?: string; stashRef: string }): Promise<BuildGitActionResult> =>
+    ipcRenderer.invoke('build-mode:git:stash:apply', payload),
+  dropBuildGitStash: (payload: { agentId: string; relativePath?: string; stashRef: string }): Promise<BuildGitActionResult> =>
+    ipcRenderer.invoke('build-mode:git:stash:drop', payload),
+  checkoutBuildGitRemoteBranch: (payload: { agentId: string; relativePath?: string; remoteBranchName: string; localBranchName?: string }): Promise<BuildGitActionResult> =>
+    ipcRenderer.invoke('build-mode:git:branch:checkout-remote', payload),
+  createBuildGitRemoteRepository: (payload: { agentId: string; relativePath?: string } & BuildGitRemoteRepositoryCreateInput): Promise<BuildGitRemoteRepositoryCreateResult> =>
+    ipcRenderer.invoke('build-mode:git:remote:create', payload),
+  createBuildGitPullRequest: (payload: { agentId: string; relativePath?: string } & BuildGitPullRequestCreateInput): Promise<BuildGitPullRequestCreateResult> =>
+    ipcRenderer.invoke('build-mode:git:pr:create-draft', payload),
+  listBuildGitBackupBranches: (payload: { agentId: string; relativePath?: string }): Promise<{ branches: BuildGitBackupBranch[]; summary: BuildGitSummary }> =>
+    ipcRenderer.invoke('build-mode:git:backup-branches:list', payload),
+  restoreBuildGitBackupBranch: (payload: { agentId: string; relativePath?: string; branchName: string }): Promise<BuildGitActionResult> =>
+    ipcRenderer.invoke('build-mode:git:restore-backup', payload),
+  listBuildGitReflog: (payload: { agentId: string; relativePath?: string }): Promise<{ entries: BuildGitReflogEntry[]; summary: BuildGitSummary }> =>
+    ipcRenderer.invoke('build-mode:git:reflog:list', payload),
   captureBuildWorkspaceBaseline: (payload: { agentId: string; relativePath?: string }): Promise<BuildWorkspaceBaselineCaptureResult> =>
     ipcRenderer.invoke('build-mode:workspace:baseline:capture', payload),
   resolveBuildWorkspaceBaseline: (payload: { agentId: string; baselineId: string; decision: 'approve' | 'reject' }): Promise<BuildWorkspaceBaselineResolveResult> =>
@@ -714,6 +887,8 @@ const accomplishAPI = {
     ipcRenderer.invoke('schedules:run', scheduleId),
   getAutomationInfo: (): Promise<{ webhookUrl: string }> =>
     ipcRenderer.invoke('automation:info'),
+  draftAutomationFromText: (request: AutomationDraftRequest): Promise<AutomationDraftResult> =>
+    ipcRenderer.invoke('automation:draft-from-text', request),
 
   // Ollama configuration
   testOllamaConnection: (url: string): Promise<{
@@ -733,6 +908,11 @@ const accomplishAPI = {
     const listener = (_: unknown, event: unknown) => callback(event);
     ipcRenderer.on('task:update', listener);
     return () => ipcRenderer.removeListener('task:update', listener);
+  },
+  onTaskActivity: (callback: (event: unknown) => void) => {
+    const listener = (_: unknown, event: unknown) => callback(event);
+    ipcRenderer.on('task:activity', listener);
+    return () => ipcRenderer.removeListener('task:activity', listener);
   },
   onTaskCreated: (callback: (task: unknown) => void) => {
     const listener = (_: unknown, task: unknown) => callback(task);
@@ -795,9 +975,9 @@ const accomplishAPI = {
   // Folder operations (synced with webchat)
   listFolders: (): Promise<unknown[]> =>
     ipcRenderer.invoke('folder:list'),
-  createFolder: (config: { name: string; icon?: string; color?: string }): Promise<unknown> =>
+  createFolder: (config: { name: string; icon?: string; color?: string; usageProjectId?: string | null; assigneeIds?: string[] | null }): Promise<unknown> =>
     ipcRenderer.invoke('folder:create', config),
-  updateFolder: (folderId: string, config: { name?: string; icon?: string; color?: string; isExpanded?: boolean; order?: number }): Promise<unknown> =>
+  updateFolder: (folderId: string, config: { name?: string; icon?: string; color?: string; usageProjectId?: string | null; assigneeIds?: string[] | null; isExpanded?: boolean; order?: number }): Promise<unknown> =>
     ipcRenderer.invoke('folder:update', folderId, config),
   deleteFolder: (folderId: string): Promise<{ success: boolean }> =>
     ipcRenderer.invoke('folder:delete', folderId),
@@ -805,6 +985,8 @@ const accomplishAPI = {
     ipcRenderer.invoke('folder:getAssignments'),
   assignTaskToFolder: (taskId: string, folderId: string | null): Promise<{ success: boolean }> =>
     ipcRenderer.invoke('folder:assignTask', taskId, folderId),
+  assignTaskToUsageProject: (taskId: string, usageProjectId: string | null): Promise<{ success: boolean; usageProjectId?: string | null }> =>
+    ipcRenderer.invoke('task:assignUsageProject', taskId, usageProjectId),
 };
 
 // Expose the API to the renderer

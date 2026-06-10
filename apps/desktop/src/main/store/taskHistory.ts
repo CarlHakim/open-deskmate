@@ -1,6 +1,6 @@
 import Store from 'electron-store';
 import fs from 'fs';
-import type { Task, TaskMessage, TaskStatus } from '@accomplish/shared';
+import type { Task, TaskActivityEvent, TaskMessage, TaskStatus } from '@accomplish/shared';
 import { getDefaultAgentId } from './agents';
 
 /**
@@ -14,6 +14,7 @@ export interface StoredTask {
   summary?: string;
   status: TaskStatus;
   messages: TaskMessage[];
+  activity?: TaskActivityEvent[];
   sessionId?: string;
   sessionFilePath?: string;
   createdAt: string;
@@ -25,8 +26,10 @@ export interface StoredTask {
   workingDirectory?: string;
   attachedFiles?: string[];
   privacyMode?: 'normal' | 'incognito';
+  usageProjectId?: string | null;
   hiddenFromHistory?: boolean;
   parentTaskId?: string;
+  miniMaxHistoricalImageSessionResetAt?: string;
 }
 
 interface TaskHistorySchema {
@@ -43,6 +46,7 @@ const taskHistoryStore = new Store<TaskHistorySchema>({
 });
 
 const PERSIST_DEBOUNCE_MS = 250;
+const MAX_TASK_ACTIVITY_EVENTS = 120;
 const INCOGNITO_TTL_MS = Number(process.env.OPENDESKMATE_INCOGNITO_TTL_MS || 30 * 60 * 1000);
 let pendingTasks: StoredTask[] | null = null;
 let persistTimeout: NodeJS.Timeout | null = null;
@@ -226,11 +230,14 @@ export function saveTask(task: Task): void {
       summary: task.summary,
       status: task.status,
       messages: task.messages || [],
+      activity: task.activity || [],
       sessionId: task.sessionId,
       sessionFilePath: (task as Task & { sessionFilePath?: string }).sessionFilePath,
       sessionMemorySavedAt: (task as Task & { sessionMemorySavedAt?: string }).sessionMemorySavedAt,
       workingDirectory: task.workingDirectory,
       attachedFiles: task.attachedFiles,
+      usageProjectId: task.usageProjectId,
+      miniMaxHistoricalImageSessionResetAt: task.miniMaxHistoricalImageSessionResetAt,
       createdAt: task.createdAt,
       startedAt: task.startedAt,
       completedAt: task.completedAt,
@@ -247,8 +254,17 @@ export function saveTask(task: Task): void {
         }
       }
       storedTask.messages = mergedMessages;
+      const mergedActivity = [...(previous.activity || [])];
+      for (const event of storedTask.activity || []) {
+        if (!mergedActivity.some((activity) => activity.id === event.id)) {
+          mergedActivity.push(event);
+        }
+      }
+      storedTask.activity = mergedActivity.slice(-MAX_TASK_ACTIVITY_EVENTS);
       storedTask.createdAt = previous.createdAt;
       storedTask.startedAt = previous.startedAt ?? storedTask.startedAt;
+      storedTask.miniMaxHistoricalImageSessionResetAt =
+        storedTask.miniMaxHistoricalImageSessionResetAt ?? previous.miniMaxHistoricalImageSessionResetAt;
     }
     incognitoTasks.set(task.id, {
       task: storedTask,
@@ -268,12 +284,15 @@ export function saveTask(task: Task): void {
     summary: task.summary,
     status: task.status,
     messages: task.messages || [],
+    activity: task.activity || [],
     sessionId: task.sessionId,
     sessionFilePath: (task as Task & { sessionFilePath?: string }).sessionFilePath,
     sessionMemorySavedAt: (task as Task & { sessionMemorySavedAt?: string }).sessionMemorySavedAt,
     workingDirectory: task.workingDirectory,
     attachedFiles: task.attachedFiles,
     privacyMode,
+    usageProjectId: task.usageProjectId,
+    miniMaxHistoricalImageSessionResetAt: task.miniMaxHistoricalImageSessionResetAt,
     hiddenFromHistory: task.hiddenFromHistory,
     parentTaskId: task.parentTaskId,
     createdAt: task.createdAt,
@@ -294,6 +313,8 @@ export function saveTask(task: Task): void {
     tasks[existingIndex] = {
       ...storedTask,
       messages: mergedMessages,
+      activity: mergeTaskActivity(existing.activity, storedTask.activity),
+      miniMaxHistoricalImageSessionResetAt: storedTask.miniMaxHistoricalImageSessionResetAt ?? existing.miniMaxHistoricalImageSessionResetAt,
       createdAt: existing.createdAt,
       startedAt: existing.startedAt ?? storedTask.startedAt,
       completedAt: storedTask.completedAt,
@@ -309,6 +330,39 @@ export function saveTask(task: Task): void {
   }
 
   schedulePersist([...tasks]);
+}
+
+function mergeTaskActivity(
+  existing: TaskActivityEvent[] | undefined,
+  incoming: TaskActivityEvent[] | undefined
+): TaskActivityEvent[] {
+  const merged = [...(existing || [])];
+  for (const event of incoming || []) {
+    if (!merged.some((activity) => activity.id === event.id)) {
+      merged.push(event);
+    }
+  }
+  return merged
+    .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+    .slice(-MAX_TASK_ACTIVITY_EVENTS);
+}
+
+export function addTaskActivity(taskId: string, activity: TaskActivityEvent): void {
+  pruneIncognitoTasks();
+  const incognito = incognitoTasks.get(taskId);
+  if (incognito) {
+    const next = mergeTaskActivity(incognito.task.activity, [activity]);
+    incognito.task.activity = next;
+    touchIncognitoTask(taskId);
+    return;
+  }
+
+  const tasks = getCurrentTasks();
+  const taskIndex = tasks.findIndex((t) => t.id === taskId);
+  if (taskIndex >= 0) {
+    tasks[taskIndex].activity = mergeTaskActivity(tasks[taskIndex].activity, [activity]);
+    schedulePersist([...tasks]);
+  }
 }
 
 /**
@@ -483,6 +537,23 @@ export function updateTaskSessionMemorySaved(taskId: string, timestamp: string):
   }
 }
 
+export function markTaskMiniMaxHistoricalImageSessionReset(taskId: string, timestamp: string): void {
+  pruneIncognitoTasks();
+  const incognito = incognitoTasks.get(taskId);
+  if (incognito) {
+    incognito.task.miniMaxHistoricalImageSessionResetAt = timestamp;
+    touchIncognitoTask(taskId);
+    return;
+  }
+
+  const tasks = getCurrentTasks();
+  const taskIndex = tasks.findIndex((t) => t.id === taskId);
+  if (taskIndex >= 0) {
+    tasks[taskIndex].miniMaxHistoricalImageSessionResetAt = timestamp;
+    schedulePersist([...tasks]);
+  }
+}
+
 export function updateTaskMemoryFlush(taskId: string, payload: { memoryFlushAt: string; memoryFlushCount: number }): void {
   pruneIncognitoTasks();
   const incognito = incognitoTasks.get(taskId);
@@ -500,6 +571,38 @@ export function updateTaskMemoryFlush(taskId: string, payload: { memoryFlushAt: 
     tasks[taskIndex].memoryFlushCount = payload.memoryFlushCount;
     schedulePersist([...tasks]);
   }
+}
+
+export function updateTasksUsageProject(taskIds: string[], usageProjectId: string | null): number {
+  const ids = new Set(taskIds.map((taskId) => String(taskId || '').trim()).filter(Boolean));
+  if (ids.size === 0) return 0;
+
+  pruneIncognitoTasks();
+  let changed = 0;
+  for (const taskId of ids) {
+    const incognito = incognitoTasks.get(taskId);
+    if (incognito && (incognito.task.usageProjectId ?? null) !== usageProjectId) {
+      incognito.task.usageProjectId = usageProjectId;
+      touchIncognitoTask(taskId);
+      changed += 1;
+    }
+  }
+
+  const tasks = getCurrentTasks();
+  let persistentChanged = false;
+  const next = tasks.map((task) => {
+    if (!ids.has(task.id) || (task.usageProjectId ?? null) === usageProjectId) {
+      return task;
+    }
+    persistentChanged = true;
+    changed += 1;
+    return { ...task, usageProjectId };
+  });
+
+  if (persistentChanged) {
+    schedulePersist(next);
+  }
+  return changed;
 }
 
 /**

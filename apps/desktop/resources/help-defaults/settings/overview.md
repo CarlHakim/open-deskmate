@@ -2,11 +2,39 @@
 
 This reference covers every section in the **Settings** dialog.
 
+## When To Use It
+
+Use this page when you know you need to configure the app but are not sure which Settings section controls the feature.
+
+## Quick Steps
+
+1. Open **Settings**.
+2. Use **Basic** mode for common setup sections.
+3. Use **Advanced** mode when you need connectors, policies, runtime hooks, plugins, or diagnostics.
+4. Search or jump to the section that matches the task.
+5. Change the setting.
+6. Run a small test task after changing model, permissions, connector, or automation behavior.
+
+## Step-By-Step: Find The Right Settings Section
+
+1. Decide what you are trying to change.
+2. Use **Model & API settings** for providers, keys, and models.
+3. Use **Agents** for personas, model overrides, automation behavior, and subagents.
+4. Use **API usage estimate** for pricing rows and cost estimates.
+5. Use **Automations** for schedules and webhook endpoints.
+6. Use **Project Management** for project budgets, Workboard, assignees, notes, and usage reports.
+7. Use **Doctor** and **Developer** when something is not working.
+
 ## Core App Guides
 
 - [Getting Started](../getting-started.md)
 - [Chat Mode](../chat-mode.md)
 - [Build Mode](../build-mode.md)
+- [Project Management](../project-management.md)
+- [Project Budgets And Usage](../project-budgets-and-usage.md)
+- [Workboard](../workboard.md)
+- [Changes And Git](../changes-and-git.md)
+- [Saved Prompts And Recipes](../saved-prompts-and-recipes.md)
 - [Slash Commands](../slash-commands.md)
 - [Subagents](../subagents.md)
 - [Plugins](../plugins.md)
@@ -36,9 +64,18 @@ This reference covers every section in the **Settings** dialog.
 
 ## Notable Current Capabilities
 
+- **Basic / Advanced Settings** lets users keep the Settings page focused or reveal every advanced section.
+- **Saved Prompts & Recipes** manages reusable prompts and categories for Chat Mode and Build Mode.
+- **API usage estimate** now supports input hit, input miss, and output pricing rows.
+- **Project Management** is opened from the briefcase icon near Settings, not from inside Settings.
+- **Project budgets** support tracking-only projects, budget windows, per-project usage reporting, and warn/block behavior.
+- **Workboard** adds Table, Kanban, Timeline, Calendar, rich notes, drawings, documents, and checklist tracking for project work.
+- **Assignees** are managed from Project Management and represent people doing the work. The budget owner remains the responsible contact.
 - **Agents** now includes subagent controls such as enablement, depth and child limits, inheritance rules, default subagent mode, and optional default subagent model override.
 - **Permission Policy** now covers global file/runtime policy, per-agent overrides, executor built-ins, audit, previews, conflicts, and live effective rule sources.
 - **Build Mode Safety** controls how aggressively the AI can apply code changes in Build Mode.
+- **Changes & Git** in Build Mode covers file changes, Git status, commit, push, remotes, branches, mismatch recovery, and conflict help.
+- **Runtime Screenshots** can capture selected or full preview areas, annotate them, export them, attach them to prompts, or save them to project work items.
 - **Plugins** now covers managed plugin install/uninstall, validation, readiness diagnostics, contribution previews, help-doc contributions, and registration activity history.
 - **Runtime Hooks** exposes the JSON-backed hook registry and diagnostics for task/tool policy and prompt mutation.
 - **Slash commands** are now available from the Home prompt, Chat follow-up prompt, Build prompt, and the global `Cmd+K` launcher.
@@ -48,3 +85,11 @@ This reference covers every section in the **Settings** dialog.
 - Section expand/collapse state is remembered per user.
 - Section search and jump controls are available at the top of Settings.
 - Most configuration changes save immediately; some actions include explicit save buttons.
+- Project Management has its own tabs and persistence separate from Settings.
+
+## Troubleshooting
+
+- If you cannot find a section, switch from Basic to Advanced mode.
+- If a setting does not seem to apply, check whether there is an agent, preset, or project-level override.
+- If a Settings button needs a second click, check whether focus was inside an input or dropdown.
+- If a configuration issue is unclear, run **Doctor** before changing more settings.

@@ -85,7 +85,14 @@ async function fetchText(url: string): Promise<string> {
   return await res.text();
 }
 
-type PricePair = { inputCostPer1m: number | null; outputCostPer1m: number | null; sourceUrl: string; note?: string; confidence: 'high' | 'medium' | 'low' };
+type PricePair = {
+  inputHitCostPer1m: number | null;
+  inputMissCostPer1m: number | null;
+  outputCostPer1m: number | null;
+  sourceUrl: string;
+  note?: string;
+  confidence: 'high' | 'medium' | 'low';
+};
 
 async function resolveOpenAIPricing(model: string): Promise<PricePair | null> {
   const sourceUrl = 'https://platform.openai.com/pricing';
@@ -107,9 +114,10 @@ async function resolveOpenAIPricing(model: string): Promise<PricePair | null> {
   const dollars = Array.from(window.matchAll(/\$([0-9]+(?:\.[0-9]+)?)/g)).map((m) => toNumberOrNull(m[1])).filter((n): n is number => n != null);
   if (dollars.length < 2) return null;
   // Most OpenAI tables are: input, cached input, output. If 3+ values, use 1st and 3rd; else 1st and 2nd.
-  const input = dollars[0] ?? null;
+  const inputMiss = dollars[0] ?? null;
+  const inputHit = dollars.length >= 3 ? dollars[1] ?? null : null;
   const output = (dollars[2] ?? dollars[1]) ?? null;
-  return { inputCostPer1m: input, outputCostPer1m: output, sourceUrl, confidence: dollars.length >= 3 ? 'medium' : 'low' };
+  return { inputHitCostPer1m: inputHit, inputMissCostPer1m: inputMiss, outputCostPer1m: output, sourceUrl, confidence: dollars.length >= 3 ? 'medium' : 'low' };
 }
 
 async function resolveAnthropicPricing(model: string): Promise<PricePair | null> {
@@ -133,7 +141,7 @@ async function resolveAnthropicPricing(model: string): Promise<PricePair | null>
     .map((m) => toNumberOrNull(m[1]))
     .filter((n): n is number => n != null);
   if (dollars.length < 2) return null;
-  return { inputCostPer1m: dollars[0], outputCostPer1m: dollars[1], sourceUrl, confidence: 'medium' };
+  return { inputHitCostPer1m: null, inputMissCostPer1m: dollars[0], outputCostPer1m: dollars[1], sourceUrl, confidence: 'medium' };
 }
 
 async function resolveGooglePricing(model: string): Promise<PricePair | null> {
@@ -169,7 +177,8 @@ async function resolveGooglePricing(model: string): Promise<PricePair | null> {
   if (input == null || output == null) return null;
 
   return {
-    inputCostPer1m: input,
+    inputHitCostPer1m: null,
+    inputMissCostPer1m: input,
     outputCostPer1m: output,
     sourceUrl,
     confidence: per1m.length >= 2 ? 'medium' : 'low',
@@ -206,7 +215,8 @@ async function resolveXaiPricing(model: string): Promise<PricePair | null> {
   const mo = text.match(outputRe);
   if (!mi || !mo) return null;
   return {
-    inputCostPer1m: toNumberOrNull(mi[1]),
+    inputHitCostPer1m: null,
+    inputMissCostPer1m: toNumberOrNull(mi[1]),
     outputCostPer1m: toNumberOrNull(mo[1]),
     sourceUrl,
     confidence: 'medium',
@@ -246,7 +256,8 @@ export async function suggestPricingFromInternet(
     const rowBase: ProviderPricingRow = {
       provider: t.provider,
       model: t.model,
-      inputCostPer1m: null,
+      inputHitCostPer1m: null,
+      inputMissCostPer1m: null,
       outputCostPer1m: null,
       effectiveFrom: null,
       pricingSource: 'ai',
@@ -269,7 +280,8 @@ export async function suggestPricingFromInternet(
       foundAny = true;
       providers.push({
         ...rowBase,
-        inputCostPer1m: resolved.inputCostPer1m,
+        inputHitCostPer1m: resolved.inputHitCostPer1m,
+        inputMissCostPer1m: resolved.inputMissCostPer1m,
         outputCostPer1m: resolved.outputCostPer1m,
       });
       meta[key(t.provider, t.model)] = {

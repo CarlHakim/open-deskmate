@@ -1,5 +1,29 @@
 # Help Architecture
 
+This page explains how the in-app Help system loads, renders, updates, and protects editable Help content.
+
+## When To Use It
+
+Use this page when you are changing the Help system itself, debugging Help rendering, or deciding whether docs should stay runtime-rendered or move to a precompiled site.
+
+## Quick Steps
+
+1. Add or update markdown files in the help defaults or user Help folder.
+2. Register pages in `index.json`.
+3. Keep links and assets relative.
+4. Open Help and confirm the page renders.
+5. Check live reload if you are editing user Help content.
+6. Use the embedded static docs option only when a separate hosted docs site is needed.
+
+## Step-By-Step: Verify Help Rendering
+
+1. Open the Help page.
+2. Select the updated document.
+3. Check headings, lists, tables, links, and images.
+4. Click internal links to confirm routing.
+5. Click external links to confirm they open outside the Help renderer.
+6. Edit the markdown file and confirm live reload updates the page.
+
 ## Safety Model
 
 - Markdown is rendered with HTML sanitization.
@@ -30,3 +54,10 @@ Precompile mode is still possible for static content-heavy deployments by genera
 ## Embedded Static Docs Site Option
 
 If you set `embeddedSiteUrl` in `index.json` to an `http(s)` URL, the Help viewer shows a **Docs Site** toggle and can embed that site in an iframe.
+
+## Troubleshooting
+
+- If a page renders blank, validate the markdown file path from `index.json`.
+- If the Help menu is stale, check live reload or restart the app.
+- If an asset is blocked, confirm it is under the help root and not using path traversal.
+- If an embedded docs site does not load, confirm `embeddedSiteUrl` is an `http` or `https` URL and the site allows iframe embedding.

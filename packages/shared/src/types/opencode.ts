@@ -102,7 +102,7 @@ export interface OpenCodeStepFinishMessage extends OpenCodeMessageBase {
     sessionID: string;
     messageID: string;
     type: 'step-finish';
-    reason: 'stop' | 'end_turn' | 'tool_use' | 'error';
+    reason: 'stop' | 'end_turn' | 'tool_use' | 'tool-calls' | 'error';
     snapshot?: string;
     cost?: number;
     tokens?: {

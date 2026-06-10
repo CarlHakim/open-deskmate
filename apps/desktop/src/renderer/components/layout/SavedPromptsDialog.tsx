@@ -11,30 +11,50 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useSavedPromptsStore, SavedPrompt } from '../../stores/savedPromptsStore';
-import { X, FileText, Search } from 'lucide-react';
+import { X, FileText, Search, Settings } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { springs } from '@/lib/animations';
+import { BUILD_RECIPES } from '@/lib/build-recipes';
+import {
+  DEFAULT_PROMPT_CATEGORY,
+  mergePromptCategories,
+  type PromptCategory,
+} from '@/lib/prompt-categories';
 
 interface SavedPromptsDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSelectPrompt?: (content: string) => void;
   mode?: 'manage' | 'select';
+  includeRecipes?: boolean;
 }
+
+type PromptSelectItem = {
+  id: string;
+  title: string;
+  content: string;
+  category: PromptCategory;
+  source: 'recipe' | 'saved';
+  description?: string;
+};
 
 export default function SavedPromptsDialog({
   open,
   onOpenChange,
   onSelectPrompt,
   mode = 'manage',
+  includeRecipes,
 }: SavedPromptsDialogProps) {
-  const { prompts, loadPrompts, savePrompt, updatePrompt, deletePrompt } = useSavedPromptsStore();
+  const { prompts, categories, loadPrompts, savePrompt, updatePrompt, deletePrompt } = useSavedPromptsStore();
+  const shouldIncludeRecipes = includeRecipes ?? mode === 'select';
   const [activePromptId, setActivePromptId] = useState<string | null>(null);
   const [manageTitle, setManageTitle] = useState('');
   const [manageContent, setManageContent] = useState('');
+  const [manageCategory, setManageCategory] = useState<PromptCategory>(DEFAULT_PROMPT_CATEGORY);
 
   // Select mode state
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState<'All' | PromptCategory>('All');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -43,12 +63,14 @@ export default function SavedPromptsDialog({
       loadPrompts();
       if (mode === 'select') {
         setSearchQuery('');
+        setSelectedCategory('All');
         setSelectedIndex(0);
         setTimeout(() => searchInputRef.current?.focus(), 100);
       } else {
         setActivePromptId(null);
         setManageTitle('');
         setManageContent('');
+        setManageCategory(DEFAULT_PROMPT_CATEGORY);
       }
     }
   }, [open, loadPrompts, mode]);
@@ -61,18 +83,51 @@ export default function SavedPromptsDialog({
     return () => window.clearInterval(timer);
   }, [open, loadPrompts]);
 
-  // Filter prompts by search query
+  const selectablePrompts = useMemo<PromptSelectItem[]>(() => {
+    const recipeItems: PromptSelectItem[] = shouldIncludeRecipes
+      ? BUILD_RECIPES.map((recipe) => ({
+        id: `recipe:${recipe.id}`,
+        title: recipe.title,
+        content: recipe.prompt,
+        category: recipe.category,
+        source: 'recipe',
+        description: recipe.description,
+      }))
+      : [];
+    const savedItems: PromptSelectItem[] = prompts.map((prompt) => ({
+      id: `saved:${prompt.id}`,
+      title: prompt.title,
+      content: prompt.content,
+      category: prompt.category,
+      source: 'saved',
+    }));
+    return [...recipeItems, ...savedItems];
+  }, [prompts, shouldIncludeRecipes]);
+
+  const selectableCategories = useMemo(
+    () => mergePromptCategories(categories, selectablePrompts.map((prompt) => prompt.category)),
+    [categories, selectablePrompts]
+  );
+
+  // Filter prompts and recipes by category and search query
   const filteredPrompts = useMemo(() => {
-    if (!searchQuery.trim()) {
-      return prompts;
-    }
     const query = searchQuery.toLowerCase();
-    return prompts.filter(
-      (p) =>
+    return selectablePrompts.filter((p) => {
+      if (selectedCategory !== 'All' && p.category !== selectedCategory) {
+        return false;
+      }
+      if (!query.trim()) {
+        return true;
+      }
+      return (
         p.title.toLowerCase().includes(query) ||
-        p.content.toLowerCase().includes(query)
-    );
-  }, [prompts, searchQuery]);
+        p.content.toLowerCase().includes(query) ||
+        p.category.toLowerCase().includes(query) ||
+        p.source.toLowerCase().includes(query) ||
+        Boolean(p.description?.toLowerCase().includes(query))
+      );
+    });
+  }, [selectablePrompts, searchQuery, selectedCategory]);
 
   // Clamp selected index when results change
   useEffect(() => {
@@ -124,12 +179,14 @@ export default function SavedPromptsDialog({
     setActivePromptId(prompt.id);
     setManageTitle(prompt.title);
     setManageContent(prompt.content);
+    setManageCategory(prompt.category);
   };
 
   const handleManageNew = () => {
     setActivePromptId(null);
     setManageTitle('');
     setManageContent('');
+    setManageCategory(DEFAULT_PROMPT_CATEGORY);
   };
 
   const handleManageSave = () => {
@@ -137,14 +194,15 @@ export default function SavedPromptsDialog({
     if (!content) return;
     const title = manageTitle.trim() || content.slice(0, 64);
     if (activePromptId) {
-      updatePrompt(activePromptId, title, content);
+      updatePrompt(activePromptId, title, content, manageCategory);
       return;
     }
-    const created = savePrompt(title, content);
+    const created = savePrompt(title, content, manageCategory);
     if (created && created.id) {
       setActivePromptId(created.id);
       setManageTitle(created.title);
       setManageContent(created.content);
+      setManageCategory(created.category);
     }
   };
 
@@ -154,13 +212,14 @@ export default function SavedPromptsDialog({
     setActivePromptId(null);
     setManageTitle('');
     setManageContent('');
+    setManageCategory(DEFAULT_PROMPT_CATEGORY);
   };
 
-  const handleSelect = (prompt: SavedPrompt) => {
-    if (onSelectPrompt) {
-      onSelectPrompt(prompt.content);
-      onOpenChange(false);
-    }
+  const openCategorySettings = () => {
+    onOpenChange(false);
+    window.dispatchEvent(new CustomEvent('opendeskmate:open-settings', {
+      detail: { query: 'Saved Prompts & Recipes' },
+    }));
   };
 
   // Select mode - spotlight-style dialog
@@ -201,7 +260,7 @@ export default function SavedPromptsDialog({
                       type="text"
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder="Search saved prompts..."
+                      placeholder={shouldIncludeRecipes ? 'Search prompts and recipes...' : 'Search saved prompts...'}
                       className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
                     />
                     <DialogPrimitive.Close asChild>
@@ -214,6 +273,33 @@ export default function SavedPromptsDialog({
                     </DialogPrimitive.Close>
                   </div>
 
+                  <div className="flex gap-1 overflow-x-auto border-b border-border px-3 py-2">
+                    {(['All', ...selectableCategories] as Array<'All' | PromptCategory>).map((category) => {
+                      const active = selectedCategory === category;
+                      const count = category === 'All'
+                        ? selectablePrompts.length
+                        : selectablePrompts.filter((prompt) => prompt.category === category).length;
+                      return (
+                        <button
+                          key={category}
+                          type="button"
+                          onClick={() => {
+                            setSelectedCategory(category);
+                            setSelectedIndex(0);
+                          }}
+                          className={cn(
+                            'shrink-0 rounded-md px-2 py-1 text-[11px] transition-colors',
+                            active
+                              ? 'bg-primary/15 text-foreground'
+                              : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                          )}
+                        >
+                          {category} <span className="text-[10px] opacity-70">{count}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
                   {/* Results */}
                   <div className="max-h-80 overflow-y-auto p-2">
                     {filteredPrompts.length === 0 ? (
@@ -221,7 +307,7 @@ export default function SavedPromptsDialog({
                         <FileText className="h-10 w-10 mx-auto mb-2 opacity-50" />
                         {searchQuery.trim()
                           ? 'No prompts found'
-                          : 'No saved prompts yet'}
+                          : shouldIncludeRecipes ? 'No prompts or recipes yet' : 'No saved prompts yet'}
                       </div>
                     ) : (
                       filteredPrompts.map((prompt, index) => (
@@ -236,7 +322,31 @@ export default function SavedPromptsDialog({
                               : 'text-foreground hover:bg-accent'
                           )}
                         >
-                          <span className="font-medium truncate">{prompt.title}</span>
+                          <span className="flex min-w-0 items-center gap-2">
+                            <span className="truncate font-medium">{prompt.title}</span>
+                            <span
+                              className={cn(
+                                'shrink-0 rounded-full px-1.5 py-0.5 text-[10px]',
+                                selectedIndex === index
+                                  ? 'bg-primary-foreground/15 text-primary-foreground/80'
+                                  : 'bg-muted text-muted-foreground'
+                              )}
+                            >
+                              {prompt.category}
+                            </span>
+                            <span
+                              className={cn(
+                                'shrink-0 rounded-full px-1.5 py-0.5 text-[10px]',
+                                selectedIndex === index
+                                  ? 'bg-primary-foreground/15 text-primary-foreground/80'
+                                  : prompt.source === 'recipe'
+                                    ? 'bg-teal-500/10 text-teal-200'
+                                    : 'bg-muted text-muted-foreground'
+                              )}
+                            >
+                              {prompt.source === 'recipe' ? 'Recipe' : 'Saved'}
+                            </span>
+                          </span>
                           <span
                             className={cn(
                               'text-xs line-clamp-2',
@@ -245,7 +355,7 @@ export default function SavedPromptsDialog({
                                 : 'text-muted-foreground'
                             )}
                           >
-                            {prompt.content}
+                            {prompt.description || prompt.content}
                           </span>
                         </button>
                       ))
@@ -283,7 +393,13 @@ export default function SavedPromptsDialog({
             Manage Saved Prompts
           </DialogTitle>
         </DialogHeader>
-        <p className="text-sm text-muted-foreground">Create, edit, and delete reusable prompts.</p>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-sm text-muted-foreground">Create, edit, and delete reusable prompts.</p>
+          <Button type="button" variant="outline" size="sm" onClick={openCategorySettings}>
+            <Settings className="mr-2 h-3.5 w-3.5" />
+            Manage categories
+          </Button>
+        </div>
         <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 md:grid-cols-2">
           <ScrollArea className="min-h-[220px] rounded-lg border border-border bg-background p-2">
             <div className="space-y-1">
@@ -303,6 +419,9 @@ export default function SavedPromptsDialog({
                     )}
                   >
                     <div className="truncate text-sm font-semibold text-foreground">{prompt.title}</div>
+                    <div className="mt-1 inline-flex rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                      {prompt.category}
+                    </div>
                     <div className="line-clamp-2 text-xs text-muted-foreground">{prompt.content}</div>
                   </button>
                 ))
@@ -317,6 +436,17 @@ export default function SavedPromptsDialog({
               placeholder="Prompt title"
               maxLength={120}
             />
+            <select
+              value={manageCategory}
+              onChange={(e) => setManageCategory(e.target.value as PromptCategory)}
+              className="mt-2 h-9 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            >
+              {categories.map((category) => (
+                <option key={category} value={category}>
+                  {category}
+                </option>
+              ))}
+            </select>
             <textarea
               value={manageContent}
               onChange={(e) => setManageContent(e.target.value)}

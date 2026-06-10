@@ -27,6 +27,7 @@ import {
   updateTaskSessionFilePath,
   updateTaskSessionId,
   updateTaskSessionMemorySaved,
+  markTaskMiniMaxHistoricalImageSessionReset,
   updateTaskStatus,
   updateTaskSummary,
 } from '../store/taskHistory';
@@ -38,6 +39,8 @@ import { preparePayloadForSend } from '../services/context/prepare-payload';
 import { normalizeOpenCodeUsage } from '../services/context/usage-normalize';
 import { appendSessionLogMessage } from '../services/context/session-log';
 import { addTurnLog, updateTurnUsage } from '../store/tokenUsage';
+import { getUsageBudgetStatus } from '../store/usageBudgets';
+import { getBlockingUsageProjectBudgetStatus } from '../services/usage-projects';
 import { generateTaskSummary } from '../services/summarizer';
 import {
   clearTaskFilePermissionPolicy,
@@ -56,6 +59,13 @@ import {
   executeMockTaskFlow,
   detectScenarioFromPrompt,
 } from '../test-utils/mock-task-flow';
+import { TaskActivityRuntime } from './task-activity';
+import { buildAssistantContentWithReasoning } from './task-message-reasoning';
+import { resolveSelectedModelForAgent } from '../services/agent-context';
+import {
+  getMiniMaxHistoricalImageSessionResetReason,
+  isMiniMaxHistoricalImageSessionResetReason,
+} from '../services/context/image-history-policy';
 
 const WARM_SESSION_WINDOW_MS = Number(process.env.OPENDESKMATE_WARM_SESSION_WINDOW_MS || 5 * 60 * 1000);
 const INCOGNITO_SESSION_LOG_TTL_MS = Number(process.env.OPENDESKMATE_INCOGNITO_SESSION_LOG_TTL_MS || 30 * 60 * 1000);
@@ -64,10 +74,35 @@ const IGNORED_TASK_TTL_MS = 30_000;
 
 const ephemeralSessionFiles = new Set<string>();
 
+function assertUsageBudgetAllowsRun(agentId?: string, usageProjectId?: string | null): void {
+  const blocking = getUsageBudgetStatus(agentId).find((status) => status.blocking);
+  if (blocking) {
+    const spent = blocking.spent == null ? 'unknown' : blocking.spent.toFixed(4);
+    const limit = blocking.limit == null ? 'none' : blocking.limit.toFixed(2);
+    const currency = blocking.currency ? ` ${blocking.currency}` : '';
+    throw new Error(
+      `Usage budget blocked this task for ${blocking.period}. Spent ${spent}${currency}; limit ${limit}${currency}. Change the budget mode in Settings > Usage estimate to continue.`
+    );
+  }
+
+  const projectBlocking = getBlockingUsageProjectBudgetStatus(usageProjectId);
+  if (!projectBlocking) return;
+  const spent = projectBlocking.spent == null ? 'unknown' : projectBlocking.spent.toFixed(4);
+  const moneyLimit = projectBlocking.moneyLimit == null ? 'none' : projectBlocking.moneyLimit.toFixed(2);
+  const currency = projectBlocking.currency ? ` ${projectBlocking.currency}` : '';
+  const tokenLimit = projectBlocking.tokenLimit == null ? 'none' : Math.round(projectBlocking.tokenLimit).toLocaleString();
+  throw new Error(
+    `Project usage budget blocked this task for "${projectBlocking.windowName}". Spent ${spent}${currency} / ${moneyLimit}${currency}; tokens ${projectBlocking.tokens.toLocaleString()} / ${tokenLimit}. Change the project budget mode in Project Management to continue.`
+  );
+}
+
 type TurnUsageAccumulator = {
   inputTokens: number;
+  inputHitTokens?: number;
+  inputMissTokens?: number;
   outputTokens: number;
   cachedInputTokens?: number;
+  costUsd?: number;
 };
 
 type MessageBatcher = {
@@ -98,6 +133,7 @@ const activeSkillRunByTaskId = new Map<
 >();
 
 const messageBatchers = new Map<string, MessageBatcher>();
+const activeActivityByTaskId = new Map<string, TaskActivityRuntime>();
 const ignoredTaskIds = new Set<string>();
 let desktopPermissionApiInitialized = false;
 let desktopNodeToolsApiInitialized = false;
@@ -184,7 +220,16 @@ export function formatDesktopPromptWithAttachments(prompt: string, attachmentMet
   return `${basePrompt}\n\n📎 Attached files:\n${fileLines.join('\n')}`;
 }
 
-export function maybeReuseDesktopWarmSession(taskId: string, sessionId: string | undefined, previousTask?: Task): string | undefined {
+export function maybeReuseDesktopWarmSession(
+  taskId: string,
+  sessionId: string | undefined,
+  previousTask: Task | undefined,
+  params?: {
+    agentId?: string;
+    prompt?: string;
+    currentAttachedFiles?: string[];
+  }
+): string | undefined {
   if (sessionId || !previousTask || previousTask.id === taskId || !previousTask.sessionId) {
     return sessionId;
   }
@@ -194,6 +239,23 @@ export function maybeReuseDesktopWarmSession(taskId: string, sessionId: string |
   }
   const completedAtMs = Date.parse(previousTask.completedAt || previousTask.createdAt || '');
   if (!Number.isFinite(completedAtMs) || (Date.now() - completedAtMs) > WARM_SESSION_WINDOW_MS) {
+    return sessionId;
+  }
+  const agentId = params?.agentId || previousTask.agentId;
+  const resetReason = getMiniMaxHistoricalImageSessionResetReason({
+    selectedModel: resolveSelectedModelForAgent(agentId),
+    prompt: params?.prompt || previousTask.prompt,
+    currentAttachedFiles: params?.currentAttachedFiles,
+    sessionId: previousTask.sessionId,
+    sessionFilePath: (previousTask as Task & { sessionFilePath?: string }).sessionFilePath,
+    task: previousTask as Task & { sessionFilePath?: string },
+  });
+  if (resetReason) {
+    console.log('[DesktopAgentEngine] Skipping warm MiniMax session reuse:', {
+      fromTaskId: previousTask.id,
+      sessionId: previousTask.sessionId,
+      reason: resetReason,
+    });
     return sessionId;
   }
   return previousTask.sessionId;
@@ -306,6 +368,7 @@ export function markDesktopTaskIgnored(taskId: string): void {
   ignoredTaskIds.add(taskId);
   activeTurnByTaskId.delete(taskId);
   activeSkillRunByTaskId.delete(taskId);
+  cleanupDesktopActivity(taskId);
   setTimeout(() => {
     ignoredTaskIds.delete(taskId);
   }, IGNORED_TASK_TTL_MS);
@@ -333,6 +396,7 @@ function createMessageBatcher(
 
       for (const msg of batcher.pendingMessages) {
         addTaskMessage(taskId, msg);
+        activeActivityByTaskId.get(taskId)?.recordTaskMessage(msg);
       }
 
       batcher.pendingMessages = [];
@@ -386,6 +450,12 @@ export function dropAndCleanupDesktopBatcher(taskId: string): void {
     batcher.timeout = null;
     messageBatchers.delete(taskId);
   }
+}
+
+function cleanupDesktopActivity(taskId: string): void {
+  const activity = activeActivityByTaskId.get(taskId);
+  activity?.dispose();
+  activeActivityByTaskId.delete(taskId);
 }
 
 function trackDesktopTaskSkillRun(taskId: string, params: { agentId?: string; skillIds?: string[] }): void {
@@ -451,12 +521,28 @@ function reconcileDesktopUsageFromOpenCodeMessage(taskId: string, message: OpenC
   if (typeof usage.cachedInputTokens === 'number') {
     active.acc.cachedInputTokens = (active.acc.cachedInputTokens ?? 0) + usage.cachedInputTokens;
   }
+  if (typeof usage.inputHitTokens === 'number') {
+    active.acc.inputHitTokens = (active.acc.inputHitTokens ?? 0) + usage.inputHitTokens;
+  }
+  if (typeof usage.inputMissTokens === 'number') {
+    active.acc.inputMissTokens = (active.acc.inputMissTokens ?? 0) + usage.inputMissTokens;
+  }
+  if (typeof usage.costUsd === 'number') {
+    active.acc.costUsd = (active.acc.costUsd ?? 0) + usage.costUsd;
+  }
+
+  const inputHitTokens = active.acc.inputHitTokens ?? active.acc.cachedInputTokens;
+  const inputMissTokens = active.acc.inputMissTokens ?? Math.max(0, active.acc.inputTokens - (inputHitTokens ?? 0));
+  const billableInputTokens = (inputHitTokens ?? 0) + inputMissTokens;
 
   updateTurnUsage(active.turnId, {
     inputTokens: active.acc.inputTokens,
     outputTokens: active.acc.outputTokens,
-    totalTokens: active.acc.inputTokens + active.acc.outputTokens,
+    totalTokens: billableInputTokens + active.acc.outputTokens,
     cachedInputTokens: active.acc.cachedInputTokens,
+    inputHitTokens,
+    inputMissTokens,
+    costUsd: active.acc.costUsd,
     estimated: false,
   });
 }
@@ -554,11 +640,12 @@ function extractAssistantFromToolOutput(toolName: string, toolOutput: string): s
 
 function toDesktopTaskMessage(message: OpenCodeMessage): TaskMessage | null {
   if (message.type === 'text') {
-    if (message.part.text) {
+    const content = buildAssistantContentWithReasoning(message, message.part.text);
+    if (content) {
       return {
         id: createDesktopMessageId(),
         type: 'assistant',
-        content: message.part.text,
+        content,
         timestamp: new Date().toISOString(),
       };
     }
@@ -635,11 +722,15 @@ function toDesktopTaskMessage(message: OpenCodeMessage): TaskMessage | null {
   const fallbackText = (message as { part?: { text?: unknown }; text?: unknown; content?: unknown }).part?.text
     ?? (message as { text?: unknown }).text
     ?? (message as { content?: unknown }).content;
-  if (typeof fallbackText === 'string' && fallbackText.trim()) {
+  const fallbackContent = buildAssistantContentWithReasoning(
+    message,
+    typeof fallbackText === 'string' ? fallbackText : undefined
+  );
+  if (fallbackContent) {
     return {
       id: createDesktopMessageId(),
       type: 'assistant',
-      content: fallbackText.trim(),
+      content: fallbackContent,
       timestamp: new Date().toISOString(),
     };
   }
@@ -657,11 +748,17 @@ function finalizeDesktopTurnUsage(taskId: string): {
   let inputTokens: number | undefined;
   let outputTokens: number | undefined;
   if (active.acc.inputTokens > 0 || active.acc.outputTokens > 0 || typeof active.acc.cachedInputTokens === 'number') {
+    const inputHitTokens = active.acc.inputHitTokens ?? active.acc.cachedInputTokens;
+    const inputMissTokens = active.acc.inputMissTokens ?? Math.max(0, active.acc.inputTokens - (inputHitTokens ?? 0));
+    const billableInputTokens = (inputHitTokens ?? 0) + inputMissTokens;
     updateTurnUsage(active.turnId, {
       inputTokens: active.acc.inputTokens,
       outputTokens: active.acc.outputTokens,
-      totalTokens: active.acc.inputTokens + active.acc.outputTokens,
+      totalTokens: billableInputTokens + active.acc.outputTokens,
       cachedInputTokens: active.acc.cachedInputTokens,
+      inputHitTokens,
+      inputMissTokens,
+      costUsd: active.acc.costUsd,
       estimated: false,
     });
     inputTokens = active.acc.inputTokens;
@@ -682,12 +779,19 @@ function finalizeDesktopTurnUsage(taskId: string): {
 
 function createDesktopTaskCallbacks(params: {
   taskId: string;
+  agentId?: string;
   taskManager: TaskManager;
   forwardToRenderer: (channel: string, data: unknown) => void;
   attachmentTempFile: string | null;
   clearPermissionsOnError?: boolean;
 }): TaskCallbacks {
-  const { taskId, taskManager, forwardToRenderer, attachmentTempFile, clearPermissionsOnError = true } = params;
+  const { taskId, agentId, taskManager, forwardToRenderer, attachmentTempFile, clearPermissionsOnError = true } = params;
+  const activity = new TaskActivityRuntime({
+    taskId,
+    agentId,
+    emit: (event) => forwardToRenderer('task:activity', event),
+  });
+  activeActivityByTaskId.set(taskId, activity);
 
   return {
     onMessage: (message: OpenCodeMessage) => {
@@ -700,6 +804,7 @@ function createDesktopTaskCallbacks(params: {
 
     onProgress: (progress: { stage: string; message?: string }) => {
       if (isDesktopTaskIgnored(taskId)) return;
+      activity.emitStarted(progress.message);
       forwardToRenderer('task:progress', {
         taskId,
         ...progress,
@@ -709,6 +814,12 @@ function createDesktopTaskCallbacks(params: {
     onPermissionRequest: (request: unknown) => {
       if (isDesktopTaskIgnored(taskId)) return;
       flushAndCleanupDesktopBatcher(taskId);
+      const permissionDetail = request && typeof request === 'object'
+        ? ((request as import('@accomplish/shared').PermissionRequest).toolName
+          || (request as import('@accomplish/shared').PermissionRequest).question
+          || 'Waiting for user response.')
+        : 'Waiting for user response.';
+      activity.recordPermissionRequested(permissionDetail);
       if (request && typeof request === 'object') {
         const permissionRequest = request as import('@accomplish/shared').PermissionRequest;
         if (permissionRequest.id && permissionRequest.taskId && permissionRequest.type) {
@@ -740,6 +851,7 @@ function createDesktopTaskCallbacks(params: {
 
             if (responseText) {
               void taskManager.sendResponse(taskId, responseText).then(() => {
+                activity.recordPermissionResolved('Permission policy resolved this request.');
                 const systemMessage: TaskMessage = {
                   id: createDesktopMessageId(),
                   type: 'system',
@@ -767,6 +879,7 @@ function createDesktopTaskCallbacks(params: {
     onComplete: (result: TaskResult) => {
       if (isDesktopTaskIgnored(taskId)) return;
       flushAndCleanupDesktopBatcher(taskId);
+      activity.recordCompletion(result);
       cleanupDesktopTempFile(attachmentTempFile);
       clearTaskFilePermissionPolicy(taskId);
 
@@ -800,11 +913,13 @@ function createDesktopTaskCallbacks(params: {
       if (sessionId) {
         updateTaskSessionId(taskId, sessionId);
       }
+      cleanupDesktopActivity(taskId);
     },
 
     onError: (error: Error) => {
       if (isDesktopTaskIgnored(taskId)) return;
       flushAndCleanupDesktopBatcher(taskId);
+      activity.recordError(error);
       cleanupDesktopTempFile(attachmentTempFile);
       if (clearPermissionsOnError) {
         clearTaskFilePermissionPolicy(taskId);
@@ -830,6 +945,7 @@ function createDesktopTaskCallbacks(params: {
       });
 
       updateTaskStatus(taskId, 'failed', new Date().toISOString());
+      cleanupDesktopActivity(taskId);
     },
 
     onDebug: (log: { type: string; message: string; data?: unknown }) => {
@@ -864,6 +980,7 @@ export async function startDesktopTaskFlow(params: {
   attachmentMeta: FileAttachmentMeta[];
   attachmentTempFile: string | null;
   attachmentContentForEstimate: string;
+  currentAttachedFiles?: string[];
   privacyMode: 'normal' | 'incognito';
   isIncognito: boolean;
 }): Promise<Task> {
@@ -877,6 +994,7 @@ export async function startDesktopTaskFlow(params: {
     attachmentMeta,
     attachmentTempFile,
     attachmentContentForEstimate,
+    currentAttachedFiles,
     privacyMode,
     isIncognito,
   } = params;
@@ -885,7 +1003,11 @@ export async function startDesktopTaskFlow(params: {
     ? initDesktopEphemeralSessionLog(taskId)
     : initSessionLog(validatedConfig.agentId, taskId);
   const previousTask = getLatestTask(validatedConfig.agentId);
-  validatedConfig.sessionId = maybeReuseDesktopWarmSession(taskId, validatedConfig.sessionId, previousTask);
+  validatedConfig.sessionId = maybeReuseDesktopWarmSession(taskId, validatedConfig.sessionId, previousTask, {
+    agentId: validatedConfig.agentId,
+    prompt: validatedConfig.prompt,
+    currentAttachedFiles,
+  });
   if (
     !isIncognito &&
     previousTask &&
@@ -950,6 +1072,7 @@ export async function startDesktopTaskFlow(params: {
     droppedMessages: prepared.droppedMessages,
     summaryInserted: prepared.summaryInserted,
     shouldResetSession: prepared.shouldResetSession,
+    usageProjectId: validatedConfig.usageProjectId,
     usage: {
       inputTokens: prepared.estimate.promptTokensEst,
       outputTokens: 0,
@@ -960,6 +1083,7 @@ export async function startDesktopTaskFlow(params: {
 
   const callbacks = createDesktopTaskCallbacks({
     taskId,
+    agentId: validatedConfig.agentId,
     taskManager,
     forwardToRenderer: createDesktopRendererForwarder(window, sender),
     attachmentTempFile,
@@ -971,10 +1095,12 @@ export async function startDesktopTaskFlow(params: {
   } catch (error) {
     activeTurnByTaskId.delete(taskId);
     activeSkillRunByTaskId.delete(taskId);
+    cleanupDesktopActivity(taskId);
     throw error;
   }
   task.agentId = validatedConfig.agentId;
   task.privacyMode = privacyMode;
+  task.usageProjectId = validatedConfig.usageProjectId;
   (task as Task & { sessionFilePath?: string }).sessionFilePath = sessionFilePath;
 
   const initialUserMessage: TaskMessage = {
@@ -1022,6 +1148,10 @@ export async function startDesktopTaskRequest(params: {
   const privacyMode = validatedConfig.privacyMode ?? 'normal';
   const isIncognito = privacyMode === 'incognito';
   const userVisiblePrompt = validatedConfig.prompt;
+  const currentAttachedFiles = Array.isArray(validatedConfig.attachedFiles)
+    ? [...validatedConfig.attachedFiles]
+    : undefined;
+  assertUsageBudgetAllowsRun(validatedConfig.agentId, validatedConfig.usageProjectId);
   const {
     attachmentMeta,
     attachmentTempFile,
@@ -1043,6 +1173,7 @@ export async function startDesktopTaskRequest(params: {
     attachmentMeta,
     attachmentTempFile,
     attachmentContentForEstimate,
+    currentAttachedFiles,
     privacyMode,
     isIncognito,
   });
@@ -1060,6 +1191,7 @@ export async function resumeDesktopSessionFlow(params: {
   attachmentMeta: FileAttachmentMeta[];
   attachmentTempFile: string | null;
   attachmentContentForEstimate: string;
+  currentAttachedFiles?: string[];
   effectivePrivacyMode: 'normal' | 'incognito';
 }): Promise<Task> {
   const {
@@ -1074,6 +1206,7 @@ export async function resumeDesktopSessionFlow(params: {
     attachmentMeta,
     attachmentTempFile,
     attachmentContentForEstimate,
+    currentAttachedFiles,
     effectivePrivacyMode,
   } = params;
 
@@ -1117,7 +1250,14 @@ export async function resumeDesktopSessionFlow(params: {
   });
   const sessionIntegrity = inspectOpenCodeSessionIntegrity(validatedSessionId);
   const sessionResetReason = sessionIntegrity.healthy
-    ? ''
+    ? (getMiniMaxHistoricalImageSessionResetReason({
+        selectedModel: resolveSelectedModelForAgent(resumeConfig.agentId),
+        prompt: resumeConfig.prompt,
+        currentAttachedFiles,
+        sessionId: validatedSessionId,
+        sessionFilePath,
+        task: existingTask,
+      }) || '')
     : buildOpenCodeSessionResetMessage(sessionIntegrity.issues);
   resumeConfig.systemPromptAppend = prepared.systemPromptAppend;
   trackDesktopTaskSkillRun(taskId, {
@@ -1152,6 +1292,7 @@ export async function resumeDesktopSessionFlow(params: {
     droppedMessages: prepared.droppedMessages,
     summaryInserted: prepared.summaryInserted,
     shouldResetSession: prepared.shouldResetSession,
+    usageProjectId: resumeConfig.usageProjectId,
     usage: {
       inputTokens: prepared.estimate.promptTokensEst,
       outputTokens: 0,
@@ -1168,6 +1309,7 @@ export async function resumeDesktopSessionFlow(params: {
 
   const callbacks = createDesktopTaskCallbacks({
     taskId,
+    agentId: resumeConfig.agentId,
     taskManager,
     forwardToRenderer: createDesktopRendererForwarder(window, sender),
     attachmentTempFile,
@@ -1180,25 +1322,31 @@ export async function resumeDesktopSessionFlow(params: {
   } catch (error) {
     activeTurnByTaskId.delete(taskId);
     activeSkillRunByTaskId.delete(taskId);
+    cleanupDesktopActivity(taskId);
     throw error;
   }
   task.agentId = resumeConfig.agentId;
   task.privacyMode = effectivePrivacyMode;
+  task.usageProjectId = resumeConfig.usageProjectId;
   (task as Task & { sessionFilePath?: string }).sessionFilePath = sessionFilePath;
   updateTaskSessionFilePath(taskId, sessionFilePath);
   if (sessionResetReason) {
-    const systemMessage: TaskMessage = {
-      id: createDesktopMessageId(),
-      type: 'system',
-      content: sessionResetReason,
-      timestamp: new Date().toISOString(),
-    };
-    addTaskMessage(taskId, systemMessage);
-    createDesktopRendererForwarder(window, sender)('task:update', {
-      taskId,
-      type: 'message',
-      message: systemMessage,
-    });
+    if (isMiniMaxHistoricalImageSessionResetReason(sessionResetReason)) {
+      markTaskMiniMaxHistoricalImageSessionReset(taskId, new Date().toISOString());
+    } else {
+      const systemMessage: TaskMessage = {
+        id: createDesktopMessageId(),
+        type: 'system',
+        content: sessionResetReason,
+        timestamp: new Date().toISOString(),
+      };
+      addTaskMessage(taskId, systemMessage);
+      createDesktopRendererForwarder(window, sender)('task:update', {
+        taskId,
+        type: 'message',
+        message: systemMessage,
+      });
+    }
   }
 
   if (validatedExistingTaskId) {
@@ -1216,6 +1364,7 @@ export async function resumeDesktopSessionRequest(params: {
   validatedExistingTaskId?: string;
   attachedFiles?: string[];
   privacyMode?: 'normal' | 'incognito';
+  usageProjectId?: string | null;
   applyAgentContext: (config: TaskConfig) => TaskConfig;
 }): Promise<Task> {
   const {
@@ -1226,6 +1375,7 @@ export async function resumeDesktopSessionRequest(params: {
     validatedExistingTaskId,
     attachedFiles,
     privacyMode,
+    usageProjectId,
     applyAgentContext,
   } = params;
   const taskManager = getTaskManager();
@@ -1249,7 +1399,9 @@ export async function resumeDesktopSessionRequest(params: {
     agentId: existingTask?.agentId,
     attachedFiles: runtimeAttachedFiles,
     privacyMode: effectivePrivacyMode,
+    usageProjectId: usageProjectId ?? existingTask?.usageProjectId ?? null,
   });
+  assertUsageBudgetAllowsRun(resumeConfig.agentId, resumeConfig.usageProjectId);
 
   return resumeDesktopSessionFlow({
     taskManager,
@@ -1263,6 +1415,7 @@ export async function resumeDesktopSessionRequest(params: {
     attachmentMeta,
     attachmentTempFile,
     attachmentContentForEstimate,
+    currentAttachedFiles: Array.isArray(attachedFiles) ? [...attachedFiles] : undefined,
     effectivePrivacyMode,
   });
 }

@@ -27,3 +27,16 @@ export interface ScheduledTask extends ScheduleConfig {
   lastRunAt?: string;
   nextRunAt?: string;
 }
+
+export interface AutomationDraftRequest {
+  text: string;
+  agentId?: string;
+  timezone?: string;
+}
+
+export interface AutomationDraftResult {
+  schedule: ScheduleConfig;
+  confidence: number;
+  warnings: string[];
+  source?: 'local' | 'ai' | 'fallback';
+}

@@ -242,7 +242,8 @@ export default function HomePage() {
     prompt: string,
     workingFolder?: string,
     attachedFiles?: string[],
-    mode: 'normal' | 'incognito' = privacyMode
+    mode: 'normal' | 'incognito' = privacyMode,
+    usageProjectId?: string | null
   ) => {
     if (!prompt.trim() || isLoading) return;
 
@@ -253,6 +254,7 @@ export default function HomePage() {
       workingDirectory: workingFolder,
       attachedFiles: attachedFiles && attachedFiles.length > 0 ? attachedFiles : undefined,
       privacyMode: mode,
+      usageProjectId: usageProjectId ?? null,
     });
     if (task) {
       setPendingTaskId(task.id);
@@ -289,7 +291,8 @@ export default function HomePage() {
     prompt: string,
     workingFolder?: string,
     attachedFiles?: string[],
-    mode: 'normal' | 'incognito' = privacyMode
+    mode: 'normal' | 'incognito' = privacyMode,
+    usageProjectId?: string | null
   ) => {
     if (!prompt.trim() || isLoading) return false;
     setSubmitError(null);
@@ -312,7 +315,7 @@ export default function HomePage() {
       return false;
     }
 
-    await executeTask(prompt, workingFolder, attachedFiles, mode);
+    await executeTask(prompt, workingFolder, attachedFiles, mode, usageProjectId);
     return true;
   }, [isLoading, accomplish, executeTask, privacyMode]);
 

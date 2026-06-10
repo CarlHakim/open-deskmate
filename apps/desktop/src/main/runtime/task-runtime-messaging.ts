@@ -1,6 +1,7 @@
 import { BrowserWindow } from 'electron';
 import type { OpenCodeMessage, TaskMessage } from '@accomplish/shared';
 import { addTaskMessage } from '../store/taskHistory';
+import { buildAssistantContentWithReasoning } from './task-message-reasoning';
 
 export function createMessageId(): string {
   return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
@@ -99,11 +100,12 @@ function extractAssistantFromToolOutput(toolName: string, toolOutput: string): s
 
 export function toTaskMessage(message: OpenCodeMessage): TaskMessage | null {
   if (message.type === 'text') {
-    if (message.part.text) {
+    const content = buildAssistantContentWithReasoning(message, message.part.text);
+    if (content) {
       return {
         id: createMessageId(),
         type: 'assistant',
-        content: message.part.text,
+        content,
         timestamp: new Date().toISOString(),
       };
     }
@@ -180,11 +182,15 @@ export function toTaskMessage(message: OpenCodeMessage): TaskMessage | null {
   const fallbackText = (message as { part?: { text?: unknown }; text?: unknown; content?: unknown }).part?.text
     ?? (message as { text?: unknown }).text
     ?? (message as { content?: unknown }).content;
-  if (typeof fallbackText === 'string' && fallbackText.trim()) {
+  const fallbackContent = buildAssistantContentWithReasoning(
+    message,
+    typeof fallbackText === 'string' ? fallbackText : undefined
+  );
+  if (fallbackContent) {
     return {
       id: createMessageId(),
       type: 'assistant',
-      content: fallbackText.trim(),
+      content: fallbackContent,
       timestamp: new Date().toISOString(),
     };
   }

@@ -9,6 +9,30 @@ OpenDeskmate plugins extend the app through a controlled manifest boundary. Plug
 
 Plugins do **not** run arbitrary code directly through the app runtime. Commands, hooks, tools, and help docs are validated, registered, and exposed through app-owned boundaries.
 
+## When To Use It
+
+Use plugins when you want to package reusable commands, runtime hooks, controlled tool aliases, or help pages without modifying the core app.
+
+## Quick Steps
+
+1. Open **Settings > Plugins**.
+2. Open the managed plugins root.
+3. Create one folder per plugin.
+4. Add a valid `plugin.json`.
+5. Add any referenced help docs.
+6. Refresh plugins in Settings.
+7. Review diagnostics and previews.
+8. Enable the plugin when it is valid.
+
+## Step-By-Step: Add A Help Page From A Plugin
+
+1. Create a plugin folder under the managed plugins root.
+2. Add `plugin.json`.
+3. Add a markdown file inside the plugin, such as `docs/getting-started.md`.
+4. Add a `contributes.helpDocs` entry pointing to that file.
+5. Refresh plugins in **Settings > Plugins**.
+6. Open Help and confirm the contributed page appears.
+
 ## Where Plugins Live
 
 - **Bundled plugins**
@@ -210,6 +234,13 @@ The **Plugins** settings section shows:
 - registration activity history
 
 If a contribution is invalid, the plugin can still load in a warning state, but the invalid entry will be reported and ignored.
+
+## Troubleshooting
+
+- If a plugin does not appear, confirm it has its own folder and `plugin.json`.
+- If a command is ignored, check diagnostics for unsupported actions or invalid visibility.
+- If a help page is missing, confirm the contributed file path is relative to the plugin folder.
+- If a plugin is blocked, fix the validation errors shown in **Settings > Plugins** and refresh.
 
 ## Related Pages
 

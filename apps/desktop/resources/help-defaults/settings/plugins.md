@@ -2,6 +2,29 @@
 
 Use **Settings -> Plugins** to manage bundled and user-installed plugins.
 
+## When To Use It
+
+Use this section when you want to enable, disable, inspect, install, uninstall, or troubleshoot plugins.
+
+## Quick Steps
+
+1. Open **Settings > Plugins**.
+2. Review plugin state badges.
+3. Open previews or diagnostics for any plugin you do not recognize.
+4. Enable or disable plugins as needed.
+5. Use **Open managed root** to add user-installed plugins.
+6. Refresh after adding or changing plugin files.
+
+## Step-By-Step: Install A Managed Plugin
+
+1. Open the managed root folder.
+2. Copy or create the plugin folder inside it.
+3. Confirm the folder contains `plugin.json`.
+4. Return to **Settings > Plugins**.
+5. Click refresh.
+6. Review validation, previews, and diagnostics.
+7. Enable the plugin.
+
 ## What You Can Do Here
 
 - view discovered plugins from bundled and managed roots
@@ -60,3 +83,10 @@ The **Registration activity** panel keeps recent lifecycle events such as:
 For plugin manifest structure and sample files, see:
 
 - [Plugins](../plugins.md)
+
+## Troubleshooting
+
+- If a plugin is invalid, open diagnostics and fix the manifest errors.
+- If a plugin is incompatible, check its minimum app version.
+- If a command or help page is missing, inspect contribution previews.
+- If uninstall is unavailable, confirm the plugin is managed rather than bundled.

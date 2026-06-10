@@ -44,23 +44,17 @@ export function getOpenCodeCliPath(): { command: string; args: string[] } {
       }
     }
 
-    // In packaged app, OpenCode is in unpacked asar
-    // process.resourcesPath points to Resources folder in macOS app bundle
-    const cliPath = path.join(
-      process.resourcesPath,
-      'app.asar.unpacked',
-      'node_modules',
-      'opencode-ai',
-      'bin',
-      'opencode'
-    );
+    // In packaged app, OpenCode is in unpacked asar.
+    // Newer opencode-ai releases copy the native executable to bin/opencode.exe
+    // on every platform, while older releases used bin/opencode.
+    const cliPath = findBundledOpenCodePackageBin();
 
     // Verify the file exists
-    if (!fs.existsSync(cliPath)) {
-      throw new Error(`OpenCode CLI not found at: ${cliPath}`);
+    if (!cliPath) {
+      throw new Error('OpenCode CLI not found in bundled opencode-ai package');
     }
 
-    if (process.platform === 'win32') {
+    if (process.platform === 'win32' && path.basename(cliPath).toLowerCase() !== 'opencode.exe') {
       return { command: getNodePath(), args: [cliPath] };
     }
 
@@ -97,19 +91,24 @@ export function getOpenCodeCliPath(): { command: string; args: string[] } {
     // Windows dev: prefer the native opencode.exe shipped via pnpm optional deps.
     // This avoids opencode.cmd (cmd.exe shim) and is the most reliable way to get NDJSON output.
     if (process.platform === 'win32') {
+      const packageBin = findDevOpenCodePackageBin();
+      if (packageBin && path.basename(packageBin).toLowerCase() === 'opencode.exe') {
+        console.log('[CLI Path] Using opencode-ai package exe (dev):', packageBin);
+        return { command: packageBin, args: [] };
+      }
+
       const winExe = findDevWindowsOpenCodeExe();
       if (winExe) {
         console.log('[CLI Path] Using Windows bundled OpenCode exe (dev):', winExe);
         return { command: winExe, args: [] };
       }
 
-      // Fallback (dev): run the JS entrypoint with Node directly instead of opencode.cmd.
-      // Some environments may not have the optional exe installed.
-      const jsEntrypoint = path.join(app.getAppPath(), 'node_modules', 'opencode-ai', 'bin', 'opencode');
-      if (fs.existsSync(jsEntrypoint)) {
+      // Fallback (dev): use the opencode-ai package bin directly.
+      // Newer versions expose a native opencode.exe; older versions expose a JS entrypoint.
+      if (packageBin) {
         const nodePath = getNodePath();
-        console.warn('[CLI Path] Windows opencode.exe not found; falling back to node + JS entrypoint:', jsEntrypoint);
-        return { command: nodePath, args: [jsEntrypoint] };
+        console.warn('[CLI Path] Windows opencode.exe not found; falling back to node + JS entrypoint:', packageBin);
+        return { command: nodePath, args: [packageBin] };
       }
     }
 
@@ -155,16 +154,7 @@ export function isOpenCodeBundled(): boolean {
         }
       }
 
-      // In packaged mode, check if opencode exists
-      const cliPath = path.join(
-        process.resourcesPath,
-        'app.asar.unpacked',
-        'node_modules',
-        'opencode-ai',
-        'bin',
-        'opencode'
-      );
-      return fs.existsSync(cliPath);
+      return Boolean(findBundledOpenCodePackageBin());
     } else {
       // In dev mode, actually verify the CLI exists
 
@@ -189,6 +179,10 @@ export function isOpenCodeBundled(): boolean {
       }
 
       if (process.platform === 'win32') {
+        if (findDevOpenCodePackageBin()) {
+          return true;
+        }
+
         const winExe = findDevWindowsOpenCodeExe();
         if (winExe) {
           return true;
@@ -268,7 +262,53 @@ export function getBundledOpenCodeVersion(): string | null {
   }
 }
 
+function findBundledOpenCodePackageBin(): string | null {
+  const binDir = path.join(
+    process.resourcesPath,
+    'app.asar.unpacked',
+    'node_modules',
+    'opencode-ai',
+    'bin'
+  );
+  const names = process.platform === 'win32'
+    ? ['opencode.exe', 'opencode']
+    : ['opencode', 'opencode.exe'];
+  for (const name of names) {
+    const candidate = path.join(binDir, name);
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function findDevOpenCodePackageBin(): string | null {
+  const binDir = path.join(app.getAppPath(), 'node_modules', 'opencode-ai', 'bin');
+  const names = process.platform === 'win32'
+    ? ['opencode.exe', 'opencode']
+    : ['opencode', 'opencode.exe'];
+  for (const name of names) {
+    const candidate = path.join(binDir, name);
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
 function findBundledWindowsOpenCodeExe(): string | null {
+  const packageExe = path.join(
+    process.resourcesPath,
+    'app.asar.unpacked',
+    'node_modules',
+    'opencode-ai',
+    'bin',
+    'opencode.exe'
+  );
+  if (fs.existsSync(packageExe)) {
+    return packageExe;
+  }
+
   const unpackedModules = path.join(
     process.resourcesPath,
     'app.asar.unpacked',

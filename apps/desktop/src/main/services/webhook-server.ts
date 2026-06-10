@@ -1752,7 +1752,7 @@ function renderWebchatPage(): string {
       .usage-cost { font-size: 12px; color: var(--muted-foreground); white-space: nowrap; }
       .usage-subtitle { margin-top: 1px; font-size: 11px; color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .usage-details-link { font-size: 12px; color: var(--muted-foreground); flex-shrink: 0; }
-      .usage-details-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+      .usage-details-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
       .usage-details-label { font-size: 11px; color: var(--muted-foreground); }
       .usage-details-value { font-size: 13px; font-weight: 600; color: var(--foreground); margin-top: 2px; }
       .usage-provider-list { display: flex; flex-direction: column; gap: 8px; }
@@ -4322,7 +4322,8 @@ function renderWebchatPage(): string {
         var overview = ''
           + '<div class="rounded-lg border border-border bg-card p-4">'
           + '<div class="usage-details-grid">'
-          + '<div><div class="usage-details-label">Input</div><div class="usage-details-value">' + usageFormatInt(summary.inputTokens) + '</div></div>'
+          + '<div><div class="usage-details-label">Input hit</div><div class="usage-details-value">' + usageFormatInt(summary.inputHitTokens || 0) + '</div></div>'
+          + '<div><div class="usage-details-label">Input miss</div><div class="usage-details-value">' + usageFormatInt(summary.inputMissTokens == null ? summary.inputTokens : summary.inputMissTokens) + '</div></div>'
           + '<div><div class="usage-details-label">Output</div><div class="usage-details-value">' + usageFormatInt(summary.outputTokens) + '</div></div>'
           + '<div><div class="usage-details-label">Total</div><div class="usage-details-value">' + usageFormatInt(summary.totalTokens) + '</div></div>'
           + '</div>'
@@ -4348,8 +4349,10 @@ function renderWebchatPage(): string {
           providerHtml = '<div style="font-size:13px;color:var(--muted-foreground);">No events in this period.</div>';
         } else {
           providerHtml = rows.map(function(row) {
-            var totalTokens = usageFormatInt(row.totalTokens);
-            var meta = totalTokens + ' tokens' + (row.unpricedEvents > 0 ? (' • ' + usageFormatInt(row.unpricedEvents) + ' unpriced') : '');
+            var inputHit = usageFormatInt(row.inputHitTokens || 0);
+            var inputMiss = usageFormatInt(row.inputMissTokens == null ? row.inputTokens : row.inputMissTokens);
+            var output = usageFormatInt(row.outputTokens || 0);
+            var meta = inputHit + ' hit input • ' + inputMiss + ' miss input • ' + output + ' output' + (row.unpricedEvents > 0 ? (' • ' + usageFormatInt(row.unpricedEvents) + ' unpriced') : '');
             var costHtml = (summary.currency && row.cost != null)
               ? '<div class="usage-provider-cost">' + usageFormatMoney(row.cost, summary.currency) + '</div>'
               : '<div class="usage-provider-cost unpriced">' + (row.totalTokens > 0 ? 'Unpriced' : '—') + '</div>';
@@ -9146,6 +9149,7 @@ export function startWebhookServer(): http.Server {
         const id = String(body.id ?? '').trim();
         const title = String(body.title ?? '').trim();
         const content = String(body.content ?? '').trim();
+        const category = String(body.category ?? '').trim();
         const createdAt = String(body.createdAt ?? '').trim();
         const updatedAt = String(body.updatedAt ?? '').trim();
         if (!title || !content) {
@@ -9156,6 +9160,7 @@ export function startWebhookServer(): http.Server {
           id: id || undefined,
           title,
           content,
+          category: category || undefined,
           createdAt: createdAt || undefined,
           updatedAt: updatedAt || undefined,
         });

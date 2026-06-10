@@ -8,6 +8,7 @@ export const taskConfigSchema = z.object({
   systemPromptAppend: z.string().optional(),
   outputSchema: z.record(z.any()).optional(),
   sessionId: z.string().optional(),
+  usageProjectId: z.string().nullable().optional(),
   privacyMode: z.enum(['normal', 'incognito']).optional(),
   chrome: z.boolean().optional(),
 });
@@ -24,6 +25,7 @@ export const resumeSessionSchema = z.object({
   sessionId: z.string().min(1, 'Session ID is required'),
   prompt: z.string().min(1, 'Prompt is required'),
   existingTaskId: z.string().optional(),
+  usageProjectId: z.string().nullable().optional(),
   privacyMode: z.enum(['normal', 'incognito']).optional(),
   chrome: z.boolean().optional(),
 });

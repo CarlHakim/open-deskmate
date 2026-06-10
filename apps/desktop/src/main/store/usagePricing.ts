@@ -16,12 +16,25 @@ const pricingStore = new Store<UsagePricingSchema>({
   },
 });
 
-export function getUsagePricingSettings(): UsagePricingSettings {
-  const providers = (pricingStore.get('providers') ?? []).map((row) => ({
+function numberOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function normalizePricingRow(row: ProviderPricingRow): ProviderPricingRow {
+  const legacyInputCost = numberOrNull(row.inputCostPer1m);
+  const inputMissCostPer1m = numberOrNull(row.inputMissCostPer1m) ?? legacyInputCost;
+  return {
     ...row,
     model: row.model ?? null,
+    inputHitCostPer1m: numberOrNull(row.inputHitCostPer1m),
+    inputMissCostPer1m,
+    outputCostPer1m: numberOrNull(row.outputCostPer1m),
     effectiveFrom: row.effectiveFrom ?? null,
-  }));
+  };
+}
+
+export function getUsagePricingSettings(): UsagePricingSettings {
+  const providers = (pricingStore.get('providers') ?? []).map(normalizePricingRow);
   return {
     currency: pricingStore.get('currency') ?? 'USD',
     updatedAt: pricingStore.get('updatedAt') ?? new Date(0).toISOString(),
@@ -32,7 +45,7 @@ export function getUsagePricingSettings(): UsagePricingSettings {
 export function setUsagePricingSettings(settings: UsagePricingSettings): void {
   pricingStore.set('currency', settings.currency);
   pricingStore.set('updatedAt', settings.updatedAt);
-  pricingStore.set('providers', settings.providers);
+  pricingStore.set('providers', settings.providers.map(normalizePricingRow));
 }
 
 export function upsertProviderPricing(row: ProviderPricingRow): void {
@@ -42,7 +55,7 @@ export function upsertProviderPricing(row: ProviderPricingRow): void {
     (p.model ?? null) === (row.model ?? null) &&
     (p.effectiveFrom ?? null) === (row.effectiveFrom ?? null)
   ));
-  next.push(row);
+  next.push(normalizePricingRow(row));
   pricingStore.set('providers', next);
   pricingStore.set('updatedAt', new Date().toISOString());
 }

@@ -12,6 +12,7 @@ import {
   cloneElement,
   type ReactNode,
   type ReactElement,
+  type RefObject,
 } from 'react';
 import { getAccomplish } from '@/lib/accomplish';
 import { analytics } from '@/lib/analytics';
@@ -86,6 +87,7 @@ import type {
   SelectedModel,
   ScheduledTask,
   ScheduleConfig,
+  AutomationDraftResult,
   AgentProfile,
   AppConnectorExtensionState,
   AppConnectorRuntimeStatus,
@@ -111,16 +113,20 @@ import type {
   GatewaySessionRecord,
   UsagePricingSettings,
   UsagePricingAutofillResult,
+  UsageBudgetSettings,
+  UsageBudgetStatus,
   UserSkillAssistantAskResponse,
 } from '@accomplish/shared';
 import { DEFAULT_PROVIDERS } from '@accomplish/shared';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { notifyPluginCommandsChanged } from '@/hooks/usePluginSlashCommands';
 import appIcon from '../../../../resources/icon.png';
 import { useAgentStore } from '@/stores/agentStore';
 import { useAttachmentStore } from '@/stores/attachmentStore';
 import AgentAvatarPicker, { AgentAvatarIcon } from './AgentAvatarPicker';
+import PromptLibrarySettingsPanel from './PromptLibrarySettingsPanel';
 import {
   AGENT_FALLBACK_MODEL,
   API_KEY_PROVIDER_LABEL_OVERRIDES,
@@ -259,13 +265,11 @@ function isRendererHardReadOnlyPolicy(
   );
 }
 
-function getListedToolDecision(
+function getListedToolDecisionFromSets(
   toolName: string,
-  allowedToolNamesText: string,
-  blockedToolNamesText: string
+  allowed: Set<string>,
+  blocked: Set<string>
 ): ListedToolDecision {
-  const allowed = new Set(parseAllowlist(allowedToolNamesText));
-  const blocked = new Set(parseAllowlist(blockedToolNamesText));
   if (blocked.has(toolName)) return 'deny';
   if (allowed.has(toolName)) return 'allow';
   return 'default';
@@ -720,6 +724,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const [modelLimitsOpen, setModelLimitsOpen] = useState(false);
   const [modelLimitsEdits, setModelLimitsEdits] = useState<Record<string, string>>({});
   const [modelLimitsSaving, setModelLimitsSaving] = useState<Record<string, boolean>>({});
+  const modelLimitsEditInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const [savedModelLimitsSnapshot, setSavedModelLimitsSnapshot] = useState(() => createModelLimitsSnapshot({}));
   const [activeTab, setActiveTab] = useState<'cloud' | 'local'>('cloud');
   const [ollamaUrl, setOllamaUrl] = useState('http://localhost:11434');
@@ -754,6 +759,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const [installingUserSkillDep, setInstallingUserSkillDep] = useState<{ skillId: string; installId: string } | null>(null);
   const [configuringUserSkill, setConfiguringUserSkill] = useState<UserSkillDependencyStatusEntry | null>(null);
   const [configuringUserSkillJson, setConfiguringUserSkillJson] = useState('');
+  const configuringUserSkillJsonRef = useRef<HTMLTextAreaElement | null>(null);
   const [configuringUserSkillError, setConfiguringUserSkillError] = useState<string | null>(null);
   const [savingUserSkillConfig, setSavingUserSkillConfig] = useState(false);
   const [skillAssistantOpen, setSkillAssistantOpen] = useState(false);
@@ -769,6 +775,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const [skillAssistantModelProvider, setSkillAssistantModelProvider] = useState<ProviderType>('anthropic');
   const [skillAssistantModelId, setSkillAssistantModelId] = useState(AGENT_FALLBACK_MODEL.model);
   const [skillAssistantModelBaseUrl, setSkillAssistantModelBaseUrl] = useState('');
+  const skillAssistantModelIdInputRef = useRef<HTMLInputElement | null>(null);
+  const skillAssistantModelBaseUrlInputRef = useRef<HTMLInputElement | null>(null);
   const [skillAssistantModelSaving, setSkillAssistantModelSaving] = useState(false);
   const [skillAssistantModelError, setSkillAssistantModelError] = useState<string | null>(null);
   const [skillAssistantModelStatus, setSkillAssistantModelStatus] = useState<string | null>(null);
@@ -787,6 +795,10 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const [newUserSkillDesc, setNewUserSkillDesc] = useState('');
   const [editingUserSkill, setEditingUserSkill] = useState<UserSkillEntry | null>(null);
   const [editingUserSkillContent, setEditingUserSkillContent] = useState('');
+  const newUserSkillIdInputRef = useRef<HTMLInputElement | null>(null);
+  const newUserSkillNameInputRef = useRef<HTMLInputElement | null>(null);
+  const newUserSkillDescInputRef = useRef<HTMLInputElement | null>(null);
+  const editingUserSkillContentRef = useRef<HTMLTextAreaElement | null>(null);
   const [savingUserSkill, setSavingUserSkill] = useState(false);
   const [sharingUserSkill, setSharingUserSkill] = useState<UserSkillEntry | null>(null);
   const [shareUserSkillScope, setShareUserSkillScope] = useState<'private' | 'selected' | 'all'>('private');
@@ -803,6 +815,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const [importZipCandidates, setImportZipCandidates] = useState<UserSkillZipCandidate[]>([]);
   const [importZipSelected, setImportZipSelected] = useState<UserSkillZipCandidate | null>(null);
   const [importZipDestId, setImportZipDestId] = useState('');
+  const importZipUrlInputRef = useRef<HTMLInputElement | null>(null);
+  const importZipDestIdInputRef = useRef<HTMLInputElement | null>(null);
   const [importZipOverwrite, setImportZipOverwrite] = useState(false);
   const [importZipError, setImportZipError] = useState<string | null>(null);
   const [installingSkill, setInstallingSkill] = useState<string | null>(null);
@@ -821,10 +835,12 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const [startupSaving, setStartupSaving] = useState(false);
   const [browserProfile, setBrowserProfileState] = useState('default');
   const [browserProfileSaving, setBrowserProfileSaving] = useState(false);
+  const browserProfileInputRef = useRef<HTMLInputElement | null>(null);
   const [workspaceRoot, setWorkspaceRootState] = useState<string | null>(null);
   const [workspaceSaving, setWorkspaceSaving] = useState(false);
   const [runtimeHooksPath, setRuntimeHooksPath] = useState('');
   const [runtimeHooksText, setRuntimeHooksText] = useState('{\n  "hooks": []\n}\n');
+  const deferredRuntimeHooksText = useDeferredValue(runtimeHooksText);
   const [runtimeHooksHookCount, setRuntimeHooksHookCount] = useState(0);
   const [runtimeHooksLoading, setRuntimeHooksLoading] = useState(false);
   const [runtimeHooksSaving, setRuntimeHooksSaving] = useState(false);
@@ -832,6 +848,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const [runtimeHooksStatus, setRuntimeHooksStatus] = useState<string | null>(null);
   const [runtimeHookDiagnosticsLoading, setRuntimeHookDiagnosticsLoading] = useState(false);
   const [runtimeHookDiagnosticsQuery, setRuntimeHookDiagnosticsQuery] = useState('');
+  const deferredRuntimeHookDiagnosticsQuery = useDeferredValue(runtimeHookDiagnosticsQuery);
   const [runtimeHookDiagnosticsFilter, setRuntimeHookDiagnosticsFilter] = useState<'all' | 'blocked' | 'matched'>('all');
   const [runtimeHookDiagnostics, setRuntimeHookDiagnostics] = useState<Array<{
     id: string;
@@ -879,6 +896,10 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     blockedToolNamesText: '',
     auditMaxEntries: '200',
   }));
+  const permissionPolicyAllowedToolNamesRef = useRef<HTMLTextAreaElement | null>(null);
+  const permissionPolicyBlockedToolNamesRef = useRef<HTMLTextAreaElement | null>(null);
+  const permissionPolicyAuditMaxEntriesRef = useRef<HTMLInputElement | null>(null);
+  const deferredPermissionPolicyAuditQuery = useDeferredValue(permissionPolicyAuditQuery);
   const [memoryLongTerm, setMemoryLongTerm] = useState('');
   const [memoryDaily, setMemoryDaily] = useState('');
   const [memoryDailyDate, setMemoryDailyDate] = useState('');
@@ -900,6 +921,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const [agentModelProvider, setAgentModelProvider] = useState<ProviderType>('anthropic');
   const [agentModelId, setAgentModelId] = useState(AGENT_FALLBACK_MODEL.model);
   const [agentModelBaseUrl, setAgentModelBaseUrl] = useState('');
+  const agentModelIdInputRef = useRef<HTMLInputElement | null>(null);
+  const agentModelBaseUrlInputRef = useRef<HTMLInputElement | null>(null);
   const [agentLoopEnabled, setAgentLoopEnabled] = useState(false);
   const [agentLoopMaxIterations, setAgentLoopMaxIterations] = useState(String(AGENT_LOOP_DEFAULT_MAX_ITERATIONS));
   const [agentLoopTimeoutSeconds, setAgentLoopTimeoutSeconds] = useState(String(AGENT_LOOP_DEFAULT_TIMEOUT_SECONDS));
@@ -925,6 +948,12 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const [agentSubagentDefaultModelProvider, setAgentSubagentDefaultModelProvider] = useState<ProviderType>('anthropic');
   const [agentSubagentDefaultModelId, setAgentSubagentDefaultModelId] = useState(AGENT_FALLBACK_MODEL.model);
   const [agentSubagentDefaultModelBaseUrl, setAgentSubagentDefaultModelBaseUrl] = useState('');
+  const agentSubagentMaxChildrenInputRef = useRef<HTMLInputElement | null>(null);
+  const agentSubagentMaxDepthInputRef = useRef<HTMLInputElement | null>(null);
+  const agentSubagentAllowedAgentIdsInputRef = useRef<HTMLInputElement | null>(null);
+  const agentSubagentRunTimeoutSecondsInputRef = useRef<HTMLInputElement | null>(null);
+  const agentSubagentDefaultModelIdInputRef = useRef<HTMLInputElement | null>(null);
+  const agentSubagentDefaultModelBaseUrlInputRef = useRef<HTMLInputElement | null>(null);
   const [agentSubagentInheritWorkingDirectory, setAgentSubagentInheritWorkingDirectory] = useState(true);
   const [agentSubagentInheritAttachedFiles, setAgentSubagentInheritAttachedFiles] = useState(true);
   const [agentSubagentInheritPrivacyMode, setAgentSubagentInheritPrivacyMode] = useState(true);
@@ -946,6 +975,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     allowedToolNamesText: '',
     blockedToolNamesText: '',
   }));
+  const agentPermissionAllowedToolNamesRef = useRef<HTMLTextAreaElement | null>(null);
+  const agentPermissionBlockedToolNamesRef = useRef<HTMLTextAreaElement | null>(null);
   const [showHeartbeatAutomationModeDialog, setShowHeartbeatAutomationModeDialog] = useState(false);
   const [agentSaving, setAgentSaving] = useState(false);
   const [agentError, setAgentError] = useState<string | null>(null);
@@ -985,7 +1016,19 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const [scheduleWorkingDirectory, setScheduleWorkingDirectory] = useState('');
   const [scheduleReuseSession, setScheduleReuseSession] = useState(false);
   const [scheduleSessionId, setScheduleSessionId] = useState('');
+  const [editingScheduleId, setEditingScheduleId] = useState<string | null>(null);
   const [savingSchedule, setSavingSchedule] = useState(false);
+  const [automationDraftText, setAutomationDraftText] = useState('');
+  const [automationDraftResult, setAutomationDraftResult] = useState<AutomationDraftResult | null>(null);
+  const [automationDraftLoading, setAutomationDraftLoading] = useState(false);
+  const [automationDraftSaving, setAutomationDraftSaving] = useState(false);
+  const automationDraftTextRef = useRef<HTMLTextAreaElement | null>(null);
+  const scheduleNameInputRef = useRef<HTMLInputElement | null>(null);
+  const scheduleCronInputRef = useRef<HTMLInputElement | null>(null);
+  const scheduleWorkingDirectoryInputRef = useRef<HTMLInputElement | null>(null);
+  const scheduleTimezoneInputRef = useRef<HTMLInputElement | null>(null);
+  const scheduleSessionIdInputRef = useRef<HTMLInputElement | null>(null);
+  const schedulePromptInputRef = useRef<HTMLTextAreaElement | null>(null);
 
   // API usage estimate: pricing
   const [usagePricing, setUsagePricing] = useState<UsagePricingSettings | null>(null);
@@ -999,6 +1042,10 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const [usageAutofillResult, setUsageAutofillResult] = useState<UsagePricingAutofillResult | null>(null);
   const [usageAutofillOverwrite, setUsageAutofillOverwrite] = useState(false);
   const [usageAutofillTargets, setUsageAutofillTargets] = useState<Set<string>>(new Set());
+  const [usageBudgets, setUsageBudgets] = useState<UsageBudgetSettings | null>(null);
+  const [usageBudgetStatuses, setUsageBudgetStatuses] = useState<UsageBudgetStatus[]>([]);
+  const [usageBudgetSaving, setUsageBudgetSaving] = useState(false);
+  const usageBudgetAmountInputRef = useRef<HTMLInputElement | null>(null);
   const [expandedSettingsSections, setExpandedSettingsSections] = useState<Record<string, boolean>>(() => {
     if (typeof window === 'undefined') return {};
     try {
@@ -1015,6 +1062,10 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   });
   const [settingsSectionQuery, setSettingsSectionQuery] = useState('');
   const [settingsSectionJumpTarget, setSettingsSectionJumpTarget] = useState('');
+  const [settingsMode, setSettingsMode] = useState<'basic' | 'advanced'>(() => {
+    if (typeof window === 'undefined') return 'basic';
+    return window.localStorage.getItem('opendeskmate-settings-mode') === 'advanced' ? 'advanced' : 'basic';
+  });
   const deferredSettingsSectionQuery = useDeferredValue(settingsSectionQuery);
 
   useEffect(() => {
@@ -1022,6 +1073,10 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setSettingsSectionQuery(initialSectionQuery || '');
     setSettingsSectionJumpTarget('');
   }, [initialSectionQuery, open]);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem('opendeskmate-settings-mode', settingsMode);
+  }, [settingsMode]);
   const settingsSectionRefs = useRef<Record<string, HTMLElement | null>>({});
 
   const [discordStatus, setDiscordStatus] = useState<DiscordConnectorStatus | null>(null);
@@ -1210,6 +1265,11 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const [gatewayBindingPeerId, setGatewayBindingPeerId] = useState('');
   const [gatewayBindingGuildId, setGatewayBindingGuildId] = useState('');
   const [gatewayBindingTeamId, setGatewayBindingTeamId] = useState('');
+  const gatewayBindingChannelInputRef = useRef<HTMLInputElement | null>(null);
+  const gatewayBindingAccountIdInputRef = useRef<HTMLInputElement | null>(null);
+  const gatewayBindingPeerIdInputRef = useRef<HTMLInputElement | null>(null);
+  const gatewayBindingGuildIdInputRef = useRef<HTMLInputElement | null>(null);
+  const gatewayBindingTeamIdInputRef = useRef<HTMLInputElement | null>(null);
   const [gatewaySessions, setGatewaySessions] = useState<GatewaySessionRecord[]>([]);
   const [gatewaySessionsLoading, setGatewaySessionsLoading] = useState(false);
   const [gatewaySessionsError, setGatewaySessionsError] = useState<string | null>(null);
@@ -1220,6 +1280,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const [gatewayRunsError, setGatewayRunsError] = useState<string | null>(null);
   const [gatewayRunFilterAgentId, setGatewayRunFilterAgentId] = useState('');
   const [gatewayRunLookupId, setGatewayRunLookupId] = useState('');
+  const gatewayRunLookupIdInputRef = useRef<HTMLInputElement | null>(null);
   const [gatewayRunLookup, setGatewayRunLookup] = useState<GatewayRunRecord | null>(null);
   const [gatewayRunLookupLoading, setGatewayRunLookupLoading] = useState(false);
   const [gatewayRpcMethod, setGatewayRpcMethod] = useState('agents.list');
@@ -1227,6 +1288,10 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const [gatewayRpcAuthMode, setGatewayRpcAuthMode] = useState<'none' | 'token' | 'password'>('none');
   const [gatewayRpcToken, setGatewayRpcToken] = useState('');
   const [gatewayRpcPassword, setGatewayRpcPassword] = useState('');
+  const gatewayRpcMethodInputRef = useRef<HTMLInputElement | null>(null);
+  const gatewayRpcParamsInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const gatewayRpcTokenInputRef = useRef<HTMLInputElement | null>(null);
+  const gatewayRpcPasswordInputRef = useRef<HTMLInputElement | null>(null);
   const [gatewayRpcLoading, setGatewayRpcLoading] = useState(false);
   const [gatewayRpcError, setGatewayRpcError] = useState<string | null>(null);
   const [gatewayRpcResponse, setGatewayRpcResponse] = useState('');
@@ -1267,6 +1332,19 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const [gatewayConnectorRuntimePollIntervalMs, setGatewayConnectorRuntimePollIntervalMs] = useState('');
   const [gatewayConnectorRuntimeRequireMention, setGatewayConnectorRuntimeRequireMention] = useState(false);
   const [gatewayConnectorRuntimeBotUserId, setGatewayConnectorRuntimeBotUserId] = useState('');
+  const gatewayConnectorCreateNameInputRef = useRef<HTMLInputElement | null>(null);
+  const gatewayConnectorAccountIdInputRef = useRef<HTMLInputElement | null>(null);
+  const gatewayConnectorBridgeUrlInputRef = useRef<HTMLInputElement | null>(null);
+  const gatewayConnectorNotesInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const gatewayConnectorMetadataTextInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const gatewayConnectorSecretInputRef = useRef<HTMLInputElement | null>(null);
+  const gatewayConnectorAllowedUserIdsInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const gatewayConnectorAllowedGroupIdsInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const gatewayConnectorAllowedChannelIdsInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const gatewayConnectorAllowedAccountIdsInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const gatewayConnectorRuntimeCommandPrefixInputRef = useRef<HTMLInputElement | null>(null);
+  const gatewayConnectorRuntimePollIntervalMsInputRef = useRef<HTMLInputElement | null>(null);
+  const gatewayConnectorRuntimeBotUserIdInputRef = useRef<HTMLInputElement | null>(null);
   const [appConnectorExtensions, setAppConnectorExtensions] = useState<AppConnectorExtensionState[]>([]);
   const [appConnectorRuntimeStatuses, setAppConnectorRuntimeStatuses] = useState<AppConnectorRuntimeStatus[]>([]);
   const [appConnectorRuntimeTestResult, setAppConnectorRuntimeTestResult] = useState<AppConnectorRuntimeTestResult | null>(null);
@@ -1302,6 +1380,16 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const [appConnectorObsidianSelecting, setAppConnectorObsidianSelecting] = useState(false);
   const [appConnectorWebhookUrl, setAppConnectorWebhookUrl] = useState('');
   const [appConnectorWebhookTesting, setAppConnectorWebhookTesting] = useState(false);
+  const appConnectorCreateNameInputRef = useRef<HTMLInputElement | null>(null);
+  const appConnectorAccountIdInputRef = useRef<HTMLInputElement | null>(null);
+  const appConnectorBaseUrlInputRef = useRef<HTMLInputElement | null>(null);
+  const appConnectorNotesInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const appConnectorMetadataTextInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const appConnectorSecretInputRef = useRef<HTMLInputElement | null>(null);
+  const appConnectorOauthClientIdInputRef = useRef<HTMLInputElement | null>(null);
+  const appConnectorOauthClientSecretInputRef = useRef<HTMLInputElement | null>(null);
+  const appConnectorOauthScopesInputRef = useRef<HTMLInputElement | null>(null);
+  const appConnectorWebhookUrlInputRef = useRef<HTMLInputElement | null>(null);
   const gatewayTokenInputRef = useRef<HTMLInputElement | null>(null);
   const gatewayPasswordInputRef = useRef<HTMLInputElement | null>(null);
   const appConnectorOauthPollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -1540,12 +1628,14 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   );
 
   const ButtonTip = ({ text, children }: { text: string; children: ReactNode }) => (
-    <Popover>
-      <PopoverTrigger asChild>{children}</PopoverTrigger>
-      <PopoverContent className="max-w-xs text-xs leading-relaxed text-foreground" align="start">
-        {text}
-      </PopoverContent>
-    </Popover>
+    <TooltipProvider delayDuration={250}>
+      <Tooltip>
+        <TooltipTrigger asChild>{children}</TooltipTrigger>
+        <TooltipContent className="max-w-xs text-xs leading-relaxed" side="top" align="start">
+          {text}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   );
 
   const isWindows = appPlatform === 'win32';
@@ -1694,7 +1784,11 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         setMobileNodesDisplayNameState(settings?.mobileNodesDisplayName || '');
         setWebhookBindModeState(settings?.webhookBindMode === 'all' ? 'all' : 'localhost');
         setWebhookBindNeedsRestart(false);
-        setBrowserProfileState(settings?.browserProfile || 'default');
+        const nextBrowserProfile = settings?.browserProfile || 'default';
+        setBrowserProfileState(nextBrowserProfile);
+        if (browserProfileInputRef.current) {
+          browserProfileInputRef.current.value = nextBrowserProfile;
+        }
         setWorkspaceRootState(settings?.workspaceRoot || null);
         setAgentSpeedMode(
           settings?.agentSpeedMode === 'deep'
@@ -1727,6 +1821,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         const rawHooksText = (hooksState as { raw?: string })?.raw || '{\n  "hooks": []\n}\n';
         setRuntimeHooksText(rawHooksText);
         setSavedRuntimeHooksSnapshot(rawHooksText);
+        if (runtimeHooksTextRef.current) {
+          runtimeHooksTextRef.current.value = rawHooksText;
+        }
         setRuntimeHooksHookCount(
           typeof (hooksState as { hookCount?: number })?.hookCount === 'number'
             ? (hooksState as { hookCount: number }).hookCount
@@ -1783,13 +1880,23 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
               ? 'deny'
               : 'prompt'
         );
-        setPermissionPolicyAllowedToolNames(formatAllowlist(settings?.runtime?.allowedToolNames || []));
-        setPermissionPolicyBlockedToolNames(formatAllowlist(settings?.runtime?.blockedToolNames || []));
-        setPermissionPolicyAuditMaxEntries(
-          typeof settings?.audit?.maxEntries === 'number'
-            ? String(settings.audit.maxEntries)
-            : '200'
-        );
+        const allowedToolNamesText = formatAllowlist(settings?.runtime?.allowedToolNames || []);
+        const blockedToolNamesText = formatAllowlist(settings?.runtime?.blockedToolNames || []);
+        const auditMaxEntriesText = typeof settings?.audit?.maxEntries === 'number'
+          ? String(settings.audit.maxEntries)
+          : '200';
+        setPermissionPolicyAllowedToolNames(allowedToolNamesText);
+        setPermissionPolicyBlockedToolNames(blockedToolNamesText);
+        setPermissionPolicyAuditMaxEntries(auditMaxEntriesText);
+        if (permissionPolicyAllowedToolNamesRef.current) {
+          permissionPolicyAllowedToolNamesRef.current.value = allowedToolNamesText;
+        }
+        if (permissionPolicyBlockedToolNamesRef.current) {
+          permissionPolicyBlockedToolNamesRef.current.value = blockedToolNamesText;
+        }
+        if (permissionPolicyAuditMaxEntriesRef.current) {
+          permissionPolicyAuditMaxEntriesRef.current.value = auditMaxEntriesText;
+        }
         setSavedPermissionPolicySnapshot(
           createPermissionPolicySnapshot({
             allowWorkspaceWritesWithoutPrompt: settings?.file?.allowWorkspaceWritesWithoutPrompt !== false,
@@ -1812,12 +1919,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                 : settings?.runtime?.defaultQuestionDecision === 'deny'
                   ? 'deny'
                   : 'prompt',
-            allowedToolNamesText: formatAllowlist(settings?.runtime?.allowedToolNames || []),
-            blockedToolNamesText: formatAllowlist(settings?.runtime?.blockedToolNames || []),
-            auditMaxEntries:
-              typeof settings?.audit?.maxEntries === 'number'
-                ? String(settings.audit.maxEntries)
-                : '200',
+            allowedToolNamesText,
+            blockedToolNamesText,
+            auditMaxEntries: auditMaxEntriesText,
           })
         );
         setPermissionPolicyAuditEntries(
@@ -1842,6 +1946,13 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         setUsagePricing(pricing);
         const modelsUsed = await accomplish.listUsageModelsUsed();
         setUsageModelsUsed(modelsUsed || {});
+        const [budgets, statuses] = await Promise.all([
+          accomplish.getUsageBudgets(),
+          accomplish.getUsageBudgetStatus({ agentId: activeAgentId }),
+        ]);
+        setUsageBudgets(budgets);
+        syncUsageBudgetAmountInput(budgets);
+        setUsageBudgetStatuses(Array.isArray(statuses) ? statuses : []);
       } catch (err) {
         console.error('Failed to fetch usage pricing:', err);
       } finally {
@@ -2233,13 +2344,18 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setRuntimeHooksError(null);
     setRuntimeHooksStatus(null);
     try {
-      const result = await accomplish.saveRuntimeHooks(runtimeHooksText);
+      const currentHooksText = runtimeHooksTextRef.current?.value ?? runtimeHooksText;
+      setRuntimeHooksText(currentHooksText);
+      const result = await accomplish.saveRuntimeHooks(currentHooksText);
       setRuntimeHooksPath(result.path);
       setRuntimeHooksHookCount(result.hookCount);
       const refreshed = await accomplish.getRuntimeHooks();
-      const refreshedText = (refreshed as { raw?: string })?.raw || runtimeHooksText;
+      const refreshedText = (refreshed as { raw?: string })?.raw || currentHooksText;
       setRuntimeHooksText(refreshedText);
       setSavedRuntimeHooksSnapshot(refreshedText);
+      if (runtimeHooksTextRef.current) {
+        runtimeHooksTextRef.current.value = refreshedText;
+      }
       setRuntimeHooksStatus(`Saved ${result.hookCount} hook${result.hookCount === 1 ? '' : 's'}.`);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unable to save runtime hooks.';
@@ -2251,6 +2367,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
 
   const revertRuntimeHooksChanges = () => {
     setRuntimeHooksText(savedRuntimeHooksSnapshot);
+    if (runtimeHooksTextRef.current) {
+      runtimeHooksTextRef.current.value = savedRuntimeHooksSnapshot;
+    }
     setRuntimeHooksError(null);
     setRuntimeHooksStatus('Reverted unsaved runtime hook changes.');
   };
@@ -2289,6 +2408,12 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setPermissionPolicyError(null);
     setPermissionPolicyStatus(null);
     try {
+      const allowedToolNamesText = permissionPolicyAllowedToolNamesRef.current?.value ?? permissionPolicyAllowedToolNames;
+      const blockedToolNamesText = permissionPolicyBlockedToolNamesRef.current?.value ?? permissionPolicyBlockedToolNames;
+      const auditMaxEntriesText = permissionPolicyAuditMaxEntriesRef.current?.value ?? permissionPolicyAuditMaxEntries;
+      setPermissionPolicyAllowedToolNames(allowedToolNamesText);
+      setPermissionPolicyBlockedToolNames(blockedToolNamesText);
+      setPermissionPolicyAuditMaxEntries(auditMaxEntriesText);
       const settings: PermissionPolicySettings = {
         file: {
           allowWorkspaceWritesWithoutPrompt: permissionPolicyAllowWorkspaceWritesWithoutPrompt,
@@ -2298,22 +2423,34 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         runtime: {
           defaultToolDecision: permissionPolicyRuntimeDefaultToolDecision,
           defaultQuestionDecision: permissionPolicyRuntimeDefaultQuestionDecision,
-          allowedToolNames: parseAllowlist(permissionPolicyAllowedToolNames),
-          blockedToolNames: parseAllowlist(permissionPolicyBlockedToolNames),
+          allowedToolNames: parseAllowlist(allowedToolNamesText),
+          blockedToolNames: parseAllowlist(blockedToolNamesText),
         },
         audit: {
-          maxEntries: Number.parseInt(permissionPolicyAuditMaxEntries, 10),
+          maxEntries: Number.parseInt(auditMaxEntriesText, 10),
         },
       };
       const saved = await accomplish.setPermissionPolicySettings(settings);
+      const savedAllowedToolNamesText = formatAllowlist(saved.runtime.allowedToolNames);
+      const savedBlockedToolNamesText = formatAllowlist(saved.runtime.blockedToolNames);
+      const savedAuditMaxEntriesText = String(saved.audit.maxEntries);
       setPermissionPolicyAllowWorkspaceWritesWithoutPrompt(saved.file.allowWorkspaceWritesWithoutPrompt);
       setPermissionPolicyAllowTaskScopedAllowAll(saved.file.allowTaskScopedAllowAll);
       setPermissionPolicyFileDefaultDecision(saved.file.defaultDecision);
       setPermissionPolicyRuntimeDefaultToolDecision(saved.runtime.defaultToolDecision);
       setPermissionPolicyRuntimeDefaultQuestionDecision(saved.runtime.defaultQuestionDecision);
-      setPermissionPolicyAllowedToolNames(formatAllowlist(saved.runtime.allowedToolNames));
-      setPermissionPolicyBlockedToolNames(formatAllowlist(saved.runtime.blockedToolNames));
-      setPermissionPolicyAuditMaxEntries(String(saved.audit.maxEntries));
+      setPermissionPolicyAllowedToolNames(savedAllowedToolNamesText);
+      setPermissionPolicyBlockedToolNames(savedBlockedToolNamesText);
+      setPermissionPolicyAuditMaxEntries(savedAuditMaxEntriesText);
+      if (permissionPolicyAllowedToolNamesRef.current) {
+        permissionPolicyAllowedToolNamesRef.current.value = savedAllowedToolNamesText;
+      }
+      if (permissionPolicyBlockedToolNamesRef.current) {
+        permissionPolicyBlockedToolNamesRef.current.value = savedBlockedToolNamesText;
+      }
+      if (permissionPolicyAuditMaxEntriesRef.current) {
+        permissionPolicyAuditMaxEntriesRef.current.value = savedAuditMaxEntriesText;
+      }
       setSavedPermissionPolicySnapshot(
         createPermissionPolicySnapshot({
           allowWorkspaceWritesWithoutPrompt: saved.file.allowWorkspaceWritesWithoutPrompt,
@@ -2321,9 +2458,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
           fileDefaultDecision: saved.file.defaultDecision,
           runtimeDefaultToolDecision: saved.runtime.defaultToolDecision,
           runtimeDefaultQuestionDecision: saved.runtime.defaultQuestionDecision,
-          allowedToolNamesText: formatAllowlist(saved.runtime.allowedToolNames),
-          blockedToolNamesText: formatAllowlist(saved.runtime.blockedToolNames),
-          auditMaxEntries: String(saved.audit.maxEntries),
+          allowedToolNamesText: savedAllowedToolNamesText,
+          blockedToolNamesText: savedBlockedToolNamesText,
+          auditMaxEntries: savedAuditMaxEntriesText,
         })
       );
       const auditState = await accomplish.getPermissionPolicyAudit();
@@ -2361,9 +2498,21 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       setPermissionPolicyFileDefaultDecision(saved.file?.defaultDecision ?? 'prompt');
       setPermissionPolicyRuntimeDefaultToolDecision(saved.runtime?.defaultToolDecision ?? 'prompt');
       setPermissionPolicyRuntimeDefaultQuestionDecision(saved.runtime?.defaultQuestionDecision ?? 'prompt');
-      setPermissionPolicyAllowedToolNames(formatAllowlist(saved.runtime?.allowedToolNames || []));
-      setPermissionPolicyBlockedToolNames(formatAllowlist(saved.runtime?.blockedToolNames || []));
-      setPermissionPolicyAuditMaxEntries(String(saved.audit?.maxEntries ?? 200));
+      const allowedToolNamesText = formatAllowlist(saved.runtime?.allowedToolNames || []);
+      const blockedToolNamesText = formatAllowlist(saved.runtime?.blockedToolNames || []);
+      const auditMaxEntriesText = String(saved.audit?.maxEntries ?? 200);
+      setPermissionPolicyAllowedToolNames(allowedToolNamesText);
+      setPermissionPolicyBlockedToolNames(blockedToolNamesText);
+      setPermissionPolicyAuditMaxEntries(auditMaxEntriesText);
+      if (permissionPolicyAllowedToolNamesRef.current) {
+        permissionPolicyAllowedToolNamesRef.current.value = allowedToolNamesText;
+      }
+      if (permissionPolicyBlockedToolNamesRef.current) {
+        permissionPolicyBlockedToolNamesRef.current.value = blockedToolNamesText;
+      }
+      if (permissionPolicyAuditMaxEntriesRef.current) {
+        permissionPolicyAuditMaxEntriesRef.current.value = auditMaxEntriesText;
+      }
       setPermissionPolicyError(null);
       setPermissionPolicyStatus('Reverted unsaved permission policy changes.');
     } catch (err) {
@@ -2416,7 +2565,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   };
 
   const filteredRuntimeHookDiagnostics = useMemo(() => {
-    const query = runtimeHookDiagnosticsQuery.trim().toLowerCase();
+    const query = deferredRuntimeHookDiagnosticsQuery.trim().toLowerCase();
     return runtimeHookDiagnostics.filter((entry) => {
       if (runtimeHookDiagnosticsFilter === 'blocked' && entry.ok) return false;
       if (runtimeHookDiagnosticsFilter === 'matched' && entry.matchedHookIds.length === 0) return false;
@@ -2438,10 +2587,10 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         .toLowerCase();
       return haystack.includes(query);
     });
-  }, [runtimeHookDiagnostics, runtimeHookDiagnosticsFilter, runtimeHookDiagnosticsQuery]);
+  }, [deferredRuntimeHookDiagnosticsQuery, runtimeHookDiagnostics, runtimeHookDiagnosticsFilter]);
 
   const filteredPermissionPolicyAuditEntries = useMemo(() => {
-    const query = permissionPolicyAuditQuery.trim().toLowerCase();
+    const query = deferredPermissionPolicyAuditQuery.trim().toLowerCase();
     return permissionPolicyAuditEntries.filter((entry) => {
       if (permissionPolicyAuditOriginFilter !== 'all' && entry.origin !== permissionPolicyAuditOriginFilter) {
         return false;
@@ -2473,8 +2622,25 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     permissionPolicyAuditDecisionFilter,
     permissionPolicyAuditEntries,
     permissionPolicyAuditOriginFilter,
-    permissionPolicyAuditQuery,
+    deferredPermissionPolicyAuditQuery,
   ]);
+
+  const permissionPolicyAllowedToolNameSet = useMemo(
+    () => new Set(parseAllowlist(permissionPolicyAllowedToolNames)),
+    [permissionPolicyAllowedToolNames]
+  );
+  const permissionPolicyBlockedToolNameSet = useMemo(
+    () => new Set(parseAllowlist(permissionPolicyBlockedToolNames)),
+    [permissionPolicyBlockedToolNames]
+  );
+  const agentPermissionAllowedToolNameSet = useMemo(
+    () => new Set(parseAllowlist(agentPermissionAllowedToolNames)),
+    [agentPermissionAllowedToolNames]
+  );
+  const agentPermissionBlockedToolNameSet = useMemo(
+    () => new Set(parseAllowlist(agentPermissionBlockedToolNames)),
+    [agentPermissionBlockedToolNames]
+  );
 
   const agentExecutorPolicyConflicts = useMemo(() => {
     if (!agentPermissionProfileEnabled) {
@@ -2487,15 +2653,15 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     }
 
     return AGENT_EXECUTOR_OVERRIDE_RULES.flatMap((rule) => {
-      const globalDecision = getListedToolDecision(
+      const globalDecision = getListedToolDecisionFromSets(
         rule.name,
-        permissionPolicyAllowedToolNames,
-        permissionPolicyBlockedToolNames
+        permissionPolicyAllowedToolNameSet,
+        permissionPolicyBlockedToolNameSet
       );
-      const agentDecision = getListedToolDecision(
+      const agentDecision = getListedToolDecisionFromSets(
         rule.name,
-        agentPermissionAllowedToolNames,
-        agentPermissionBlockedToolNames
+        agentPermissionAllowedToolNameSet,
+        agentPermissionBlockedToolNameSet
       );
 
       if (
@@ -2514,26 +2680,23 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       }];
     });
   }, [
-    agentPermissionAllowedToolNames,
-    agentPermissionBlockedToolNames,
+    agentPermissionAllowedToolNameSet,
+    agentPermissionBlockedToolNameSet,
     agentPermissionProfileEnabled,
-    permissionPolicyAllowedToolNames,
-    permissionPolicyBlockedToolNames,
+    permissionPolicyAllowedToolNameSet,
+    permissionPolicyBlockedToolNameSet,
   ]);
 
   const globalExecutorListConflicts = useMemo(() => {
-    const allowed = new Set(parseAllowlist(permissionPolicyAllowedToolNames));
-    const blocked = new Set(parseAllowlist(permissionPolicyBlockedToolNames));
-
     return GLOBAL_EXECUTOR_BUILTIN_RULES.flatMap((rule) => (
-      allowed.has(rule.name) && blocked.has(rule.name)
+      permissionPolicyAllowedToolNameSet.has(rule.name) && permissionPolicyBlockedToolNameSet.has(rule.name)
         ? [{
             ruleName: rule.name,
             rule: rule.label,
           }]
         : []
     ));
-  }, [permissionPolicyAllowedToolNames, permissionPolicyBlockedToolNames]);
+  }, [permissionPolicyAllowedToolNameSet, permissionPolicyBlockedToolNameSet]);
 
   const applyAgentExecutorOverrideDecision = (
     toolName: string,
@@ -2547,6 +2710,12 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     );
     setAgentPermissionAllowedToolNames(next.allowed);
     setAgentPermissionBlockedToolNames(next.blocked);
+    if (agentPermissionAllowedToolNamesRef.current) {
+      agentPermissionAllowedToolNamesRef.current.value = next.allowed;
+    }
+    if (agentPermissionBlockedToolNamesRef.current) {
+      agentPermissionBlockedToolNamesRef.current.value = next.blocked;
+    }
   };
 
   const applyGlobalExecutorBuiltInDecision = (
@@ -2561,14 +2730,20 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     );
     setPermissionPolicyAllowedToolNames(next.allowed);
     setPermissionPolicyBlockedToolNames(next.blocked);
+    if (permissionPolicyAllowedToolNamesRef.current) {
+      permissionPolicyAllowedToolNamesRef.current.value = next.allowed;
+    }
+    if (permissionPolicyBlockedToolNamesRef.current) {
+      permissionPolicyBlockedToolNamesRef.current.value = next.blocked;
+    }
     setPermissionPolicyStatus(null);
   };
 
   const getCurrentGlobalExecutorBuiltInDecision = (toolName: string): ListedToolDecision => {
-    const explicit = getListedToolDecision(
+    const explicit = getListedToolDecisionFromSets(
       toolName,
-      permissionPolicyAllowedToolNames,
-      permissionPolicyBlockedToolNames
+      permissionPolicyAllowedToolNameSet,
+      permissionPolicyBlockedToolNameSet
     );
     if (explicit !== 'default') {
       return explicit;
@@ -2591,10 +2766,10 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const getCurrentAgentExecutorBuiltInState = (
     toolName: string
   ): { decision: ListedToolDecision; source: 'inherit' | 'override' } => {
-    const agentDecision = getListedToolDecision(
+    const agentDecision = getListedToolDecisionFromSets(
       toolName,
-      agentPermissionAllowedToolNames,
-      agentPermissionBlockedToolNames
+      agentPermissionAllowedToolNameSet,
+      agentPermissionBlockedToolNameSet
     );
     if (agentDecision !== 'default') {
       return {
@@ -2609,10 +2784,10 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   };
 
   const getGlobalExecutorDefaultReason = (toolName: string): string | null => {
-    const selectedDecision = getListedToolDecision(
+    const selectedDecision = getListedToolDecisionFromSets(
       toolName,
-      permissionPolicyAllowedToolNames,
-      permissionPolicyBlockedToolNames
+      permissionPolicyAllowedToolNameSet,
+      permissionPolicyBlockedToolNameSet
     );
     if (selectedDecision !== 'default') {
       return null;
@@ -2637,18 +2812,18 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   };
 
   const getAgentExecutorDefaultReason = (toolName: string): string | null => {
-    const selectedDecision = getListedToolDecision(
+    const selectedDecision = getListedToolDecisionFromSets(
       toolName,
-      agentPermissionAllowedToolNames,
-      agentPermissionBlockedToolNames
+      agentPermissionAllowedToolNameSet,
+      agentPermissionBlockedToolNameSet
     );
     if (selectedDecision !== 'default') {
       return null;
     }
-    const globalSelectedDecision = getListedToolDecision(
+    const globalSelectedDecision = getListedToolDecisionFromSets(
       toolName,
-      permissionPolicyAllowedToolNames,
-      permissionPolicyBlockedToolNames
+      permissionPolicyAllowedToolNameSet,
+      permissionPolicyBlockedToolNameSet
     );
     if (globalSelectedDecision !== 'default') {
       return null;
@@ -2684,10 +2859,10 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     }
     return summary;
   }, [
-    permissionPolicyAllowedToolNames,
+    permissionPolicyAllowedToolNameSet,
     permissionPolicyAllowTaskScopedAllowAll,
     permissionPolicyAllowWorkspaceWritesWithoutPrompt,
-    permissionPolicyBlockedToolNames,
+    permissionPolicyBlockedToolNameSet,
     permissionPolicyFileDefaultDecision,
     permissionPolicyRuntimeDefaultToolDecision,
   ]);
@@ -2711,12 +2886,12 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     }
     return summary;
   }, [
-    agentPermissionAllowedToolNames,
-    agentPermissionBlockedToolNames,
-    permissionPolicyAllowedToolNames,
+    agentPermissionAllowedToolNameSet,
+    agentPermissionBlockedToolNameSet,
+    permissionPolicyAllowedToolNameSet,
     permissionPolicyAllowTaskScopedAllowAll,
     permissionPolicyAllowWorkspaceWritesWithoutPrompt,
-    permissionPolicyBlockedToolNames,
+    permissionPolicyBlockedToolNameSet,
     permissionPolicyFileDefaultDecision,
     permissionPolicyRuntimeDefaultToolDecision,
   ]);
@@ -2802,7 +2977,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
 
   const parsedRuntimeHooksState = useMemo(() => {
     try {
-      const parsed = JSON.parse(runtimeHooksText);
+      const parsed = JSON.parse(deferredRuntimeHooksText);
       const hooks = Array.isArray(parsed)
         ? parsed
         : (parsed && typeof parsed === 'object' && Array.isArray((parsed as { hooks?: unknown[] }).hooks)
@@ -2818,12 +2993,16 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         hooks: [] as Array<Record<string, unknown>>,
       };
     }
-  }, [runtimeHooksText]);
+  }, [deferredRuntimeHooksText]);
 
   const updateRuntimeHooksJson = (updater: (hooks: Array<Record<string, unknown>>) => Array<Record<string, unknown>>) => {
     if (parsedRuntimeHooksState.error) return;
     const nextHooks = updater(parsedRuntimeHooksState.hooks);
-    setRuntimeHooksText(`${JSON.stringify({ hooks: nextHooks }, null, 2)}\n`);
+    const nextText = `${JSON.stringify({ hooks: nextHooks }, null, 2)}\n`;
+    setRuntimeHooksText(nextText);
+    if (runtimeHooksTextRef.current) {
+      runtimeHooksTextRef.current.value = nextText;
+    }
     setRuntimeHooksStatus(null);
   };
 
@@ -2882,18 +3061,11 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setGatewayConnectorAutoBindRouting(selectedGatewayConnector.config.autoBindRouting !== false);
     setGatewayConnectorRecordObservedIds(selectedGatewayConnector.config.recordObservedIds !== false);
     setGatewayConnectorAgentId(selectedGatewayConnector.config.agentId || '');
-    setGatewayConnectorAccountId(selectedGatewayConnector.config.accountId || '');
-    setGatewayConnectorBridgeUrl(selectedGatewayConnector.config.bridgeUrl || '');
-    setGatewayConnectorNotes(selectedGatewayConnector.config.notes || '');
     const metadataText = Object.entries(selectedGatewayConnector.config.metadata || {})
       .map(([key, value]) => `${key}=${value}`)
       .join('\n');
-    setGatewayConnectorMetadataText(metadataText);
     const metadata = selectedGatewayConnector.config.metadata || {};
-    setGatewayConnectorRuntimeCommandPrefix(getGatewayConnectorMetadataValue(metadata, 'command_prefix') || '!desk');
-    setGatewayConnectorRuntimePollIntervalMs(getGatewayConnectorMetadataValue(metadata, 'poll_interval_ms') || '');
     setGatewayConnectorRuntimeRequireMention(parseTruthy(getGatewayConnectorMetadataValue(metadata, 'require_mention'), false));
-    setGatewayConnectorRuntimeBotUserId(getGatewayConnectorMetadataValue(metadata, 'bot_user_id') || '');
     setGatewayConnectorAccessPolicyMode(
       selectedGatewayConnector.config.accessPolicyMode === 'allowlist'
         ? 'allowlist'
@@ -2901,11 +3073,20 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
           ? 'disabled'
           : 'open'
     );
-    setGatewayConnectorAllowedUserIds(formatAllowlist(selectedGatewayConnector.config.allowedUserIds));
-    setGatewayConnectorAllowedGroupIds(formatAllowlist(selectedGatewayConnector.config.allowedGroupIds));
-    setGatewayConnectorAllowedChannelIds(formatAllowlist(selectedGatewayConnector.config.allowedChannelIds));
-    setGatewayConnectorAllowedAccountIds(formatAllowlist(selectedGatewayConnector.config.allowedAccountIds));
-    setGatewayConnectorSecretInput('');
+    syncGatewayConnectorTextFields({
+      accountId: selectedGatewayConnector.config.accountId || '',
+      bridgeUrl: selectedGatewayConnector.config.bridgeUrl || '',
+      notes: selectedGatewayConnector.config.notes || '',
+      metadataText,
+      runtimeCommandPrefix: getGatewayConnectorMetadataValue(metadata, 'command_prefix') || '!desk',
+      runtimePollIntervalMs: getGatewayConnectorMetadataValue(metadata, 'poll_interval_ms') || '',
+      runtimeBotUserId: getGatewayConnectorMetadataValue(metadata, 'bot_user_id') || '',
+      allowedUserIds: formatAllowlist(selectedGatewayConnector.config.allowedUserIds),
+      allowedGroupIds: formatAllowlist(selectedGatewayConnector.config.allowedGroupIds),
+      allowedChannelIds: formatAllowlist(selectedGatewayConnector.config.allowedChannelIds),
+      allowedAccountIds: formatAllowlist(selectedGatewayConnector.config.allowedAccountIds),
+      secret: '',
+    });
     setGatewayConnectorStatus(null);
     setGatewayConnectorError(null);
     setGatewayConnectorRuntimeTestResult(null);
@@ -2935,16 +3116,19 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setAppConnectorEnabled(Boolean(selectedAppConnector.config.enabled));
     setAppConnectorAutoBindTools(selectedAppConnector.config.autoBindTools !== false);
     setAppConnectorAgentId(selectedAppConnector.config.agentId || '');
-    setAppConnectorAccountId(selectedAppConnector.config.accountId || '');
-    setAppConnectorBaseUrl(selectedAppConnector.config.baseUrl || '');
-    setAppConnectorNotes(selectedAppConnector.config.notes || '');
-    setAppConnectorMetadataText(
-      Object.entries(metadata)
+    syncAppConnectorTextFields({
+      accountId: selectedAppConnector.config.accountId || '',
+      baseUrl: selectedAppConnector.config.baseUrl || '',
+      notes: selectedAppConnector.config.notes || '',
+      metadataText: Object.entries(metadata)
         .map(([key, value]) => `${key}=${value}`)
-        .join('\n')
-    );
-    setAppConnectorOauthClientId(getGatewayConnectorMetadataValue(metadata, 'oauth_client_id') || '');
-    setAppConnectorOauthScopes(getGatewayConnectorMetadataValue(metadata, 'oauth_scopes') || '');
+        .join('\n'),
+      oauthClientId: getGatewayConnectorMetadataValue(metadata, 'oauth_client_id') || '',
+      oauthScopes: getGatewayConnectorMetadataValue(metadata, 'oauth_scopes') || '',
+      oauthClientSecret: '',
+      webhookUrl: getGatewayConnectorMetadataValue(metadata, 'webhook_url') || '',
+      secret: '',
+    });
     const redirectModeRaw = (getGatewayConnectorMetadataValue(metadata, 'oauth_redirect_mode') || '').toLowerCase();
     setAppConnectorOauthRedirectMode(
       redirectModeRaw === 'desktop'
@@ -2955,7 +3139,6 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
             ? 'public'
             : 'auto'
     );
-    setAppConnectorOauthClientSecret('');
     setAppConnectorOauthClientSecretStored(false);
     setAppConnectorOauthClientSecretSaving(false);
     setAppConnectorOauthFlowId('');
@@ -2963,9 +3146,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setAppConnectorOauthPending(false);
     setAppConnectorOauthDisconnecting(false);
     setAppConnectorObsidianSelecting(false);
-    setAppConnectorWebhookUrl(getGatewayConnectorMetadataValue(metadata, 'webhook_url') || '');
     setAppConnectorWebhookTesting(false);
-    setAppConnectorSecretInput('');
     setAppConnectorStatus(null);
     setAppConnectorError(null);
     setAppConnectorRuntimeTestResult(null);
@@ -3019,13 +3200,16 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         provider: model.provider,
         model: model.fullId,
       };
+      const previousSelection = selectedModel;
+      setSelectedModel(newSelection);
       setModelStatusMessage(null);
       try {
         await accomplish.setSelectedModel(newSelection);
-        setSelectedModel(newSelection);
         setModelStatusMessage(`Model updated to ${model.displayName}`);
       } catch (err) {
         console.error('Failed to save model selection:', err);
+        setSelectedModel(previousSelection);
+        setModelStatusMessage('Unable to save model selection.');
       }
     }
   };
@@ -3069,6 +3253,11 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setModelLimitsError(null);
     setModelLimitsStatus(null);
     setModelLimitsEdits(edits);
+    Object.entries(edits).forEach(([fullId, value]) => {
+      if (modelLimitsEditInputRefs.current[fullId]) {
+        modelLimitsEditInputRefs.current[fullId]!.value = value;
+      }
+    });
     setModelLimitsOpen(true);
   };
 
@@ -3078,7 +3267,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setModelLimitsError(null);
     setModelLimitsStatus(null);
     try {
-      const raw = (modelLimitsEdits[fullId] ?? '').trim();
+      const raw = (modelLimitsEditInputRefs.current[fullId]?.value ?? modelLimitsEdits[fullId] ?? '').trim();
+      setModelLimitsEdits((prev) => ({ ...prev, [fullId]: raw }));
       const contextWindowTokens = raw ? Number(raw) : null;
       await accomplish.setModelContextLimitOverride({ fullId, contextWindowTokens: raw ? contextWindowTokens : null });
       const res = await accomplish.getModelLimitOverrides();
@@ -3104,6 +3294,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     try {
       await accomplish.setModelContextLimitOverride({ fullId, contextWindowTokens: null });
       setModelLimitsEdits((prev) => ({ ...prev, [fullId]: '' }));
+      if (modelLimitsEditInputRefs.current[fullId]) {
+        modelLimitsEditInputRefs.current[fullId]!.value = '';
+      }
       const res = await accomplish.getModelLimitOverrides();
       const overrides = (res && typeof res === 'object' && 'overrides' in res)
         ? ((res as { overrides: Record<string, { contextWindowTokens?: number }> }).overrides ?? {})
@@ -3128,6 +3321,11 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       }
     }
     setModelLimitsEdits(edits);
+    Object.entries(edits).forEach(([fullId, value]) => {
+      if (modelLimitsEditInputRefs.current[fullId]) {
+        modelLimitsEditInputRefs.current[fullId]!.value = value;
+      }
+    });
     setModelLimitsError(null);
     setModelLimitsStatus('Reverted unsaved model context limit changes.');
   };
@@ -3894,7 +4092,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         agentId: activeAgentId,
       });
       setEditingUserSkill(skill);
-      setEditingUserSkillContent(res.content || '');
+      syncUserSkillTextFields({ editingContent: res.content || '' });
     } catch (err) {
       console.error('Failed to open skill:', err);
       setUserSkillsError('Failed to open skill file.');
@@ -3908,7 +4106,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     try {
       const res = await accomplish.getUserSkillConfig({ skillKey: skill.skillKey });
       setConfiguringUserSkill(skill);
-      setConfiguringUserSkillJson(JSON.stringify(res.config || {}, null, 2));
+      syncUserSkillTextFields({ configuringJson: JSON.stringify(res.config || {}, null, 2) });
     } catch (err) {
       console.error('Failed to load user skill config:', err);
       setUserSkillsDepsError('Failed to load skill config.');
@@ -3921,10 +4119,12 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setSavingUserSkillConfig(true);
     setConfiguringUserSkillError(null);
     try {
-      const parsed = parseJson5ishObject(configuringUserSkillJson);
+      const currentJson = readUserSkillTextFields().configuringJson;
+      setConfiguringUserSkillJson(currentJson);
+      const parsed = parseJson5ishObject(currentJson);
       await accomplish.setUserSkillConfig({ skillKey: configuringUserSkill.skillKey, config: parsed });
       setConfiguringUserSkill(null);
-      setConfiguringUserSkillJson('');
+      syncUserSkillTextFields({ configuringJson: '' });
       await refreshUserSkillsDeps();
     } catch (err) {
       console.error('Failed to save user skill config:', err);
@@ -3939,7 +4139,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     const requiredPaths = configuringUserSkill.requirements?.config || [];
     if (requiredPaths.length === 0) return;
     try {
-      const parsed = parseJson5ishObject(configuringUserSkillJson);
+      const currentJson = readUserSkillTextFields().configuringJson;
+      const parsed = parseJson5ishObject(currentJson);
       for (const path of requiredPaths) {
         if (!path || path.startsWith('skills.')) continue;
         const existing = getLocalConfigPathValue(parsed, path);
@@ -3947,7 +4148,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
           setLocalConfigPathValue(parsed, path, requiredConfigPlaceholder(path));
         }
       }
-      setConfiguringUserSkillJson(JSON.stringify(parsed, null, 2));
+      syncUserSkillTextFields({ configuringJson: JSON.stringify(parsed, null, 2) });
       setConfiguringUserSkillError(null);
     } catch (err) {
       setConfiguringUserSkillError(err instanceof Error ? err.message : 'Invalid config JSON.');
@@ -4093,7 +4294,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const handleCreateUserSkill = async () => {
     const accomplish = getAccomplish();
     setUserSkillsError(null);
-    const skillId = newUserSkillId.trim();
+    const formValues = readUserSkillTextFields();
+    const skillId = formValues.newSkillId.trim();
     if (!skillId) {
       setUserSkillsError('Skill ID is required.');
       return;
@@ -4102,13 +4304,15 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       setSavingUserSkill(true);
       await accomplish.createUserSkill({
         skillId,
-        name: newUserSkillName.trim() || undefined,
-        description: newUserSkillDesc.trim() || undefined,
+        name: formValues.newSkillName.trim() || undefined,
+        description: formValues.newSkillDesc.trim() || undefined,
       });
       setCreatingUserSkill(false);
-      setNewUserSkillId('');
-      setNewUserSkillName('');
-      setNewUserSkillDesc('');
+      syncUserSkillTextFields({
+        newSkillId: '',
+        newSkillName: '',
+        newSkillDesc: '',
+      });
       await refreshUserSkills();
       await refreshUserSkillsDeps();
       const created = (userSkillsReport?.skills || []).find((s) => s.id === skillId) || null;
@@ -4129,10 +4333,12 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setUserSkillsError(null);
     setSavingUserSkill(true);
     try {
+      const currentContent = readUserSkillTextFields().editingContent;
+      setEditingUserSkillContent(currentContent);
       await accomplish.writeUserSkillFile({
         skillId: editingUserSkill.id,
         relPath: 'SKILL.md',
-        content: editingUserSkillContent,
+        content: currentContent,
         source: editingUserSkill.source,
         agentId: activeAgentId,
       });
@@ -4163,7 +4369,10 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setImportZipError(null);
     setImportZipInspecting(false);
     setImportZipInstalling(false);
-    setImportZipUrl('');
+    syncUserSkillTextFields({
+      importZipUrl: '',
+      importZipDestId: '',
+    });
     setImportZipLocalPath(null);
     setImportZipMode('github');
   };
@@ -4187,10 +4396,12 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setImportZipError(null);
     setImportZipInspecting(true);
     try {
+      const importUrl = readUserSkillTextFields().importZipUrl.trim();
+      setImportZipUrl(importUrl);
       const payload =
         importZipMode === 'local'
           ? (importZipLocalPath ? { source: 'local', filePath: importZipLocalPath, agentId: activeAgentId } : null)
-          : (importZipUrl.trim() ? { source: 'github', url: importZipUrl.trim(), agentId: activeAgentId } : null);
+          : (importUrl ? { source: 'github', url: importUrl, agentId: activeAgentId } : null);
 
       if (!payload) {
         setImportZipError(importZipMode === 'local' ? 'Pick a .zip file.' : 'Enter a GitHub ZIP URL.');
@@ -4202,7 +4413,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       setImportZipCandidates(res.candidates || []);
       const first = (res.candidates || [])[0] || null;
       setImportZipSelected(first);
-      setImportZipDestId(first?.skillId || '');
+      syncUserSkillTextFields({ importZipDestId: first?.skillId || '' });
       if (res.message && (!res.candidates || res.candidates.length === 0)) {
         setImportZipError(res.message);
       } else if (res.message) {
@@ -4223,7 +4434,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       setImportZipError('Inspect a ZIP and select a skill first.');
       return;
     }
-    const dest = importZipDestId.trim();
+    const dest = readUserSkillTextFields().importZipDestId.trim();
     if (!dest) {
       setImportZipError('Destination skill ID is required.');
       return;
@@ -4395,11 +4606,14 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
 
   const handleSaveBrowserProfile = async () => {
     const accomplish = getAccomplish();
-    const trimmed = browserProfile.trim() || 'default';
+    const trimmed = (browserProfileInputRef.current?.value ?? browserProfile).trim() || 'default';
     setBrowserProfileSaving(true);
     try {
       const saved = await accomplish.setBrowserProfile(trimmed);
       setBrowserProfileState(saved);
+      if (browserProfileInputRef.current) {
+        browserProfileInputRef.current.value = saved;
+      }
     } catch (err) {
       console.error('Failed to save browser profile:', err);
     } finally {
@@ -4496,15 +4710,361 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     return next || 'webhook';
   };
 
+  const syncGatewayBindingTextFields = (values: {
+    channel?: string;
+    accountId?: string;
+    peerId?: string;
+    guildId?: string;
+    teamId?: string;
+  }) => {
+    if (values.channel !== undefined) {
+      setGatewayBindingChannel(values.channel);
+      setUncontrolledInputValue(gatewayBindingChannelInputRef, values.channel);
+    }
+    if (values.accountId !== undefined) {
+      setGatewayBindingAccountId(values.accountId);
+      setUncontrolledInputValue(gatewayBindingAccountIdInputRef, values.accountId);
+    }
+    if (values.peerId !== undefined) {
+      setGatewayBindingPeerId(values.peerId);
+      setUncontrolledInputValue(gatewayBindingPeerIdInputRef, values.peerId);
+    }
+    if (values.guildId !== undefined) {
+      setGatewayBindingGuildId(values.guildId);
+      setUncontrolledInputValue(gatewayBindingGuildIdInputRef, values.guildId);
+    }
+    if (values.teamId !== undefined) {
+      setGatewayBindingTeamId(values.teamId);
+      setUncontrolledInputValue(gatewayBindingTeamIdInputRef, values.teamId);
+    }
+  };
+
+  const readGatewayBindingTextFields = () => ({
+    channel: gatewayBindingChannelInputRef.current?.value ?? gatewayBindingChannel,
+    accountId: gatewayBindingAccountIdInputRef.current?.value ?? gatewayBindingAccountId,
+    peerId: gatewayBindingPeerIdInputRef.current?.value ?? gatewayBindingPeerId,
+    guildId: gatewayBindingGuildIdInputRef.current?.value ?? gatewayBindingGuildId,
+    teamId: gatewayBindingTeamIdInputRef.current?.value ?? gatewayBindingTeamId,
+  });
+
   const resetGatewayBindingEditor = () => {
     setGatewayBindingEditorId(null);
-    setGatewayBindingChannel('discord');
-    setGatewayBindingAccountId('');
+    syncGatewayBindingTextFields({
+      channel: 'discord',
+      accountId: '',
+      peerId: '',
+      guildId: '',
+      teamId: '',
+    });
     setGatewayBindingPeerKind('dm');
-    setGatewayBindingPeerId('');
-    setGatewayBindingGuildId('');
-    setGatewayBindingTeamId('');
   };
+
+  const syncGatewayRpcTextFields = (values: {
+    method?: string;
+    params?: string;
+    token?: string;
+    password?: string;
+  }) => {
+    if (values.method !== undefined) {
+      setGatewayRpcMethod(values.method);
+      setUncontrolledInputValue(gatewayRpcMethodInputRef, values.method);
+    }
+    if (values.params !== undefined) {
+      setGatewayRpcParams(values.params);
+      setUncontrolledInputValue(gatewayRpcParamsInputRef, values.params);
+    }
+    if (values.token !== undefined) {
+      setGatewayRpcToken(values.token);
+      setUncontrolledInputValue(gatewayRpcTokenInputRef, values.token);
+    }
+    if (values.password !== undefined) {
+      setGatewayRpcPassword(values.password);
+      setUncontrolledInputValue(gatewayRpcPasswordInputRef, values.password);
+    }
+  };
+
+  const readGatewayRpcTextFields = () => ({
+    method: gatewayRpcMethodInputRef.current?.value ?? gatewayRpcMethod,
+    params: gatewayRpcParamsInputRef.current?.value ?? gatewayRpcParams,
+    token: gatewayRpcTokenInputRef.current?.value ?? gatewayRpcToken,
+    password: gatewayRpcPasswordInputRef.current?.value ?? gatewayRpcPassword,
+  });
+
+  const syncGatewayConnectorTextFields = (values: {
+    createName?: string;
+    accountId?: string;
+    bridgeUrl?: string;
+    notes?: string;
+    metadataText?: string;
+    secret?: string;
+    allowedUserIds?: string;
+    allowedGroupIds?: string;
+    allowedChannelIds?: string;
+    allowedAccountIds?: string;
+    runtimeCommandPrefix?: string;
+    runtimePollIntervalMs?: string;
+    runtimeBotUserId?: string;
+  }) => {
+    if (values.createName !== undefined) {
+      setGatewayConnectorCreateName(values.createName);
+      setUncontrolledInputValue(gatewayConnectorCreateNameInputRef, values.createName);
+    }
+    if (values.accountId !== undefined) {
+      setGatewayConnectorAccountId(values.accountId);
+      setUncontrolledInputValue(gatewayConnectorAccountIdInputRef, values.accountId);
+    }
+    if (values.bridgeUrl !== undefined) {
+      setGatewayConnectorBridgeUrl(values.bridgeUrl);
+      setUncontrolledInputValue(gatewayConnectorBridgeUrlInputRef, values.bridgeUrl);
+    }
+    if (values.notes !== undefined) {
+      setGatewayConnectorNotes(values.notes);
+      setUncontrolledInputValue(gatewayConnectorNotesInputRef, values.notes);
+    }
+    if (values.metadataText !== undefined) {
+      setGatewayConnectorMetadataText(values.metadataText);
+      setUncontrolledInputValue(gatewayConnectorMetadataTextInputRef, values.metadataText);
+    }
+    if (values.secret !== undefined) {
+      setGatewayConnectorSecretInput(values.secret);
+      setUncontrolledInputValue(gatewayConnectorSecretInputRef, values.secret);
+    }
+    if (values.allowedUserIds !== undefined) {
+      setGatewayConnectorAllowedUserIds(values.allowedUserIds);
+      setUncontrolledInputValue(gatewayConnectorAllowedUserIdsInputRef, values.allowedUserIds);
+    }
+    if (values.allowedGroupIds !== undefined) {
+      setGatewayConnectorAllowedGroupIds(values.allowedGroupIds);
+      setUncontrolledInputValue(gatewayConnectorAllowedGroupIdsInputRef, values.allowedGroupIds);
+    }
+    if (values.allowedChannelIds !== undefined) {
+      setGatewayConnectorAllowedChannelIds(values.allowedChannelIds);
+      setUncontrolledInputValue(gatewayConnectorAllowedChannelIdsInputRef, values.allowedChannelIds);
+    }
+    if (values.allowedAccountIds !== undefined) {
+      setGatewayConnectorAllowedAccountIds(values.allowedAccountIds);
+      setUncontrolledInputValue(gatewayConnectorAllowedAccountIdsInputRef, values.allowedAccountIds);
+    }
+    if (values.runtimeCommandPrefix !== undefined) {
+      setGatewayConnectorRuntimeCommandPrefix(values.runtimeCommandPrefix);
+      setUncontrolledInputValue(gatewayConnectorRuntimeCommandPrefixInputRef, values.runtimeCommandPrefix);
+    }
+    if (values.runtimePollIntervalMs !== undefined) {
+      setGatewayConnectorRuntimePollIntervalMs(values.runtimePollIntervalMs);
+      setUncontrolledInputValue(gatewayConnectorRuntimePollIntervalMsInputRef, values.runtimePollIntervalMs);
+    }
+    if (values.runtimeBotUserId !== undefined) {
+      setGatewayConnectorRuntimeBotUserId(values.runtimeBotUserId);
+      setUncontrolledInputValue(gatewayConnectorRuntimeBotUserIdInputRef, values.runtimeBotUserId);
+    }
+  };
+
+  const readGatewayConnectorTextFields = () => ({
+    createName: gatewayConnectorCreateNameInputRef.current?.value ?? gatewayConnectorCreateName,
+    accountId: gatewayConnectorAccountIdInputRef.current?.value ?? gatewayConnectorAccountId,
+    bridgeUrl: gatewayConnectorBridgeUrlInputRef.current?.value ?? gatewayConnectorBridgeUrl,
+    notes: gatewayConnectorNotesInputRef.current?.value ?? gatewayConnectorNotes,
+    metadataText: gatewayConnectorMetadataTextInputRef.current?.value ?? gatewayConnectorMetadataText,
+    secret: gatewayConnectorSecretInputRef.current?.value ?? gatewayConnectorSecretInput,
+    allowedUserIds: gatewayConnectorAllowedUserIdsInputRef.current?.value ?? gatewayConnectorAllowedUserIds,
+    allowedGroupIds: gatewayConnectorAllowedGroupIdsInputRef.current?.value ?? gatewayConnectorAllowedGroupIds,
+    allowedChannelIds: gatewayConnectorAllowedChannelIdsInputRef.current?.value ?? gatewayConnectorAllowedChannelIds,
+    allowedAccountIds: gatewayConnectorAllowedAccountIdsInputRef.current?.value ?? gatewayConnectorAllowedAccountIds,
+    runtimeCommandPrefix: gatewayConnectorRuntimeCommandPrefixInputRef.current?.value ?? gatewayConnectorRuntimeCommandPrefix,
+    runtimePollIntervalMs: gatewayConnectorRuntimePollIntervalMsInputRef.current?.value ?? gatewayConnectorRuntimePollIntervalMs,
+    runtimeBotUserId: gatewayConnectorRuntimeBotUserIdInputRef.current?.value ?? gatewayConnectorRuntimeBotUserId,
+  });
+
+  const syncAppConnectorTextFields = (values: {
+    createName?: string;
+    accountId?: string;
+    baseUrl?: string;
+    notes?: string;
+    metadataText?: string;
+    secret?: string;
+    oauthClientId?: string;
+    oauthClientSecret?: string;
+    oauthScopes?: string;
+    webhookUrl?: string;
+  }) => {
+    if (values.createName !== undefined) {
+      setAppConnectorCreateName(values.createName);
+      setUncontrolledInputValue(appConnectorCreateNameInputRef, values.createName);
+    }
+    if (values.accountId !== undefined) {
+      setAppConnectorAccountId(values.accountId);
+      setUncontrolledInputValue(appConnectorAccountIdInputRef, values.accountId);
+    }
+    if (values.baseUrl !== undefined) {
+      setAppConnectorBaseUrl(values.baseUrl);
+      setUncontrolledInputValue(appConnectorBaseUrlInputRef, values.baseUrl);
+    }
+    if (values.notes !== undefined) {
+      setAppConnectorNotes(values.notes);
+      setUncontrolledInputValue(appConnectorNotesInputRef, values.notes);
+    }
+    if (values.metadataText !== undefined) {
+      setAppConnectorMetadataText(values.metadataText);
+      setUncontrolledInputValue(appConnectorMetadataTextInputRef, values.metadataText);
+    }
+    if (values.secret !== undefined) {
+      setAppConnectorSecretInput(values.secret);
+      setUncontrolledInputValue(appConnectorSecretInputRef, values.secret);
+    }
+    if (values.oauthClientId !== undefined) {
+      setAppConnectorOauthClientId(values.oauthClientId);
+      setUncontrolledInputValue(appConnectorOauthClientIdInputRef, values.oauthClientId);
+    }
+    if (values.oauthClientSecret !== undefined) {
+      setAppConnectorOauthClientSecret(values.oauthClientSecret);
+      setUncontrolledInputValue(appConnectorOauthClientSecretInputRef, values.oauthClientSecret);
+    }
+    if (values.oauthScopes !== undefined) {
+      setAppConnectorOauthScopes(values.oauthScopes);
+      setUncontrolledInputValue(appConnectorOauthScopesInputRef, values.oauthScopes);
+    }
+    if (values.webhookUrl !== undefined) {
+      setAppConnectorWebhookUrl(values.webhookUrl);
+      setUncontrolledInputValue(appConnectorWebhookUrlInputRef, values.webhookUrl);
+    }
+  };
+
+  const readAppConnectorTextFields = () => ({
+    createName: appConnectorCreateNameInputRef.current?.value ?? appConnectorCreateName,
+    accountId: appConnectorAccountIdInputRef.current?.value ?? appConnectorAccountId,
+    baseUrl: appConnectorBaseUrlInputRef.current?.value ?? appConnectorBaseUrl,
+    notes: appConnectorNotesInputRef.current?.value ?? appConnectorNotes,
+    metadataText: appConnectorMetadataTextInputRef.current?.value ?? appConnectorMetadataText,
+    secret: appConnectorSecretInputRef.current?.value ?? appConnectorSecretInput,
+    oauthClientId: appConnectorOauthClientIdInputRef.current?.value ?? appConnectorOauthClientId,
+    oauthClientSecret: appConnectorOauthClientSecretInputRef.current?.value ?? appConnectorOauthClientSecret,
+    oauthScopes: appConnectorOauthScopesInputRef.current?.value ?? appConnectorOauthScopes,
+    webhookUrl: appConnectorWebhookUrlInputRef.current?.value ?? appConnectorWebhookUrl,
+  });
+
+  const syncUserSkillTextFields = (values: {
+    newSkillId?: string;
+    newSkillName?: string;
+    newSkillDesc?: string;
+    editingContent?: string;
+    configuringJson?: string;
+    importZipUrl?: string;
+    importZipDestId?: string;
+  }) => {
+    if (values.newSkillId !== undefined) {
+      setNewUserSkillId(values.newSkillId);
+      setUncontrolledInputValue(newUserSkillIdInputRef, values.newSkillId);
+    }
+    if (values.newSkillName !== undefined) {
+      setNewUserSkillName(values.newSkillName);
+      setUncontrolledInputValue(newUserSkillNameInputRef, values.newSkillName);
+    }
+    if (values.newSkillDesc !== undefined) {
+      setNewUserSkillDesc(values.newSkillDesc);
+      setUncontrolledInputValue(newUserSkillDescInputRef, values.newSkillDesc);
+    }
+    if (values.editingContent !== undefined) {
+      setEditingUserSkillContent(values.editingContent);
+      setUncontrolledInputValue(editingUserSkillContentRef, values.editingContent);
+    }
+    if (values.configuringJson !== undefined) {
+      setConfiguringUserSkillJson(values.configuringJson);
+      setUncontrolledInputValue(configuringUserSkillJsonRef, values.configuringJson);
+    }
+    if (values.importZipUrl !== undefined) {
+      setImportZipUrl(values.importZipUrl);
+      setUncontrolledInputValue(importZipUrlInputRef, values.importZipUrl);
+    }
+    if (values.importZipDestId !== undefined) {
+      setImportZipDestId(values.importZipDestId);
+      setUncontrolledInputValue(importZipDestIdInputRef, values.importZipDestId);
+    }
+  };
+
+  const readUserSkillTextFields = () => ({
+    newSkillId: newUserSkillIdInputRef.current?.value ?? newUserSkillId,
+    newSkillName: newUserSkillNameInputRef.current?.value ?? newUserSkillName,
+    newSkillDesc: newUserSkillDescInputRef.current?.value ?? newUserSkillDesc,
+    editingContent: editingUserSkillContentRef.current?.value ?? editingUserSkillContent,
+    configuringJson: configuringUserSkillJsonRef.current?.value ?? configuringUserSkillJson,
+    importZipUrl: importZipUrlInputRef.current?.value ?? importZipUrl,
+    importZipDestId: importZipDestIdInputRef.current?.value ?? importZipDestId,
+  });
+
+  const syncSkillAssistantModelTextFields = (values: { modelId?: string; baseUrl?: string }) => {
+    if (values.modelId !== undefined) {
+      setSkillAssistantModelId(values.modelId);
+      setUncontrolledInputValue(skillAssistantModelIdInputRef, values.modelId);
+    }
+    if (values.baseUrl !== undefined) {
+      setSkillAssistantModelBaseUrl(values.baseUrl);
+      setUncontrolledInputValue(skillAssistantModelBaseUrlInputRef, values.baseUrl);
+    }
+  };
+
+  const readSkillAssistantModelTextFields = () => ({
+    modelId: skillAssistantModelIdInputRef.current?.value ?? skillAssistantModelId,
+    baseUrl: skillAssistantModelBaseUrlInputRef.current?.value ?? skillAssistantModelBaseUrl,
+  });
+
+  const syncAgentModelTextFields = (values: { modelId?: string; baseUrl?: string }) => {
+    if (values.modelId !== undefined) {
+      setAgentModelId(values.modelId);
+      setUncontrolledInputValue(agentModelIdInputRef, values.modelId);
+    }
+    if (values.baseUrl !== undefined) {
+      setAgentModelBaseUrl(values.baseUrl);
+      setUncontrolledInputValue(agentModelBaseUrlInputRef, values.baseUrl);
+    }
+  };
+
+  const readAgentModelTextFields = () => ({
+    modelId: agentModelIdInputRef.current?.value ?? agentModelId,
+    baseUrl: agentModelBaseUrlInputRef.current?.value ?? agentModelBaseUrl,
+  });
+
+  const syncAgentSubagentTextFields = (values: {
+    maxChildren?: string;
+    maxDepth?: string;
+    allowedAgentIds?: string;
+    runTimeoutSeconds?: string;
+    defaultModelId?: string;
+    defaultModelBaseUrl?: string;
+  }) => {
+    if (values.maxChildren !== undefined) {
+      setAgentSubagentMaxChildren(values.maxChildren);
+      setUncontrolledInputValue(agentSubagentMaxChildrenInputRef, values.maxChildren);
+    }
+    if (values.maxDepth !== undefined) {
+      setAgentSubagentMaxDepth(values.maxDepth);
+      setUncontrolledInputValue(agentSubagentMaxDepthInputRef, values.maxDepth);
+    }
+    if (values.allowedAgentIds !== undefined) {
+      setAgentSubagentAllowedAgentIds(values.allowedAgentIds);
+      setUncontrolledInputValue(agentSubagentAllowedAgentIdsInputRef, values.allowedAgentIds);
+    }
+    if (values.runTimeoutSeconds !== undefined) {
+      setAgentSubagentRunTimeoutSeconds(values.runTimeoutSeconds);
+      setUncontrolledInputValue(agentSubagentRunTimeoutSecondsInputRef, values.runTimeoutSeconds);
+    }
+    if (values.defaultModelId !== undefined) {
+      setAgentSubagentDefaultModelId(values.defaultModelId);
+      setUncontrolledInputValue(agentSubagentDefaultModelIdInputRef, values.defaultModelId);
+    }
+    if (values.defaultModelBaseUrl !== undefined) {
+      setAgentSubagentDefaultModelBaseUrl(values.defaultModelBaseUrl);
+      setUncontrolledInputValue(agentSubagentDefaultModelBaseUrlInputRef, values.defaultModelBaseUrl);
+    }
+  };
+
+  const readAgentSubagentTextFields = () => ({
+    maxChildren: agentSubagentMaxChildrenInputRef.current?.value ?? agentSubagentMaxChildren,
+    maxDepth: agentSubagentMaxDepthInputRef.current?.value ?? agentSubagentMaxDepth,
+    allowedAgentIds: agentSubagentAllowedAgentIdsInputRef.current?.value ?? agentSubagentAllowedAgentIds,
+    runTimeoutSeconds: agentSubagentRunTimeoutSecondsInputRef.current?.value ?? agentSubagentRunTimeoutSeconds,
+    defaultModelId: agentSubagentDefaultModelIdInputRef.current?.value ?? agentSubagentDefaultModelId,
+    defaultModelBaseUrl: agentSubagentDefaultModelBaseUrlInputRef.current?.value ?? agentSubagentDefaultModelBaseUrl,
+  });
 
   const getFirstModelForProvider = (providerId: ProviderType): string => {
     if (providerId === 'ollama') {
@@ -4530,8 +5090,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       || (providerId === 'custom' ? '' : AGENT_FALLBACK_MODEL.model)
     ).trim();
     setAgentModelProvider(providerId);
-    setAgentModelId(modelId);
-    setAgentModelBaseUrl(baseModel.baseUrl || providerConfig?.baseUrl || '');
+    syncAgentModelTextFields({ modelId, baseUrl: baseModel.baseUrl || providerConfig?.baseUrl || '' });
   };
 
   const applyAgentSubagentDefaultModelForm = (model: SelectedModel | null | undefined) => {
@@ -4545,13 +5104,13 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       || (providerId === 'custom' ? '' : AGENT_FALLBACK_MODEL.model)
     ).trim();
     setAgentSubagentDefaultModelProvider(providerId);
-    setAgentSubagentDefaultModelId(modelId);
-    setAgentSubagentDefaultModelBaseUrl(baseModel.baseUrl || providerConfig?.baseUrl || '');
+    syncAgentSubagentTextFields({ defaultModelId: modelId, defaultModelBaseUrl: baseModel.baseUrl || providerConfig?.baseUrl || '' });
   };
 
   const normalizeAgentSelectedModel = (): SelectedModel | null => {
     if (!agentModelOverrideEnabled) return null;
-    let modelId = agentModelId.trim();
+    const formValues = readAgentModelTextFields();
+    let modelId = formValues.modelId.trim();
     if (!modelId) return null;
 
     if (agentModelProvider === 'ollama' && !modelId.startsWith('ollama/')) {
@@ -4563,7 +5122,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       model: modelId,
     };
 
-    const trimmedBaseUrl = agentModelBaseUrl.trim();
+    const trimmedBaseUrl = formValues.baseUrl.trim();
     const providerConfig = modelProviders.find((entry) => entry.id === agentModelProvider);
     if (trimmedBaseUrl && (agentModelProvider === 'ollama' || agentModelProvider === 'custom' || Boolean(providerConfig?.baseUrl))) {
       selected.baseUrl = trimmedBaseUrl;
@@ -4574,7 +5133,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
 
   const normalizeAgentSubagentDefaultModel = (): SelectedModel | null => {
     if (!agentSubagentDefaultModelEnabled) return null;
-    let modelId = agentSubagentDefaultModelId.trim();
+    const formValues = readAgentSubagentTextFields();
+    let modelId = formValues.defaultModelId.trim();
     if (!modelId) return null;
 
     if (agentSubagentDefaultModelProvider === 'ollama' && !modelId.startsWith('ollama/')) {
@@ -4586,7 +5146,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       model: modelId,
     };
 
-    const trimmedBaseUrl = agentSubagentDefaultModelBaseUrl.trim();
+    const trimmedBaseUrl = formValues.defaultModelBaseUrl.trim();
     const providerConfig = modelProviders.find((entry) => entry.id === agentSubagentDefaultModelProvider);
     if (
       trimmedBaseUrl
@@ -4616,13 +5176,14 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
 
   const handleAgentModelProviderChange = (providerId: ProviderType) => {
     setAgentModelProvider(providerId);
-    const currentModel = agentModelId.trim();
+    const currentValues = readAgentModelTextFields();
+    const currentModel = currentValues.modelId.trim();
     if (providerId === 'ollama') {
       if (!currentModel || !currentModel.startsWith('ollama/')) {
-        setAgentModelId(getFirstModelForProvider('ollama'));
+        syncAgentModelTextFields({ modelId: getFirstModelForProvider('ollama') });
       }
-      if (!agentModelBaseUrl.trim()) {
-        setAgentModelBaseUrl((selectedModel?.provider === 'ollama' ? selectedModel.baseUrl : '') || ollamaUrl || '');
+      if (!currentValues.baseUrl.trim()) {
+        syncAgentModelTextFields({ baseUrl: (selectedModel?.provider === 'ollama' ? selectedModel.baseUrl : '') || ollamaUrl || '' });
       }
       return;
     }
@@ -4630,24 +5191,27 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     const available = providerConfig?.models ?? [];
     if (providerId === 'custom') {
       if (!currentModel) {
-        setAgentModelId('');
+        syncAgentModelTextFields({ modelId: '' });
       }
       return;
     }
-    setAgentModelBaseUrl(providerConfig?.baseUrl || '');
     const hasCurrent = available.some((entry) => entry.fullId === currentModel);
-    setAgentModelId(hasCurrent ? currentModel : getFirstModelForProvider(providerId));
+    syncAgentModelTextFields({
+      modelId: hasCurrent ? currentModel : getFirstModelForProvider(providerId),
+      baseUrl: providerConfig?.baseUrl || '',
+    });
   };
 
   const handleAgentSubagentDefaultModelProviderChange = (providerId: ProviderType) => {
     setAgentSubagentDefaultModelProvider(providerId);
-    const currentModel = agentSubagentDefaultModelId.trim();
+    const currentValues = readAgentSubagentTextFields();
+    const currentModel = currentValues.defaultModelId.trim();
     if (providerId === 'ollama') {
       if (!currentModel || !currentModel.startsWith('ollama/')) {
-        setAgentSubagentDefaultModelId(getFirstModelForProvider('ollama'));
+        syncAgentSubagentTextFields({ defaultModelId: getFirstModelForProvider('ollama') });
       }
-      if (!agentSubagentDefaultModelBaseUrl.trim()) {
-        setAgentSubagentDefaultModelBaseUrl((selectedModel?.provider === 'ollama' ? selectedModel.baseUrl : '') || ollamaUrl || '');
+      if (!currentValues.defaultModelBaseUrl.trim()) {
+        syncAgentSubagentTextFields({ defaultModelBaseUrl: (selectedModel?.provider === 'ollama' ? selectedModel.baseUrl : '') || ollamaUrl || '' });
       }
       return;
     }
@@ -4655,13 +5219,15 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     const available = providerConfig?.models ?? [];
     if (providerId === 'custom') {
       if (!currentModel) {
-        setAgentSubagentDefaultModelId('');
+        syncAgentSubagentTextFields({ defaultModelId: '' });
       }
       return;
     }
-    setAgentSubagentDefaultModelBaseUrl(providerConfig?.baseUrl || '');
     const hasCurrent = available.some((entry) => entry.fullId === currentModel);
-    setAgentSubagentDefaultModelId(hasCurrent ? currentModel : getFirstModelForProvider(providerId));
+    syncAgentSubagentTextFields({
+      defaultModelId: hasCurrent ? currentModel : getFirstModelForProvider(providerId),
+      defaultModelBaseUrl: providerConfig?.baseUrl || '',
+    });
   };
 
   const applySkillAssistantModelForm = (model: SelectedModel | null | undefined) => {
@@ -4675,13 +5241,13 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       || (providerId === 'custom' ? '' : AGENT_FALLBACK_MODEL.model)
     ).trim();
     setSkillAssistantModelProvider(providerId);
-    setSkillAssistantModelId(modelId);
-    setSkillAssistantModelBaseUrl(baseModel.baseUrl || providerConfig?.baseUrl || '');
+    syncSkillAssistantModelTextFields({ modelId, baseUrl: baseModel.baseUrl || providerConfig?.baseUrl || '' });
   };
 
   const normalizeSkillAssistantSelectedModel = (): SelectedModel | null => {
     if (!skillAssistantModelOverrideEnabled) return null;
-    let modelId = skillAssistantModelId.trim();
+    const formValues = readSkillAssistantModelTextFields();
+    let modelId = formValues.modelId.trim();
     if (!modelId) return null;
 
     if (skillAssistantModelProvider === 'ollama' && !modelId.startsWith('ollama/')) {
@@ -4693,7 +5259,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       model: modelId,
     };
 
-    const trimmedBaseUrl = skillAssistantModelBaseUrl.trim();
+    const trimmedBaseUrl = formValues.baseUrl.trim();
     const providerConfig = modelProviders.find((entry) => entry.id === skillAssistantModelProvider);
     if (
       trimmedBaseUrl &&
@@ -4707,25 +5273,28 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
 
   const handleSkillAssistantModelProviderChange = (providerId: ProviderType) => {
     setSkillAssistantModelProvider(providerId);
-    const currentModel = skillAssistantModelId.trim();
+    const currentValues = readSkillAssistantModelTextFields();
+    const currentModel = currentValues.modelId.trim();
     if (providerId === 'ollama') {
       if (!currentModel || !currentModel.startsWith('ollama/')) {
-        setSkillAssistantModelId(getFirstModelForProvider('ollama'));
+        syncSkillAssistantModelTextFields({ modelId: getFirstModelForProvider('ollama') });
       }
-      if (!skillAssistantModelBaseUrl.trim()) {
-        setSkillAssistantModelBaseUrl((selectedModel?.provider === 'ollama' ? selectedModel.baseUrl : '') || ollamaUrl || '');
+      if (!currentValues.baseUrl.trim()) {
+        syncSkillAssistantModelTextFields({ baseUrl: (selectedModel?.provider === 'ollama' ? selectedModel.baseUrl : '') || ollamaUrl || '' });
       }
       return;
     }
     const providerConfig = modelProviders.find((entry) => entry.id === providerId);
     const available = providerConfig?.models ?? [];
     if (providerId === 'custom') {
-      if (!currentModel) setSkillAssistantModelId('');
+      if (!currentModel) syncSkillAssistantModelTextFields({ modelId: '' });
       return;
     }
-    setSkillAssistantModelBaseUrl(providerConfig?.baseUrl || '');
     const hasCurrent = available.some((entry) => entry.fullId === currentModel);
-    setSkillAssistantModelId(hasCurrent ? currentModel : getFirstModelForProvider(providerId));
+    syncSkillAssistantModelTextFields({
+      modelId: hasCurrent ? currentModel : getFirstModelForProvider(providerId),
+      baseUrl: providerConfig?.baseUrl || '',
+    });
   };
 
   const handleSaveSkillAssistantModel = async () => {
@@ -4734,6 +5303,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setSkillAssistantModelError(null);
     setSkillAssistantModelStatus(null);
     try {
+      const formValues = readSkillAssistantModelTextFields();
+      syncSkillAssistantModelTextFields(formValues);
       const nextModel = normalizeSkillAssistantSelectedModel();
       if (skillAssistantModelOverrideEnabled && !nextModel) {
         throw new Error('Select a model for Skill Assistant override.');
@@ -4743,8 +5314,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         createSkillAssistantModelSnapshot({
           enabled: skillAssistantModelOverrideEnabled,
           provider: skillAssistantModelProvider,
-          modelId: skillAssistantModelId,
-          baseUrl: skillAssistantModelBaseUrl,
+          modelId: formValues.modelId,
+          baseUrl: formValues.baseUrl,
         })
       );
       setSkillAssistantModelStatus(skillAssistantModelOverrideEnabled ? 'Skill Assistant model override saved.' : 'Skill Assistant now uses global model.');
@@ -4838,11 +5409,13 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setAgentAutoSkillEnabled(false);
     setAgentAutoSkillAutoPromoteLowRisk(false);
     setAgentSubagentsEnabled(false);
-    setAgentSubagentMaxChildren('3');
-    setAgentSubagentMaxDepth('1');
-    setAgentSubagentAllowedAgentIds('');
+    syncAgentSubagentTextFields({
+      maxChildren: '3',
+      maxDepth: '1',
+      allowedAgentIds: '',
+      runTimeoutSeconds: '300',
+    });
     setAgentSubagentAutoRelayCompletions(true);
-    setAgentSubagentRunTimeoutSeconds('300');
     setAgentSubagentDefaultMode('run');
     setAgentSubagentDefaultModelEnabled(false);
     applyAgentSubagentDefaultModelForm(selectedModel ?? AGENT_FALLBACK_MODEL);
@@ -4857,6 +5430,12 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setAgentPermissionRuntimeDefaultQuestionDecision('prompt');
     setAgentPermissionAllowedToolNames('');
     setAgentPermissionBlockedToolNames('');
+    if (agentPermissionAllowedToolNamesRef.current) {
+      agentPermissionAllowedToolNamesRef.current.value = '';
+    }
+    if (agentPermissionBlockedToolNamesRef.current) {
+      agentPermissionBlockedToolNamesRef.current.value = '';
+    }
     setSavedAgentPermissionProfileSnapshot(
       createAgentPermissionProfileSnapshot({
         enabled: false,
@@ -4902,11 +5481,13 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setAgentAutoSkillEnabled(Boolean(agent.autoSkillEnabled));
     setAgentAutoSkillAutoPromoteLowRisk(Boolean(agent.autoSkillAutoPromoteLowRisk));
     setAgentSubagentsEnabled(Boolean(agent.subagentsEnabled));
-    setAgentSubagentMaxChildren(String(agent.subagentMaxChildren ?? 3));
-    setAgentSubagentMaxDepth(String(agent.subagentMaxDepth ?? 1));
-    setAgentSubagentAllowedAgentIds((agent.subagentAllowedAgentIds || []).join(', '));
+    syncAgentSubagentTextFields({
+      maxChildren: String(agent.subagentMaxChildren ?? 3),
+      maxDepth: String(agent.subagentMaxDepth ?? 1),
+      allowedAgentIds: (agent.subagentAllowedAgentIds || []).join(', '),
+      runTimeoutSeconds: String(Math.max(15, Math.round((agent.subagentRunTimeoutMs ?? (5 * 60 * 1000)) / 1000))),
+    });
     setAgentSubagentAutoRelayCompletions(agent.subagentAutoRelayCompletions ?? true);
-    setAgentSubagentRunTimeoutSeconds(String(Math.max(15, Math.round((agent.subagentRunTimeoutMs ?? (5 * 60 * 1000)) / 1000))));
     setAgentSubagentDefaultMode(agent.subagentDefaultMode === 'session' ? 'session' : 'run');
     setAgentSubagentDefaultModelEnabled(Boolean(agent.subagentDefaultModel));
     applyAgentSubagentDefaultModelForm(agent.subagentDefaultModel ?? selectedModel ?? AGENT_FALLBACK_MODEL);
@@ -4923,8 +5504,16 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setAgentPermissionFileDefaultDecision(agent.permissionProfile?.file?.defaultDecision ?? 'prompt');
     setAgentPermissionRuntimeDefaultToolDecision(agent.permissionProfile?.runtime?.defaultToolDecision ?? 'prompt');
     setAgentPermissionRuntimeDefaultQuestionDecision(agent.permissionProfile?.runtime?.defaultQuestionDecision ?? 'prompt');
-    setAgentPermissionAllowedToolNames(formatAllowlist(agent.permissionProfile?.runtime?.allowedToolNames || []));
-    setAgentPermissionBlockedToolNames(formatAllowlist(agent.permissionProfile?.runtime?.blockedToolNames || []));
+    const agentAllowedToolNamesText = formatAllowlist(agent.permissionProfile?.runtime?.allowedToolNames || []);
+    const agentBlockedToolNamesText = formatAllowlist(agent.permissionProfile?.runtime?.blockedToolNames || []);
+    setAgentPermissionAllowedToolNames(agentAllowedToolNamesText);
+    setAgentPermissionBlockedToolNames(agentBlockedToolNamesText);
+    if (agentPermissionAllowedToolNamesRef.current) {
+      agentPermissionAllowedToolNamesRef.current.value = agentAllowedToolNamesText;
+    }
+    if (agentPermissionBlockedToolNamesRef.current) {
+      agentPermissionBlockedToolNamesRef.current.value = agentBlockedToolNamesText;
+    }
     setSavedAgentPermissionProfileSnapshot(
       createAgentPermissionProfileSnapshot({
         enabled: Boolean(agent.permissionProfile?.enabled),
@@ -4935,8 +5524,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         fileDefaultDecision: agent.permissionProfile?.file?.defaultDecision ?? 'prompt',
         runtimeDefaultToolDecision: agent.permissionProfile?.runtime?.defaultToolDecision ?? 'prompt',
         runtimeDefaultQuestionDecision: agent.permissionProfile?.runtime?.defaultQuestionDecision ?? 'prompt',
-        allowedToolNamesText: formatAllowlist(agent.permissionProfile?.runtime?.allowedToolNames || []),
-        blockedToolNamesText: formatAllowlist(agent.permissionProfile?.runtime?.blockedToolNames || []),
+        allowedToolNamesText: agentAllowedToolNamesText,
+        blockedToolNamesText: agentBlockedToolNamesText,
       })
     );
     setAgentError(null);
@@ -4969,8 +5558,16 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       setAgentPermissionFileDefaultDecision(saved.file?.defaultDecision ?? 'prompt');
       setAgentPermissionRuntimeDefaultToolDecision(saved.runtime?.defaultToolDecision ?? 'prompt');
       setAgentPermissionRuntimeDefaultQuestionDecision(saved.runtime?.defaultQuestionDecision ?? 'prompt');
-      setAgentPermissionAllowedToolNames(formatAllowlist(saved.runtime?.allowedToolNames || []));
-      setAgentPermissionBlockedToolNames(formatAllowlist(saved.runtime?.blockedToolNames || []));
+      const agentAllowedToolNamesText = formatAllowlist(saved.runtime?.allowedToolNames || []);
+      const agentBlockedToolNamesText = formatAllowlist(saved.runtime?.blockedToolNames || []);
+      setAgentPermissionAllowedToolNames(agentAllowedToolNamesText);
+      setAgentPermissionBlockedToolNames(agentBlockedToolNamesText);
+      if (agentPermissionAllowedToolNamesRef.current) {
+        agentPermissionAllowedToolNamesRef.current.value = agentAllowedToolNamesText;
+      }
+      if (agentPermissionBlockedToolNamesRef.current) {
+        agentPermissionBlockedToolNamesRef.current.value = agentBlockedToolNamesText;
+      }
       setAgentError(null);
     } catch (err) {
       console.error('Failed to revert agent permission profile changes:', err);
@@ -5014,6 +5611,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     let subagentMaxChildrenValue = 3;
     let subagentMaxDepthValue = 1;
     let subagentRunTimeoutSecondsValue = 300;
+    const subagentFormValues = readAgentSubagentTextFields();
     try {
       loopMaxIterationsValue = parseIntegerSetting(
         agentLoopMaxIterationsInputRef.current?.value ?? agentLoopMaxIterations,
@@ -5057,21 +5655,21 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         AGENT_HEARTBEAT_DEFAULT_WINDOW_END_TIME
       );
       subagentMaxChildrenValue = parseIntegerSetting(
-        agentSubagentMaxChildren,
+        subagentFormValues.maxChildren,
         3,
         1,
         12,
         'Subagent max children'
       );
       subagentMaxDepthValue = parseIntegerSetting(
-        agentSubagentMaxDepth,
+        subagentFormValues.maxDepth,
         1,
         1,
         4,
         'Subagent max depth'
       );
       subagentRunTimeoutSecondsValue = parseIntegerSetting(
-        agentSubagentRunTimeoutSeconds,
+        subagentFormValues.runTimeoutSeconds,
         300,
         15,
         3600,
@@ -5094,13 +5692,23 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setAgentHeartbeatWindowStartTime(heartbeatWindowStartValue);
     setAgentHeartbeatWindowEndTime(heartbeatWindowEndValue);
     setAgentHeartbeatPrompt(heartbeatPromptValue || AGENT_HEARTBEAT_DEFAULT_PROMPT);
-    setAgentSubagentMaxChildren(String(subagentMaxChildrenValue));
-    setAgentSubagentMaxDepth(String(subagentMaxDepthValue));
-    setAgentSubagentRunTimeoutSeconds(String(subagentRunTimeoutSecondsValue));
+    syncAgentSubagentTextFields({
+      maxChildren: String(subagentMaxChildrenValue),
+      maxDepth: String(subagentMaxDepthValue),
+      allowedAgentIds: subagentFormValues.allowedAgentIds,
+      runTimeoutSeconds: String(subagentRunTimeoutSecondsValue),
+    });
     const heartbeatEnabledForSave = agentLoopEnabled ? agentHeartbeatEnabled : false;
     if (!agentLoopEnabled && agentHeartbeatEnabled) {
       setAgentHeartbeatEnabled(false);
     }
+    const agentModelValues = readAgentModelTextFields();
+    syncAgentModelTextFields(agentModelValues);
+    const subagentModelValues = readAgentSubagentTextFields();
+    syncAgentSubagentTextFields({
+      defaultModelId: subagentModelValues.defaultModelId,
+      defaultModelBaseUrl: subagentModelValues.defaultModelBaseUrl,
+    });
     const selectedModelOverride = normalizeAgentSelectedModel();
     const subagentDefaultModel = normalizeAgentSubagentDefaultModel();
     if (agentModelOverrideEnabled && !selectedModelOverride) {
@@ -5111,10 +5719,14 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       setAgentError('Default subagent model is required when subagent model override is enabled.');
       return;
     }
-    const subagentAllowedAgentIds = agentSubagentAllowedAgentIds
+    const subagentAllowedAgentIds = subagentFormValues.allowedAgentIds
       .split(/[\s,]+/)
       .map((value) => value.trim().toLowerCase())
       .filter(Boolean);
+    const agentAllowedToolNamesText = agentPermissionAllowedToolNamesRef.current?.value ?? agentPermissionAllowedToolNames;
+    const agentBlockedToolNamesText = agentPermissionBlockedToolNamesRef.current?.value ?? agentPermissionBlockedToolNames;
+    setAgentPermissionAllowedToolNames(agentAllowedToolNamesText);
+    setAgentPermissionBlockedToolNames(agentBlockedToolNamesText);
     const permissionProfile = agentPermissionProfileEnabled
       ? {
         enabled: true,
@@ -5126,8 +5738,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         runtime: {
           defaultToolDecision: agentPermissionRuntimeDefaultToolDecision,
           defaultQuestionDecision: agentPermissionRuntimeDefaultQuestionDecision,
-          allowedToolNames: parseAllowlist(agentPermissionAllowedToolNames),
-          blockedToolNames: parseAllowlist(agentPermissionBlockedToolNames),
+          allowedToolNames: parseAllowlist(agentAllowedToolNamesText),
+          blockedToolNames: parseAllowlist(agentBlockedToolNamesText),
         },
       }
       : null;
@@ -5224,39 +5836,190 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     }
   };
 
+  const setUncontrolledInputValue = <T extends HTMLInputElement | HTMLTextAreaElement>(
+    ref: RefObject<T | null>,
+    value: string
+  ) => {
+    if (ref.current) {
+      ref.current.value = value;
+    }
+  };
+
+  const syncScheduleFormValues = (values: {
+    name?: string;
+    cron?: string;
+    prompt?: string;
+    timezone?: string;
+    workingDirectory?: string;
+    sessionId?: string;
+    draftText?: string;
+  }) => {
+    if (values.name !== undefined) {
+      setScheduleName(values.name);
+      setUncontrolledInputValue(scheduleNameInputRef, values.name);
+    }
+    if (values.cron !== undefined) {
+      setScheduleCron(values.cron);
+      setUncontrolledInputValue(scheduleCronInputRef, values.cron);
+    }
+    if (values.prompt !== undefined) {
+      setSchedulePrompt(values.prompt);
+      setUncontrolledInputValue(schedulePromptInputRef, values.prompt);
+    }
+    if (values.timezone !== undefined) {
+      setScheduleTimezone(values.timezone);
+      setUncontrolledInputValue(scheduleTimezoneInputRef, values.timezone);
+    }
+    if (values.workingDirectory !== undefined) {
+      setScheduleWorkingDirectory(values.workingDirectory);
+      setUncontrolledInputValue(scheduleWorkingDirectoryInputRef, values.workingDirectory);
+    }
+    if (values.sessionId !== undefined) {
+      setScheduleSessionId(values.sessionId);
+      setUncontrolledInputValue(scheduleSessionIdInputRef, values.sessionId);
+    }
+    if (values.draftText !== undefined) {
+      setAutomationDraftText(values.draftText);
+      setUncontrolledInputValue(automationDraftTextRef, values.draftText);
+    }
+  };
+
+  const readScheduleFormValues = () => ({
+    name: scheduleNameInputRef.current?.value ?? scheduleName,
+    cron: scheduleCronInputRef.current?.value ?? scheduleCron,
+    prompt: schedulePromptInputRef.current?.value ?? schedulePrompt,
+    timezone: scheduleTimezoneInputRef.current?.value ?? scheduleTimezone,
+    workingDirectory: scheduleWorkingDirectoryInputRef.current?.value ?? scheduleWorkingDirectory,
+    sessionId: scheduleSessionIdInputRef.current?.value ?? scheduleSessionId,
+    draftText: automationDraftTextRef.current?.value ?? automationDraftText,
+  });
+
+  const handleDraftAutomationFromText = async () => {
+    const formValues = readScheduleFormValues();
+    const text = formValues.draftText.trim();
+    if (!text) {
+      setScheduleError('Describe the automation you want to draft.');
+      return;
+    }
+    const accomplish = getAccomplish();
+    setAutomationDraftLoading(true);
+    setScheduleError(null);
+    try {
+      const timezone = formValues.timezone.trim()
+        || Intl.DateTimeFormat().resolvedOptions().timeZone
+        || undefined;
+      const draft = await accomplish.draftAutomationFromText({
+        text,
+        agentId: activeAgentId || undefined,
+        timezone,
+      });
+      setAutomationDraftResult(draft);
+    } catch (err) {
+      console.error('Failed to draft automation:', err);
+      setScheduleError('Unable to draft automation from that description.');
+    } finally {
+      setAutomationDraftLoading(false);
+    }
+  };
+
+  const applyAutomationDraftToForm = () => {
+    if (!automationDraftResult) return;
+    const schedule = automationDraftResult.schedule;
+    const formValues = readScheduleFormValues();
+    setEditingScheduleId(null);
+    syncScheduleFormValues({
+      name: schedule.name,
+      prompt: schedule.prompt,
+      cron: schedule.cron,
+      timezone: schedule.timezone || '',
+      workingDirectory: schedule.workingDirectory || formValues.workingDirectory,
+      sessionId: schedule.sessionId || '',
+    });
+    setScheduleReuseSession(Boolean(schedule.reuseSession));
+  };
+
+  const saveAutomationDraft = async () => {
+    if (!automationDraftResult) return;
+    const accomplish = getAccomplish();
+    setAutomationDraftSaving(true);
+    setScheduleError(null);
+    try {
+      const schedule = automationDraftResult.schedule;
+      const formValues = readScheduleFormValues();
+      await accomplish.upsertSchedule({
+        ...schedule,
+        agentId: schedule.agentId || activeAgentId || undefined,
+        timezone: schedule.timezone || formValues.timezone.trim() || undefined,
+        workingDirectory: schedule.workingDirectory || formValues.workingDirectory.trim() || undefined,
+      });
+      syncScheduleFormValues({ draftText: '' });
+      setAutomationDraftResult(null);
+      await refreshSchedules();
+    } catch (err) {
+      console.error('Failed to save automation draft:', err);
+      setScheduleError('Unable to save automation draft.');
+    } finally {
+      setAutomationDraftSaving(false);
+    }
+  };
+
+  const resetScheduleForm = () => {
+    setEditingScheduleId(null);
+    syncScheduleFormValues({
+      name: '',
+      cron: '0 9 * * 1-5',
+      prompt: '',
+      timezone: '',
+      workingDirectory: '',
+      sessionId: '',
+    });
+    setScheduleReuseSession(false);
+  };
+
+  const handleEditSchedule = (schedule: ScheduledTask) => {
+    setEditingScheduleId(schedule.id);
+    syncScheduleFormValues({
+      name: schedule.name || '',
+      cron: schedule.cron || '0 9 * * 1-5',
+      prompt: schedule.prompt || '',
+      timezone: schedule.timezone || '',
+      workingDirectory: schedule.workingDirectory || '',
+      sessionId: schedule.sessionId || '',
+    });
+    setScheduleReuseSession(Boolean(schedule.reuseSession));
+    setScheduleError(null);
+  };
+
   const handleCreateSchedule = async () => {
     const accomplish = getAccomplish();
-    if (!schedulePrompt.trim()) {
+    const formValues = readScheduleFormValues();
+    if (!formValues.prompt.trim()) {
       setScheduleError('Schedule prompt is required.');
       return;
     }
-    if (!scheduleCron.trim()) {
+    if (!formValues.cron.trim()) {
       setScheduleError('Cron expression is required.');
       return;
     }
     setSavingSchedule(true);
     setScheduleError(null);
     const payload: ScheduleConfig = {
-      name: scheduleName.trim() || 'Scheduled task',
-      prompt: schedulePrompt.trim(),
-      cron: scheduleCron.trim(),
-      timezone: scheduleTimezone.trim() || undefined,
-      workingDirectory: scheduleWorkingDirectory.trim() || undefined,
+      name: formValues.name.trim() || 'Scheduled task',
+      prompt: formValues.prompt.trim(),
+      cron: formValues.cron.trim(),
+      timezone: formValues.timezone.trim() || undefined,
+      workingDirectory: formValues.workingDirectory.trim() || undefined,
       agentId: activeAgentId || undefined,
       reuseSession: scheduleReuseSession,
-      sessionId: scheduleSessionId.trim() || undefined,
+      sessionId: formValues.sessionId.trim() || undefined,
       enabled: true,
     };
     try {
-      await accomplish.upsertSchedule(payload);
-      setScheduleName('');
-      setSchedulePrompt('');
-      setScheduleWorkingDirectory('');
-      setScheduleReuseSession(false);
-      setScheduleSessionId('');
+      await accomplish.upsertSchedule(payload, editingScheduleId || undefined);
+      resetScheduleForm();
       await refreshSchedules();
     } catch (err) {
-      console.error('Failed to create schedule:', err);
+      console.error('Failed to save schedule:', err);
       setScheduleError('Unable to save schedule.');
     } finally {
       setSavingSchedule(false);
@@ -5268,7 +6031,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     try {
       const folder = await accomplish.selectFolder();
       if (folder) {
-        setScheduleWorkingDirectory(folder);
+        syncScheduleFormValues({ workingDirectory: folder });
       }
     } catch (err) {
       console.error('Failed to select schedule folder:', err);
@@ -6705,12 +7468,14 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const handleEditGatewayBinding = (binding: GatewayRouteBinding) => {
     setGatewayBindingEditorId(binding.id);
     setGatewayBindingAgentId(binding.agentId || activeAgentId || defaultAgentId || 'main');
-    setGatewayBindingChannel(binding.match.channel || 'discord');
-    setGatewayBindingAccountId(binding.match.accountId || '');
     setGatewayBindingPeerKind(binding.match.peer?.kind || 'dm');
-    setGatewayBindingPeerId(binding.match.peer?.id || '');
-    setGatewayBindingGuildId(binding.match.guildId || '');
-    setGatewayBindingTeamId(binding.match.teamId || '');
+    syncGatewayBindingTextFields({
+      channel: binding.match.channel || 'discord',
+      accountId: binding.match.accountId || '',
+      peerId: binding.match.peer?.id || '',
+      guildId: binding.match.guildId || '',
+      teamId: binding.match.teamId || '',
+    });
   };
 
   const handleSaveGatewayBinding = async () => {
@@ -6718,7 +7483,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setGatewayBindingsSaving(true);
     setGatewayBindingsError(null);
     try {
-      const channel = normalizeGatewayChannel(gatewayBindingChannel);
+      const formValues = readGatewayBindingTextFields();
+      const channel = normalizeGatewayChannel(formValues.channel);
       const agentId = gatewayBindingAgentId.trim() || activeAgentId || defaultAgentId || 'main';
       if (!agentId) {
         throw new Error('Agent is required.');
@@ -6730,22 +7496,22 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
           channel,
         },
       };
-      const accountId = gatewayBindingAccountId.trim();
+      const accountId = formValues.accountId.trim();
       if (accountId) {
         binding.match.accountId = accountId;
       }
-      const peerId = gatewayBindingPeerId.trim();
+      const peerId = formValues.peerId.trim();
       if (peerId) {
         binding.match.peer = {
           kind: gatewayBindingPeerKind,
           id: peerId,
         };
       }
-      const guildId = gatewayBindingGuildId.trim();
+      const guildId = formValues.guildId.trim();
       if (guildId) {
         binding.match.guildId = guildId;
       }
-      const teamId = gatewayBindingTeamId.trim();
+      const teamId = formValues.teamId.trim();
       if (teamId) {
         binding.match.teamId = teamId;
       }
@@ -6795,7 +7561,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
 
   const handleLookupGatewayRun = async () => {
     const accomplish = getAccomplish();
-    const runId = gatewayRunLookupId.trim();
+    const runId = (gatewayRunLookupIdInputRef.current?.value ?? gatewayRunLookupId).trim();
+    setGatewayRunLookupId(runId);
     if (!runId) {
       setGatewayRunLookup(null);
       return;
@@ -6814,12 +7581,13 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   };
 
   const applyGatewayRpcPreset = (method: string, params: Record<string, unknown>) => {
-    setGatewayRpcMethod(method);
-    setGatewayRpcParams(JSON.stringify(params, null, 2));
+    syncGatewayRpcTextFields({ method, params: JSON.stringify(params, null, 2) });
   };
 
   const handleRunGatewayRpc = async () => {
-    const method = gatewayRpcMethod.trim();
+    const rpcValues = readGatewayRpcTextFields();
+    const method = rpcValues.method.trim();
+    syncGatewayRpcTextFields({ method: rpcValues.method, params: rpcValues.params, token: rpcValues.token, password: rpcValues.password });
     if (!method) {
       setGatewayRpcError('Method is required.');
       return;
@@ -6827,7 +7595,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
 
     let params: Record<string, unknown>;
     try {
-      const raw = gatewayRpcParams.trim();
+      const raw = rpcValues.params.trim();
       if (!raw) {
         params = {};
       } else {
@@ -6847,14 +7615,14 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     };
 
     if (gatewayRpcAuthMode === 'token') {
-      const token = gatewayRpcToken.trim() || (gatewayTokenInputRef.current?.value ?? gatewayTokenInput).trim();
+      const token = rpcValues.token.trim() || (gatewayTokenInputRef.current?.value ?? gatewayTokenInput).trim();
       if (!token) {
         setGatewayRpcError('Token auth selected but no token provided.');
         return;
       }
       headers.Authorization = `Bearer ${token}`;
     } else if (gatewayRpcAuthMode === 'password') {
-      const password = gatewayRpcPassword.trim() || (gatewayPasswordInputRef.current?.value ?? gatewayPasswordInput).trim();
+      const password = rpcValues.password.trim() || (gatewayPasswordInputRef.current?.value ?? gatewayPasswordInput).trim();
       if (!password) {
         setGatewayRpcError('Password auth selected but no password provided.');
         return;
@@ -6945,7 +7713,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
 
   const handleMergeGatewayConnectorMetadataTemplate = () => {
     if (!selectedGatewayConnectorMetadataTemplate) return;
-    const existing = parseGatewayConnectorMetadata(gatewayConnectorMetadataText) ?? {};
+    const currentMetadataText = readGatewayConnectorTextFields().metadataText;
+    const existing = parseGatewayConnectorMetadata(currentMetadataText) ?? {};
     const next = { ...existing };
     let added = 0;
     for (const [key, value] of selectedGatewayConnectorMetadataTemplate.lines) {
@@ -6955,7 +7724,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       }
     }
     const preferredKeyOrder = selectedGatewayConnectorMetadataTemplate.lines.map(([key]) => key);
-    setGatewayConnectorMetadataText(formatGatewayConnectorMetadataText(next, preferredKeyOrder));
+    syncGatewayConnectorTextFields({ metadataText: formatGatewayConnectorMetadataText(next, preferredKeyOrder) });
     setGatewayConnectorError(null);
     setGatewayConnectorStatus(
       added > 0
@@ -6966,7 +7735,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
 
   const handleReplaceGatewayConnectorMetadataTemplate = () => {
     if (!selectedGatewayConnectorMetadataTemplate) return;
-    setGatewayConnectorMetadataText(selectedGatewayConnectorMetadataTemplateText);
+    syncGatewayConnectorTextFields({ metadataText: selectedGatewayConnectorMetadataTemplateText });
     setGatewayConnectorError(null);
     setGatewayConnectorStatus('Replaced metadata with connector template.');
   };
@@ -6978,15 +7747,17 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setGatewayConnectorError(null);
     setGatewayConnectorStatus(null);
     try {
-      const metadataObject = parseGatewayConnectorMetadata(gatewayConnectorMetadataText) ?? {};
+      const formValues = readGatewayConnectorTextFields();
+      syncGatewayConnectorTextFields(formValues);
+      const metadataObject = parseGatewayConnectorMetadata(formValues.metadataText) ?? {};
       if (selectedGatewayConnectorHasRuntimeControls) {
-        const commandPrefix = gatewayConnectorRuntimeCommandPrefix.trim();
+        const commandPrefix = formValues.runtimeCommandPrefix.trim();
         if (commandPrefix) {
           metadataObject.command_prefix = commandPrefix;
         } else {
           delete metadataObject.command_prefix;
         }
-        const pollIntervalMs = gatewayConnectorRuntimePollIntervalMs.trim();
+        const pollIntervalMs = formValues.runtimePollIntervalMs.trim();
         if (pollIntervalMs) {
           metadataObject.poll_interval_ms = pollIntervalMs;
         } else {
@@ -6994,7 +7765,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         }
         metadataObject.require_mention = gatewayConnectorRuntimeRequireMention ? 'true' : 'false';
         if (selectedGatewayConnector.definition.id === 'msteams') {
-          const botUserId = gatewayConnectorRuntimeBotUserId.trim();
+          const botUserId = formValues.runtimeBotUserId.trim();
           if (botUserId) {
             metadataObject.bot_user_id = botUserId;
           } else {
@@ -7011,14 +7782,14 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         autoBindRouting: gatewayConnectorAutoBindRouting,
         recordObservedIds: gatewayConnectorRecordObservedIds,
         accessPolicyMode: gatewayConnectorAccessPolicyMode,
-        allowedUserIds: parseAllowlist(gatewayConnectorAllowedUserIds),
-        allowedGroupIds: parseAllowlist(gatewayConnectorAllowedGroupIds),
-        allowedChannelIds: parseAllowlist(gatewayConnectorAllowedChannelIds),
-        allowedAccountIds: parseAllowlist(gatewayConnectorAllowedAccountIds),
+        allowedUserIds: parseAllowlist(formValues.allowedUserIds),
+        allowedGroupIds: parseAllowlist(formValues.allowedGroupIds),
+        allowedChannelIds: parseAllowlist(formValues.allowedChannelIds),
+        allowedAccountIds: parseAllowlist(formValues.allowedAccountIds),
         agentId: gatewayConnectorAgentId.trim() || undefined,
-        accountId: gatewayConnectorAccountId.trim() || undefined,
-        bridgeUrl: gatewayConnectorBridgeUrl.trim() || undefined,
-        notes: gatewayConnectorNotes.trim() || undefined,
+        accountId: formValues.accountId.trim() || undefined,
+        bridgeUrl: formValues.bridgeUrl.trim() || undefined,
+        notes: formValues.notes.trim() || undefined,
         metadata,
       });
       setGatewayConnectorStatus(
@@ -7040,7 +7811,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const handleSaveGatewayConnectorSecret = async () => {
     const accomplish = getAccomplish();
     if (!selectedGatewayConnector) return;
-    const secret = gatewayConnectorSecretInput.trim();
+    const secret = readGatewayConnectorTextFields().secret.trim();
     if (!secret) {
       setGatewayConnectorError('Enter a shared secret before saving.');
       return;
@@ -7054,7 +7825,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         secret,
         selectedGatewayConnector.config.instanceId
       );
-      setGatewayConnectorSecretInput('');
+      syncGatewayConnectorTextFields({ secret: '' });
       setGatewayConnectorStatus(`Secret saved for ${selectedGatewayConnector.definition.name}.`);
       await refreshGatewayConnectorExtensions();
     } catch (err) {
@@ -7076,7 +7847,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         selectedGatewayConnector.config.instanceId
       );
       if (result?.secret) {
-        setGatewayConnectorSecretInput(result.secret);
+        syncGatewayConnectorTextFields({ secret: result.secret });
         await navigator.clipboard.writeText(result.secret);
       }
       setGatewayConnectorStatus(`Secret generated for ${selectedGatewayConnector.definition.name} and copied.`);
@@ -7099,7 +7870,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         selectedGatewayConnector.definition.id,
         selectedGatewayConnector.config.instanceId
       );
-      setGatewayConnectorSecretInput('');
+      syncGatewayConnectorTextFields({ secret: '' });
       setGatewayConnectorStatus(`Secret cleared for ${selectedGatewayConnector.definition.name}.`);
       await refreshGatewayConnectorExtensions();
     } catch (err) {
@@ -7200,6 +7971,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const handleCreateGatewayConnectorInstance = async () => {
     const accomplish = getAccomplish();
     const connectorId = gatewayConnectorCreateType.trim();
+    const createName = readGatewayConnectorTextFields().createName.trim();
     if (!connectorId) return;
     setGatewayConnectorInstanceCreating(true);
     setGatewayConnectorError(null);
@@ -7207,14 +7979,14 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     try {
       const result = await accomplish.createGatewayConnectorExtensionInstance(
         connectorId,
-        gatewayConnectorCreateName.trim() || undefined
+        createName || undefined
       );
       const runtimeKey = result?.state?.runtimeKey || '';
       await refreshGatewayConnectorExtensions();
       if (runtimeKey) {
         setGatewayConnectorSelectedId(runtimeKey);
       }
-      setGatewayConnectorCreateName('');
+      syncGatewayConnectorTextFields({ createName: '' });
       setGatewayConnectorStatus(`Created ${result?.state?.definition?.name ?? connectorId} instance.`);
     } catch (err) {
       setGatewayConnectorError(err instanceof Error ? err.message : 'Unable to create connector instance.');
@@ -7250,7 +8022,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       .map((item) => item.id?.trim())
       .filter((value): value is string => Boolean(value));
     if (ids.length === 0) return;
-    setGatewayConnectorAllowedChannelIds(ids.join(', '));
+    syncGatewayConnectorTextFields({ allowedChannelIds: ids.join(', ') });
     setGatewayConnectorStatus(`Applied ${ids.length} discovered target IDs to Allowed channel IDs.`);
   };
 
@@ -7311,7 +8083,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         if (status.status === 'completed') {
           setAppConnectorStatus('OAuth connection complete and token stored.');
           setAppConnectorError(null);
-          setAppConnectorSecretInput('');
+          syncAppConnectorTextFields({ secret: '' });
           await refreshAppConnectorExtensions();
           return;
         }
@@ -7342,7 +8114,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const handleSaveAppConnectorOAuthClientSecret = async () => {
     const accomplish = getAccomplish();
     if (!selectedAppConnector || selectedAppConnector.definition.authMethod !== 'oauth2') return;
-    const clientSecret = appConnectorOauthClientSecret.trim();
+    const clientSecret = readAppConnectorTextFields().oauthClientSecret.trim();
     if (!clientSecret) {
       setAppConnectorError('Enter OAuth client secret before saving.');
       return;
@@ -7356,7 +8128,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         clientSecret,
         selectedAppConnector.config.instanceId
       );
-      setAppConnectorOauthClientSecret('');
+      syncAppConnectorTextFields({ oauthClientSecret: '' });
       setAppConnectorOauthClientSecretStored(true);
       setAppConnectorStatus('OAuth client secret stored securely.');
     } catch (err) {
@@ -7377,7 +8149,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         selectedAppConnector.definition.id,
         selectedAppConnector.config.instanceId
       );
-      setAppConnectorOauthClientSecret('');
+      syncAppConnectorTextFields({ oauthClientSecret: '' });
       setAppConnectorOauthClientSecretStored(false);
       setAppConnectorStatus('OAuth client secret cleared.');
     } catch (err) {
@@ -7391,14 +8163,16 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     const accomplish = getAccomplish();
     if (!selectedAppConnector || selectedAppConnector.definition.authMethod !== 'oauth2') return;
     const connectorId = selectedAppConnector.definition.id;
-    const clientId = appConnectorOauthClientId.trim()
+    const formValues = readAppConnectorTextFields();
+    syncAppConnectorTextFields(formValues);
+    const clientId = formValues.oauthClientId.trim()
       || getGatewayConnectorMetadataValue(selectedAppConnector.config.metadata, 'oauth_client_id')
       || '';
     if (!clientId) {
       setAppConnectorError('OAuth client ID is required.');
       return;
     }
-    const typedClientSecret = appConnectorOauthClientSecret.trim();
+    const typedClientSecret = formValues.oauthClientSecret.trim();
     const providerRequiresClientSecret = connectorId === 'notion' || connectorId === 'slack';
     if (providerRequiresClientSecret && !typedClientSecret && !appConnectorOauthClientSecretStored) {
       setAppConnectorError('This provider requires OAuth client secret. Save it first.');
@@ -7422,14 +8196,14 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
           selectedAppConnector.config.instanceId
         );
         setAppConnectorOauthClientSecretStored(true);
-        setAppConnectorOauthClientSecret('');
+        syncAppConnectorTextFields({ oauthClientSecret: '' });
       }
       const flow = await accomplish.startAppConnectorOAuthFlow({
         connectorId,
         connectorInstanceId: selectedAppConnector.config.instanceId,
         clientId,
         clientSecret: typedClientSecret || undefined,
-        scopes: appConnectorOauthScopes.trim() || undefined,
+        scopes: formValues.oauthScopes.trim() || undefined,
         redirectMode,
         redirectUri: redirectUriOverride,
       });
@@ -7450,16 +8224,16 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setAppConnectorError(null);
     setAppConnectorStatus(null);
     stopAppConnectorOAuthPolling();
-    setAppConnectorOauthPending(false);
-    try {
-      const result = await accomplish.disconnectAppConnectorOAuth({
+      setAppConnectorOauthPending(false);
+      try {
+        const result = await accomplish.disconnectAppConnectorOAuth({
         connectorId: selectedAppConnector.definition.id,
         connectorInstanceId: selectedAppConnector.config.instanceId,
         remoteRevoke: true,
       });
       setAppConnectorOauthFlowId('');
       setAppConnectorOauthAuthorizeUrl('');
-      setAppConnectorSecretInput('');
+      syncAppConnectorTextFields({ secret: '' });
       setAppConnectorStatus(result?.detail || 'OAuth token disconnected.');
       await refreshAppConnectorExtensions();
     } catch (err) {
@@ -7477,7 +8251,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     try {
       const folder = await accomplish.selectFolder();
       if (!folder) return;
-      setAppConnectorBaseUrl(folder);
+      syncAppConnectorTextFields({ baseUrl: folder });
       setAppConnectorStatus('Selected Obsidian vault path. Save connector settings to apply.');
     } catch (err) {
       setAppConnectorError(err instanceof Error ? err.message : 'Unable to select vault folder.');
@@ -7489,7 +8263,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const handleSendEmailTriggerTestEvent = async () => {
     const accomplish = getAccomplish();
     if (!selectedAppConnector || selectedAppConnector.definition.id !== 'email-triggers') return;
-    const webhookUrl = appConnectorWebhookUrl.trim();
+    const webhookUrl = readAppConnectorTextFields().webhookUrl.trim();
+    setAppConnectorWebhookUrl(webhookUrl);
     if (!webhookUrl) {
       setAppConnectorError('Webhook URL is required before sending a test event.');
       return;
@@ -7523,12 +8298,14 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setAppConnectorError(null);
     setAppConnectorStatus(null);
     try {
+      const formValues = readAppConnectorTextFields();
+      syncAppConnectorTextFields(formValues);
       const existingMetadata = selectedAppConnector.config.metadata || {};
-      const metadataObject = parseGatewayConnectorMetadata(appConnectorMetadataText) ?? {};
+      const metadataObject = parseGatewayConnectorMetadata(formValues.metadataText) ?? {};
       if (selectedAppConnector.definition.authMethod === 'oauth2') {
-        const oauthClientId = appConnectorOauthClientId.trim();
-        const oauthClientSecret = appConnectorOauthClientSecret.trim();
-        const oauthScopes = appConnectorOauthScopes.trim();
+        const oauthClientId = formValues.oauthClientId.trim();
+        const oauthClientSecret = formValues.oauthClientSecret.trim();
+        const oauthScopes = formValues.oauthScopes.trim();
         const oauthRedirectMode = appConnectorOauthRedirectMode;
         const existingOauthClientId = getGatewayConnectorMetadataValue(existingMetadata, 'oauth_client_id') || '';
         const existingOauthScopes = getGatewayConnectorMetadataValue(existingMetadata, 'oauth_scopes') || '';
@@ -7560,12 +8337,12 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
             oauthClientSecret,
             selectedAppConnector.config.instanceId
           );
-          setAppConnectorOauthClientSecret('');
+          syncAppConnectorTextFields({ oauthClientSecret: '' });
           setAppConnectorOauthClientSecretStored(true);
         }
       }
       if (selectedAppConnector.definition.id === 'email-triggers') {
-        const webhookUrl = appConnectorWebhookUrl.trim();
+        const webhookUrl = formValues.webhookUrl.trim();
         if (webhookUrl) {
           metadataObject.webhook_url = webhookUrl;
         } else {
@@ -7580,9 +8357,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         enabled: isHydrated ? appConnectorEnabled : Boolean(selectedAppConnector.config.enabled),
         autoBindTools: isHydrated ? appConnectorAutoBindTools : selectedAppConnector.config.autoBindTools !== false,
         agentId: appConnectorAgentId.trim() || undefined,
-        accountId: appConnectorAccountId.trim() || undefined,
-        baseUrl: appConnectorBaseUrl.trim() || undefined,
-        notes: appConnectorNotes.trim() || undefined,
+        accountId: formValues.accountId.trim() || undefined,
+        baseUrl: formValues.baseUrl.trim() || undefined,
+        notes: formValues.notes.trim() || undefined,
         metadata,
       });
       setAppConnectorStatus(`Saved ${selectedAppConnector.definition.name} connector.`);
@@ -7597,7 +8374,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const handleSaveAppConnectorSecret = async () => {
     const accomplish = getAccomplish();
     if (!selectedAppConnector) return;
-    const secret = appConnectorSecretInput.trim();
+    const secret = readAppConnectorTextFields().secret.trim();
     if (!secret) {
       setAppConnectorError('Enter a token/secret before saving.');
       return;
@@ -7611,7 +8388,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         secret,
         selectedAppConnector.config.instanceId
       );
-      setAppConnectorSecretInput('');
+      syncAppConnectorTextFields({ secret: '' });
       setAppConnectorStatus(`Secret saved for ${selectedAppConnector.definition.name}.`);
       await refreshAppConnectorExtensions();
     } catch (err) {
@@ -7633,7 +8410,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         selectedAppConnector.config.instanceId
       );
       if (result?.secret) {
-        setAppConnectorSecretInput(result.secret);
+        syncAppConnectorTextFields({ secret: result.secret });
         await navigator.clipboard.writeText(result.secret);
       }
       setAppConnectorStatus(`Generated secret for ${selectedAppConnector.definition.name}.`);
@@ -7656,7 +8433,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         selectedAppConnector.definition.id,
         selectedAppConnector.config.instanceId
       );
-      setAppConnectorSecretInput('');
+      syncAppConnectorTextFields({ secret: '' });
       setAppConnectorStatus(`Secret cleared for ${selectedAppConnector.definition.name}.`);
       await refreshAppConnectorExtensions();
     } catch (err) {
@@ -7693,6 +8470,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const handleCreateAppConnectorInstance = async () => {
     const accomplish = getAccomplish();
     const connectorId = appConnectorCreateType.trim();
+    const createName = readAppConnectorTextFields().createName.trim();
     if (!connectorId) return;
     setAppConnectorInstanceCreating(true);
     setAppConnectorError(null);
@@ -7700,14 +8478,14 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     try {
       const result = await accomplish.createAppConnectorExtensionInstance(
         connectorId,
-        appConnectorCreateName.trim() || undefined
+        createName || undefined
       );
       const runtimeKey = result?.state?.runtimeKey || '';
       await refreshAppConnectorExtensions();
       if (runtimeKey) {
         setAppConnectorSelectedId(runtimeKey);
       }
-      setAppConnectorCreateName('');
+      syncAppConnectorTextFields({ createName: '' });
       setAppConnectorStatus(`Created ${result?.state?.definition?.name ?? connectorId} instance.`);
     } catch (err) {
       setAppConnectorError(err instanceof Error ? err.message : 'Unable to create app connector instance.');
@@ -7954,6 +8732,14 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
 
   const usageProviders = remoteModelProviders.map((entry) => ({ id: entry.id, name: entry.name }));
   const usageCurrencies = ['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY'] as const;
+  const getUsageInputHitCost = (row?: UsagePricingSettings['providers'][number] | null) =>
+    typeof row?.inputHitCostPer1m === 'number' ? row.inputHitCostPer1m : null;
+  const getUsageInputMissCost = (row?: UsagePricingSettings['providers'][number] | null) =>
+    typeof row?.inputMissCostPer1m === 'number'
+      ? row.inputMissCostPer1m
+      : (typeof row?.inputCostPer1m === 'number' ? row.inputCostPer1m : null);
+  const formatUsagePer1kCost = (value: number | null) =>
+    typeof value === 'number' ? (value / 1000).toFixed(4) : '—';
 
   const updateUsagePricing = (updater: (prev: UsagePricingSettings) => UsagePricingSettings) => {
     setUsagePricingError(null);
@@ -8053,7 +8839,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         const existing = nextProviders[idx];
         nextProviders[idx] = {
           ...existing,
-          inputCostPer1m: existing.inputCostPer1m ?? s.inputCostPer1m,
+          inputHitCostPer1m: existing.inputHitCostPer1m ?? s.inputHitCostPer1m,
+          inputMissCostPer1m: getUsageInputMissCost(existing) ?? s.inputMissCostPer1m,
           outputCostPer1m: existing.outputCostPer1m ?? s.outputCostPer1m,
           // keep existing effectiveFrom (same key), and preserve manual source if present
           pricingSource: existing.pricingSource,
@@ -8158,6 +8945,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         const rowCount = usagePricing?.providers?.length ?? 0;
         return `${rowCount} pricing row${rowCount === 1 ? '' : 's'} • ${(usagePricing?.currency || 'USD').toUpperCase()}`;
       }
+      case 'Saved Prompts & Recipes':
+        return 'Manage saved prompts, bundled recipes, and prompt categories';
       case 'Browser Profile':
         return browserProfile === 'default' ? 'Using default profile' : `Profile: ${browserProfile}`;
       case 'Permission Policy':
@@ -8172,16 +8961,103 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         return `${okCount} ok • ${warningCount} warning${warningCount === 1 ? '' : 's'} • ${errorCount} error${errorCount === 1 ? '' : 's'}`;
       }
       case 'About':
-        return `Version ${appVersion || '0.1.0'} • ${appPlatform || 'platform unknown'}`;
+        return `Version ${appVersion || 'loading...'} • ${appPlatform || 'platform unknown'}`;
       default:
         return null;
     }
   };
 
+  const getActiveMonthlyUsageBudget = (settings: UsageBudgetSettings | null = usageBudgets) =>
+    settings?.limits.find((limit) => (limit.agentId ?? null) === (activeAgentId ?? null) && limit.period === 'month');
+
+  const createUsageBudgetSettings = (
+    current: UsageBudgetSettings | null,
+    amountText: string,
+    modeOverride?: 'warn' | 'block'
+  ): UsageBudgetSettings | null => {
+    const amount = amountText.trim() ? Number(amountText) : null;
+    if (amount !== null && (!Number.isFinite(amount) || amount < 0)) {
+      return null;
+    }
+    const base: UsageBudgetSettings = current ?? { limits: [], updatedAt: new Date().toISOString() };
+    const existing = base.limits.find((limit) => (limit.agentId ?? null) === (activeAgentId ?? null) && limit.period === 'month');
+    const nextLimit = {
+      id: existing?.id || `budget_${activeAgentId || 'global'}_month`,
+      agentId: activeAgentId || null,
+      period: 'month' as const,
+      amount,
+      currency: usagePricing?.currency,
+      enabled: amount !== null,
+      mode: modeOverride ?? existing?.mode ?? 'warn' as const,
+    };
+    return {
+      limits: [
+        ...base.limits.filter((limit) => limit.id !== nextLimit.id),
+        nextLimit,
+      ],
+      updatedAt: new Date().toISOString(),
+    };
+  };
+
+  const getUsageBudgetAmountInputValue = () => {
+    const currentAmount = getActiveMonthlyUsageBudget()?.amount;
+    return usageBudgetAmountInputRef.current?.value ?? (currentAmount == null ? '' : String(currentAmount));
+  };
+
+  const syncUsageBudgetAmountInput = (settings: UsageBudgetSettings | null) => {
+    const amount = getActiveMonthlyUsageBudget(settings)?.amount;
+    if (usageBudgetAmountInputRef.current) {
+      usageBudgetAmountInputRef.current.value = amount == null ? '' : String(amount);
+    }
+  };
+
+  const handleSaveUsageBudgets = async () => {
+    const accomplish = getAccomplish();
+    const base = createUsageBudgetSettings(usageBudgets, getUsageBudgetAmountInputValue());
+    if (!base) {
+      setUsagePricingError('Enter a valid non-negative budget amount.');
+      return;
+    }
+    setUsageBudgetSaving(true);
+    setUsagePricingError(null);
+    try {
+      const saved = await accomplish.setUsageBudgets(base);
+      setUsageBudgets(saved);
+      syncUsageBudgetAmountInput(saved);
+      const statuses = await accomplish.getUsageBudgetStatus({ agentId: activeAgentId });
+      setUsageBudgetStatuses(statuses);
+    } catch (err) {
+      console.error('Failed to save usage budgets:', err);
+      setUsagePricingError('Unable to save usage budgets.');
+    } finally {
+      setUsageBudgetSaving(false);
+    }
+  };
+
+  const updateUsageBudgetAmount = (amountText: string) => {
+    setUsageBudgets((current) => createUsageBudgetSettings(current, amountText) ?? current);
+  };
+
+  const updateUsageBudgetMode = (mode: 'warn' | 'block') => {
+    setUsageBudgets((current) => createUsageBudgetSettings(current, getUsageBudgetAmountInputValue(), mode) ?? current);
+  };
+
   const keepCollapsedContentMountedForTests =
     typeof process !== 'undefined' && process.env?.NODE_ENV === 'test';
+  const basicSettingsSectionHeadings = new Set([
+    'Model & API settings',
+    'Agents',
+    'Workspace Defaults',
+    'API usage estimate',
+    'Saved Prompts & Recipes',
+    'Doctor',
+    'About',
+  ]);
   const isSettingsSectionExpandedByHeading = (heading: string): boolean =>
-    keepCollapsedContentMountedForTests || Boolean(expandedSettingsSections[getSettingsSectionKey(heading)]);
+    heading === 'About'
+    || (settingsMode === 'basic' && basicSettingsSectionHeadings.has(heading))
+    || keepCollapsedContentMountedForTests
+    || Boolean(expandedSettingsSections[getSettingsSectionKey(heading)]);
 
   const renderCollapsibleSettingsSections = (children: ReactNode): ReactNode => {
     const items = Children.toArray(children).flatMap((child) => {
@@ -8254,24 +9130,104 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       });
     }
 
-    const allSectionIds = sections.map((section) => section.sectionId);
+    const visibleModeSections = settingsMode === 'basic'
+      ? sections.filter((section) => basicSettingsSectionHeadings.has(section.headingText))
+      : sections;
+    const allSectionIds = visibleModeSections.map((section) => section.sectionId);
     const isNonCollapsibleSection = (section: { headingText: string }) => section.headingText === 'About';
     const normalizedQuery = deferredSettingsSectionQuery.trim().toLowerCase();
     const filteredSections = normalizedQuery
-      ? sections.filter((section) => {
+      ? visibleModeSections.filter((section) => {
           const haystack = `${section.headingText} ${section.summary || ''}`.toLowerCase();
           return haystack.includes(normalizedQuery);
         })
-      : sections;
+      : visibleModeSections;
     const allExpanded =
-      sections.length > 0
-      && sections.every((section) => (
+      visibleModeSections.length > 0
+      && visibleModeSections.every((section) => (
         isNonCollapsibleSection(section) || Boolean(expandedSettingsSections[section.sectionId])
       ));
 
     return (
       <div className="space-y-4">
         <div className="rounded-xl border border-border/70 bg-background/30 px-3 py-3">
+          <div className="mb-4 rounded-lg border border-primary/25 bg-primary/5 p-3">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="text-sm font-semibold text-foreground">Settings view</div>
+                <div className="text-xs text-muted-foreground">
+                  Choose a simpler setup screen or show every configuration section.
+                </div>
+              </div>
+              <div className="rounded-full border border-primary/25 bg-background/80 px-2.5 py-1 text-[11px] font-medium text-primary">
+                {settingsMode === 'basic' ? 'Basic mode active' : 'Advanced mode active'}
+              </div>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {([
+                {
+                  mode: 'basic' as const,
+                  title: 'Basic',
+                  description: 'Core setup, agents, prompts, usage, doctor, and about.',
+                },
+                {
+                  mode: 'advanced' as const,
+                  title: 'Advanced',
+                  description: 'All sections, including detailed provider and connector settings.',
+                },
+              ]).map(({ mode, title, description }) => {
+                const active = settingsMode === mode;
+                return (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => setSettingsMode(mode)}
+                    aria-pressed={active}
+                    className={`rounded-lg border p-3 text-left transition-colors ${
+                      active
+                        ? 'border-primary/60 bg-background text-foreground shadow-sm ring-1 ring-primary/30'
+                        : 'border-border/70 bg-background/50 text-muted-foreground hover:border-primary/45 hover:bg-background hover:text-foreground'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-semibold">{title}</span>
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                          active
+                            ? 'bg-primary text-primary-foreground'
+                            : 'bg-muted text-muted-foreground'
+                        }`}
+                      >
+                        {active ? 'Active' : 'Switch'}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-xs leading-5">{description}</div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          {settingsMode === 'basic' ? (
+            <div className="mb-3 grid gap-2 md:grid-cols-3">
+              {[
+                { label: 'Model/API', done: Boolean(selectedModel && savedKeys.length > 0) },
+                { label: 'Workspace', done: Boolean(workspaceRoot) },
+                { label: 'Skills', done: skillsStatus.length === 0 || skillsStatus.some((skill) => skill.installed) },
+                { label: 'Pricing', done: Boolean((usagePricing?.providers?.length ?? 0) > 0) },
+                { label: 'First agent', done: agents.length > 0 },
+                { label: 'Doctor', done: doctorChecks.length > 0 && doctorChecks.every((check) => check.status !== 'error') },
+              ].map((item) => (
+                <div key={item.label} className="flex items-center gap-2 rounded-md border border-border/60 bg-background/60 px-2.5 py-2 text-xs">
+                  {item.done ? (
+                    <CheckCircle2 className="h-3.5 w-3.5 text-success" />
+                  ) : (
+                    <AlertCircle className="h-3.5 w-3.5 text-warning" />
+                  )}
+                  <span className={item.done ? 'text-foreground' : 'text-muted-foreground'}>{item.label}</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex flex-wrap items-center gap-2">
               <Button
@@ -8704,8 +9660,11 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                                 <div className="flex items-center gap-2 shrink-0">
                                   <input
                                     inputMode="numeric"
-                                    value={modelLimitsEdits[model.fullId] ?? ''}
-                                    onChange={(e) => setModelLimitsEdits((prev) => ({ ...prev, [model.fullId]: e.target.value }))}
+                                    ref={(element) => {
+                                      modelLimitsEditInputRefs.current[model.fullId] = element;
+                                    }}
+                                    defaultValue={modelLimitsEdits[model.fullId] ?? ''}
+                                    onBlur={(e) => setModelLimitsEdits((prev) => ({ ...prev, [model.fullId]: e.target.value }))}
                                     placeholder="Override (tokens)"
                                     className="w-40 rounded-md border border-input bg-background px-3 py-2 text-sm"
                                   />
@@ -9146,7 +10105,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                 <div className="min-w-0">
                   <div className="font-medium text-foreground">Pricing</div>
                   <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
-                    Set input/output price per 1,000,000 tokens for each provider. Cost is hidden until pricing is set.
+                    Set input cache hit, input cache miss, and output prices per 1,000,000 tokens for each provider. Cost is hidden until pricing is set.
                   </p>
                 </div>
                 <div className="shrink-0">
@@ -9200,7 +10159,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                         const nextRow: UsagePricingSettings['providers'][number] = {
                           provider: p.id,
                           model,
-                          inputCostPer1m: existing?.inputCostPer1m ?? null,
+                          inputHitCostPer1m: existing?.inputHitCostPer1m ?? null,
+                          inputMissCostPer1m: getUsageInputMissCost(existing) ?? null,
                           outputCostPer1m: existing?.outputCostPer1m ?? null,
                           effectiveFrom: existing?.effectiveFrom ?? null,
                           pricingSource: existing?.pricingSource ?? 'manual',
@@ -9221,6 +10181,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                     };
 
                     const providerDefaultRow = getLatestRow(null);
+                    const providerDefaultInputHitCost = getUsageInputHitCost(providerDefaultRow);
+                    const providerDefaultInputMissCost = getUsageInputMissCost(providerDefaultRow);
                     const modelsUsed = usageModelsUsed?.[p.id] ?? [];
 
                     return (
@@ -9232,34 +10194,57 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                         <div className="text-xs text-muted-foreground">
                           Provider default (fallback)
                         </div>
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                           <div className="grid gap-1">
-                            <label className="text-xs leading-5 text-muted-foreground whitespace-nowrap">Input / 1M</label>
+                            <label className="text-xs leading-5 text-muted-foreground whitespace-nowrap">Input hit / 1M</label>
                             <input
                               type="number"
                               min="0"
                               step="0.01"
-                              key={`pricing-${p.id}-default-input-${providerDefaultRow?.inputCostPer1m ?? ''}`}
-                              defaultValue={providerDefaultRow?.inputCostPer1m ?? ''}
+                              key={`pricing-${p.id}-default-input-hit-${providerDefaultInputHitCost ?? ''}`}
+                              defaultValue={providerDefaultInputHitCost ?? ''}
                               onBlur={(e) => {
                                 const raw = e.target.value.trim();
                                 if (!raw) {
-                                  upsertRow(null, { inputCostPer1m: null });
+                                  upsertRow(null, { inputHitCostPer1m: null });
                                   return;
                                 }
                                 const next = Number(raw);
                                 if (!Number.isFinite(next) || next < 0) return;
-                                upsertRow(null, { inputCostPer1m: next });
+                                upsertRow(null, { inputHitCostPer1m: next });
+                              }}
+                              className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                              placeholder="e.g. 0.30"
+                              disabled={usagePricingSaving}
+                            />
+                            <div className="text-[11px] text-muted-foreground">
+                              per 1k: {formatUsagePer1kCost(providerDefaultInputHitCost)}
+                            </div>
+                          </div>
+                          <div className="grid gap-1">
+                            <label className="text-xs leading-5 text-muted-foreground whitespace-nowrap">Input miss / 1M</label>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              key={`pricing-${p.id}-default-input-miss-${providerDefaultInputMissCost ?? ''}`}
+                              defaultValue={providerDefaultInputMissCost ?? ''}
+                              onBlur={(e) => {
+                                const raw = e.target.value.trim();
+                                if (!raw) {
+                                  upsertRow(null, { inputMissCostPer1m: null });
+                                  return;
+                                }
+                                const next = Number(raw);
+                                if (!Number.isFinite(next) || next < 0) return;
+                                upsertRow(null, { inputMissCostPer1m: next });
                               }}
                               className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                               placeholder="e.g. 3.00"
                               disabled={usagePricingSaving}
                             />
                             <div className="text-[11px] text-muted-foreground">
-                              per 1k:{' '}
-                              {typeof providerDefaultRow?.inputCostPer1m === 'number'
-                                ? (providerDefaultRow.inputCostPer1m / 1000).toFixed(4)
-                                : '—'}
+                              per 1k: {formatUsagePer1kCost(providerDefaultInputMissCost)}
                             </div>
                           </div>
                           <div className="grid gap-1">
@@ -9316,37 +10301,62 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                             <div className="space-y-2">
                               {modelsUsed.map((modelId) => {
                                 const row = getLatestRow(modelId);
+                                const rowInputHitCost = getUsageInputHitCost(row);
+                                const rowInputMissCost = getUsageInputMissCost(row);
                                 return (
                                   <div key={modelId} className="rounded-md border border-border bg-muted/30 p-3 space-y-2">
                                     <div className="text-xs font-medium text-foreground break-words">{modelId}</div>
-                                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                       <div className="grid gap-1">
-                                        <label className="text-xs leading-5 text-muted-foreground whitespace-nowrap">Input / 1M</label>
+                                        <label className="text-xs leading-5 text-muted-foreground whitespace-nowrap">Input hit / 1M</label>
                                         <input
                                           type="number"
                                           min="0"
                                           step="0.01"
-                                          key={`pricing-${p.id}-${modelId}-input-${row?.inputCostPer1m ?? ''}`}
-                                          defaultValue={row?.inputCostPer1m ?? ''}
+                                          key={`pricing-${p.id}-${modelId}-input-hit-${rowInputHitCost ?? ''}`}
+                                          defaultValue={rowInputHitCost ?? ''}
                                           onBlur={(e) => {
                                             const raw = e.target.value.trim();
                                             if (!raw) {
-                                              upsertRow(modelId, { inputCostPer1m: null });
+                                              upsertRow(modelId, { inputHitCostPer1m: null });
                                               return;
                                             }
                                             const next = Number(raw);
                                             if (!Number.isFinite(next) || next < 0) return;
-                                            upsertRow(modelId, { inputCostPer1m: next });
+                                            upsertRow(modelId, { inputHitCostPer1m: next });
                                           }}
                                           className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                                           placeholder="(inherit)"
                                           disabled={usagePricingSaving}
                                         />
                                         <div className="text-[11px] text-muted-foreground">
-                                          per 1k:{' '}
-                                          {typeof row?.inputCostPer1m === 'number'
-                                            ? (row.inputCostPer1m / 1000).toFixed(4)
-                                            : '—'}
+                                          per 1k: {formatUsagePer1kCost(rowInputHitCost)}
+                                        </div>
+                                      </div>
+                                      <div className="grid gap-1">
+                                        <label className="text-xs leading-5 text-muted-foreground whitespace-nowrap">Input miss / 1M</label>
+                                        <input
+                                          type="number"
+                                          min="0"
+                                          step="0.01"
+                                          key={`pricing-${p.id}-${modelId}-input-miss-${rowInputMissCost ?? ''}`}
+                                          defaultValue={rowInputMissCost ?? ''}
+                                          onBlur={(e) => {
+                                            const raw = e.target.value.trim();
+                                            if (!raw) {
+                                              upsertRow(modelId, { inputMissCostPer1m: null });
+                                              return;
+                                            }
+                                            const next = Number(raw);
+                                            if (!Number.isFinite(next) || next < 0) return;
+                                            upsertRow(modelId, { inputMissCostPer1m: next });
+                                          }}
+                                          className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                                          placeholder="(inherit)"
+                                          disabled={usagePricingSaving}
+                                        />
+                                        <div className="text-[11px] text-muted-foreground">
+                                          per 1k: {formatUsagePer1kCost(rowInputMissCost)}
                                         </div>
                                       </div>
                                       <div className="grid gap-1">
@@ -9407,6 +10417,74 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                   })}
                 </div>
               )}
+
+              <div className="rounded-lg border border-border bg-background p-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="font-medium text-foreground">Monthly usage budget</div>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Budgets warn by default. Blocking is stored but not enabled unless you switch a budget to block mode.
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleSaveUsageBudgets}
+                    disabled={usageBudgetSaving}
+                  >
+                    {usageBudgetSaving ? 'Saving…' : 'Save budget'}
+                  </Button>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-[220px_180px_1fr]">
+                  <div className="grid gap-1">
+                    <label className="text-xs text-muted-foreground">Active agent monthly cost limit</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      key={`budget-amount-${activeAgentId || 'global'}-${getActiveMonthlyUsageBudget()?.amount ?? ''}`}
+                      ref={usageBudgetAmountInputRef}
+                      defaultValue={getActiveMonthlyUsageBudget()?.amount ?? ''}
+                      onBlur={(event) => updateUsageBudgetAmount(event.target.value)}
+                      className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      placeholder="No limit"
+                    />
+                  </div>
+                  <div className="grid gap-1">
+                    <label className="text-xs text-muted-foreground">Mode</label>
+                    <select
+                      value={getActiveMonthlyUsageBudget()?.mode ?? 'warn'}
+                      onChange={(event) => updateUsageBudgetMode(event.target.value === 'block' ? 'block' : 'warn')}
+                      className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    >
+                      <option value="warn">Warn only</option>
+                      <option value="block">Block new tasks</option>
+                    </select>
+                  </div>
+                  <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                    {usageBudgetStatuses.length === 0 ? (
+                      <span>No active budget status yet.</span>
+                    ) : (
+                      usageBudgetStatuses.map((status) => (
+                        <div key={status.id} className="flex flex-wrap items-center gap-2">
+                          <span className="font-medium text-foreground">{status.period}</span>
+                          <span>
+                            spent {status.spent == null ? 'unknown' : status.spent.toFixed(4)}
+                            {status.currency ? ` ${status.currency}` : ''}
+                          </span>
+                          <span>
+                            limit {status.limit == null ? 'none' : status.limit.toFixed(2)}
+                          </span>
+                          {status.percent != null ? <span>{Math.round(status.percent)}%</span> : null}
+                          <span className={status.blocking ? 'text-destructive' : status.exceeded ? 'text-warning' : 'text-muted-foreground'}>
+                            {status.blocking ? 'blocking' : status.exceeded ? 'warning' : status.mode}
+                          </span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
 
               <div className="flex items-center justify-between gap-3">
                 <div className="text-xs text-muted-foreground">
@@ -9542,7 +10620,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                                 {row.provider} {row.model ? `• ${row.model}` : '• provider default'}
                               </div>
                               <div className="text-muted-foreground">
-                                input/1M: {row.inputCostPer1m ?? '—'} • output/1M: {row.outputCostPer1m ?? '—'} • confidence: {meta?.confidence ?? 'low'}
+                                input hit/1M: {row.inputHitCostPer1m ?? '—'} • input miss/1M: {row.inputMissCostPer1m ?? row.inputCostPer1m ?? '—'} • output/1M: {row.outputCostPer1m ?? '—'} • confidence: {meta?.confidence ?? 'low'}
                               </div>
                               {meta?.note && <div className="text-muted-foreground mt-1">{meta.note}</div>}
                               {meta?.sourceUrl && <div className="text-muted-foreground mt-1">source: {meta.sourceUrl}</div>}
@@ -9570,6 +10648,17 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
             </DialogContent>
           </Dialog>
           )}
+
+
+          <section>
+            <h2 className="mb-4 text-base font-medium text-foreground">
+              Saved Prompts & Recipes
+              <InfoTip text="Manage reusable saved prompts, bundled recipes, and the categories shown in prompt pickers." />
+            </h2>
+            {isSettingsSectionExpandedByHeading('Saved Prompts & Recipes') && (
+              <PromptLibrarySettingsPanel />
+            )}
+          </section>
 
 
           <section>
@@ -10962,8 +12051,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                     <label className="text-xs text-muted-foreground">Channel</label>
                     <input
                       type="text"
-                      value={gatewayBindingChannel}
-                      onChange={(e) => setGatewayBindingChannel(e.target.value)}
+                      ref={gatewayBindingChannelInputRef}
+                      defaultValue={gatewayBindingChannel}
+                      onBlur={(e) => setGatewayBindingChannel(e.target.value)}
                       placeholder="discord / telegram / webhook"
                       className="w-full min-w-0 rounded-md border border-input bg-background px-3 py-2 text-sm"
                     />
@@ -10986,8 +12076,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                     <label className="text-xs text-muted-foreground">Account ID (optional)</label>
                     <input
                       type="text"
-                      value={gatewayBindingAccountId}
-                      onChange={(e) => setGatewayBindingAccountId(e.target.value)}
+                      ref={gatewayBindingAccountIdInputRef}
+                      defaultValue={gatewayBindingAccountId}
+                      onBlur={(e) => setGatewayBindingAccountId(e.target.value)}
                       placeholder="Platform account/bot id"
                       className="w-full min-w-0 rounded-md border border-input bg-background px-3 py-2 text-sm"
                     />
@@ -11006,8 +12097,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                       </select>
                       <input
                         type="text"
-                        value={gatewayBindingPeerId}
-                        onChange={(e) => setGatewayBindingPeerId(e.target.value)}
+                        ref={gatewayBindingPeerIdInputRef}
+                        defaultValue={gatewayBindingPeerId}
+                        onBlur={(e) => setGatewayBindingPeerId(e.target.value)}
                         placeholder="peer id"
                         className="min-w-0 flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm"
                       />
@@ -11017,8 +12109,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                     <label className="text-xs text-muted-foreground">Guild ID (optional)</label>
                     <input
                       type="text"
-                      value={gatewayBindingGuildId}
-                      onChange={(e) => setGatewayBindingGuildId(e.target.value)}
+                      ref={gatewayBindingGuildIdInputRef}
+                      defaultValue={gatewayBindingGuildId}
+                      onBlur={(e) => setGatewayBindingGuildId(e.target.value)}
                       className="w-full min-w-0 rounded-md border border-input bg-background px-3 py-2 text-sm"
                     />
                   </div>
@@ -11026,8 +12119,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                     <label className="text-xs text-muted-foreground">Team ID (optional)</label>
                     <input
                       type="text"
-                      value={gatewayBindingTeamId}
-                      onChange={(e) => setGatewayBindingTeamId(e.target.value)}
+                      ref={gatewayBindingTeamIdInputRef}
+                      defaultValue={gatewayBindingTeamId}
+                      onBlur={(e) => setGatewayBindingTeamId(e.target.value)}
                       className="w-full min-w-0 rounded-md border border-input bg-background px-3 py-2 text-sm"
                     />
                   </div>
@@ -11206,8 +12300,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                 <div className="flex flex-wrap items-center gap-2">
                   <input
                     type="text"
-                    value={gatewayRunLookupId}
-                    onChange={(e) => setGatewayRunLookupId(e.target.value)}
+                    ref={gatewayRunLookupIdInputRef}
+                    defaultValue={gatewayRunLookupId}
+                    onBlur={(e) => setGatewayRunLookupId(e.target.value)}
                     placeholder="Lookup run by runId"
                     className="min-w-[240px] flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm"
                   />
@@ -11278,8 +12373,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                     <label className="text-xs text-muted-foreground">Method</label>
                     <input
                       type="text"
-                      value={gatewayRpcMethod}
-                      onChange={(e) => setGatewayRpcMethod(e.target.value)}
+                      ref={gatewayRpcMethodInputRef}
+                      defaultValue={gatewayRpcMethod}
+                      onBlur={(e) => setGatewayRpcMethod(e.target.value)}
                       className="rounded-md border border-input bg-background px-3 py-2 text-sm"
                     />
                   </div>
@@ -11300,8 +12396,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                       <label className="text-xs text-muted-foreground">Token (optional if token field above is filled)</label>
                       <input
                         type="password"
-                        value={gatewayRpcToken}
-                        onChange={(e) => setGatewayRpcToken(e.target.value)}
+                        ref={gatewayRpcTokenInputRef}
+                        defaultValue={gatewayRpcToken}
+                        onBlur={(e) => setGatewayRpcToken(e.target.value)}
                         className="rounded-md border border-input bg-background px-3 py-2 text-sm"
                       />
                     </div>
@@ -11311,8 +12408,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                       <label className="text-xs text-muted-foreground">Password (optional if password field above is filled)</label>
                       <input
                         type="password"
-                        value={gatewayRpcPassword}
-                        onChange={(e) => setGatewayRpcPassword(e.target.value)}
+                        ref={gatewayRpcPasswordInputRef}
+                        defaultValue={gatewayRpcPassword}
+                        onBlur={(e) => setGatewayRpcPassword(e.target.value)}
                         className="rounded-md border border-input bg-background px-3 py-2 text-sm"
                       />
                     </div>
@@ -11320,8 +12418,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                   <div className="grid gap-1 md:col-span-2">
                     <label className="text-xs text-muted-foreground">Params (JSON object)</label>
                     <textarea
-                      value={gatewayRpcParams}
-                      onChange={(e) => setGatewayRpcParams(e.target.value)}
+                      ref={gatewayRpcParamsInputRef}
+                      defaultValue={gatewayRpcParams}
+                      onBlur={(e) => setGatewayRpcParams(e.target.value)}
                       className="min-h-[120px] rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
                       spellCheck={false}
                     />
@@ -11351,6 +12450,73 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                     Runs as agent: {activeAgent?.name || activeAgentId || 'main'}. Switch agents in the sidebar to schedule for another persona.
                   </p>
                 </div>
+                <div className="rounded-xl border border-border/60 bg-muted/20 p-4 space-y-3">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium text-foreground">Draft from plain English</div>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Describe what should run and when. The app previews the schedule before saving.
+                      </p>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleDraftAutomationFromText}
+                      disabled={automationDraftLoading}
+                    >
+                      {automationDraftLoading ? 'Drafting...' : 'Draft'}
+                    </Button>
+                  </div>
+                  <textarea
+                    ref={automationDraftTextRef}
+                    defaultValue={automationDraftText}
+                    onBlur={(e) => setAutomationDraftText(e.target.value)}
+                    placeholder="Example: Every weekday at 9am check the latest project status and summarize blockers."
+                    className="w-full min-h-[72px] rounded-md border border-input bg-background px-3 py-2 text-sm resize-none"
+                  />
+                  {automationDraftResult ? (
+                    <div className="rounded-lg border border-border bg-background p-3 text-xs">
+                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                        <div className="font-medium text-foreground">Draft preview</div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="rounded-full bg-muted px-2 py-0.5 text-muted-foreground">
+                            {automationDraftResult.source === 'ai'
+                              ? 'AI refined'
+                              : automationDraftResult.source === 'fallback'
+                                ? 'Fallback'
+                                : 'Local parser'}
+                          </div>
+                          <div className="rounded-full bg-primary/10 px-2 py-0.5 text-primary">
+                            {Math.round(automationDraftResult.confidence * 100)}% confidence
+                          </div>
+                        </div>
+                      </div>
+                      <div className="grid gap-1.5 sm:grid-cols-[90px_minmax(0,1fr)]">
+                        <span className="text-muted-foreground">Name</span>
+                        <span className="text-foreground">{automationDraftResult.schedule.name}</span>
+                        <span className="text-muted-foreground">Cron</span>
+                        <span className="font-mono text-foreground">{automationDraftResult.schedule.cron}</span>
+                        <span className="text-muted-foreground">Timezone</span>
+                        <span className="text-foreground">{automationDraftResult.schedule.timezone || 'system default'}</span>
+                        <span className="text-muted-foreground">Prompt</span>
+                        <span className="whitespace-pre-wrap text-foreground">{automationDraftResult.schedule.prompt}</span>
+                      </div>
+                      {automationDraftResult.warnings.length > 0 ? (
+                        <div className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-amber-700">
+                          {automationDraftResult.warnings.join(' ')}
+                        </div>
+                      ) : null}
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <Button size="sm" variant="outline" onClick={applyAutomationDraftToForm}>
+                          Use in form
+                        </Button>
+                        <Button size="sm" onClick={saveAutomationDraft} disabled={automationDraftSaving}>
+                          {automationDraftSaving ? 'Saving...' : 'Confirm and save'}
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
                 <div className="grid gap-3 md:grid-cols-2">
                   <div className="grid gap-1">
                     <label className="text-xs text-muted-foreground">
@@ -11359,8 +12525,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                     </label>
                     <input
                       type="text"
-                      value={scheduleName}
-                      onChange={(e) => setScheduleName(e.target.value)}
+                      ref={scheduleNameInputRef}
+                      defaultValue={scheduleName}
+                      onBlur={(e) => setScheduleName(e.target.value)}
                       placeholder="Schedule name"
                       className="rounded-md border border-input bg-background px-3 py-2 text-sm"
                     />
@@ -11372,8 +12539,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                     </label>
                     <input
                       type="text"
-                      value={scheduleCron}
-                      onChange={(e) => setScheduleCron(e.target.value)}
+                      ref={scheduleCronInputRef}
+                      defaultValue={scheduleCron}
+                      onBlur={(e) => setScheduleCron(e.target.value)}
                       placeholder="Cron expression"
                       className="rounded-md border border-input bg-background px-3 py-2 text-sm"
                     />
@@ -11386,8 +12554,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                     <div className="flex gap-2">
                       <input
                         type="text"
-                        value={scheduleWorkingDirectory}
-                        onChange={(e) => setScheduleWorkingDirectory(e.target.value)}
+                        ref={scheduleWorkingDirectoryInputRef}
+                        defaultValue={scheduleWorkingDirectory}
+                        onBlur={(e) => setScheduleWorkingDirectory(e.target.value)}
                         placeholder="Working folder (optional)"
                         className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm"
                       />
@@ -11405,8 +12574,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                     </label>
                     <input
                       type="text"
-                      value={scheduleTimezone}
-                      onChange={(e) => setScheduleTimezone(e.target.value)}
+                      ref={scheduleTimezoneInputRef}
+                      defaultValue={scheduleTimezone}
+                      onBlur={(e) => setScheduleTimezone(e.target.value)}
                       placeholder="Timezone (optional, e.g. America/New_York)"
                       className="rounded-md border border-input bg-background px-3 py-2 text-sm"
                     />
@@ -11418,16 +12588,18 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                     </label>
                     <input
                       type="text"
-                      value={scheduleSessionId}
-                      onChange={(e) => setScheduleSessionId(e.target.value)}
+                      ref={scheduleSessionIdInputRef}
+                      defaultValue={scheduleSessionId}
+                      onBlur={(e) => setScheduleSessionId(e.target.value)}
                       placeholder="Session ID (optional)"
                       className="rounded-md border border-input bg-background px-3 py-2 text-sm"
                     />
                   </div>
                 </div>
                 <textarea
-                  value={schedulePrompt}
-                  onChange={(e) => setSchedulePrompt(e.target.value)}
+                  ref={schedulePromptInputRef}
+                  defaultValue={schedulePrompt}
+                  onBlur={(e) => setSchedulePrompt(e.target.value)}
                   placeholder="Prompt to run on schedule"
                   className="w-full min-h-[90px] rounded-md border border-input bg-background px-3 py-2 text-sm resize-none"
                 />
@@ -11461,9 +12633,16 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                 <div className="flex items-center gap-2">
                   <ButtonTip text="Create or update this schedule.">
                     <Button onClick={handleCreateSchedule} disabled={savingSchedule}>
-                      {savingSchedule ? 'Saving...' : 'Add schedule'}
+                      {savingSchedule ? 'Saving...' : editingScheduleId ? 'Save changes' : 'Add schedule'}
                     </Button>
                   </ButtonTip>
+                  {editingScheduleId ? (
+                    <ButtonTip text="Cancel editing and clear the schedule form.">
+                      <Button variant="outline" onClick={resetScheduleForm} disabled={savingSchedule}>
+                        Cancel edit
+                      </Button>
+                    </ButtonTip>
+                  ) : null}
                   <ButtonTip text="Reload saved schedules.">
                     <Button variant="outline" onClick={refreshSchedules} disabled={loadingSchedules}>
                       Refresh
@@ -11486,7 +12665,12 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                     <div key={schedule.id} className="flex flex-col gap-3 rounded-xl border border-border/60 p-4">
                       <div className="flex items-start justify-between gap-4">
                         <div>
-                          <div className="text-sm font-medium text-foreground">{schedule.name}</div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <div className="text-sm font-medium text-foreground">{schedule.name}</div>
+                            {editingScheduleId === schedule.id ? (
+                              <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] text-primary">Editing</span>
+                            ) : null}
+                          </div>
                           <p className="text-xs text-muted-foreground">{schedule.prompt}</p>
                           <p className="mt-2 text-xs text-muted-foreground">
                             Cron: {schedule.cron}{schedule.timezone ? ` • ${schedule.timezone}` : ''}
@@ -11521,6 +12705,11 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                           <ButtonTip text="Run this schedule immediately.">
                             <Button size="sm" variant="outline" onClick={() => handleRunScheduleNow(schedule.id)}>
                               Run
+                            </Button>
+                          </ButtonTip>
+                          <ButtonTip text="Load this schedule into the form so you can edit it.">
+                            <Button size="sm" variant="outline" onClick={() => handleEditSchedule(schedule)}>
+                              Edit
                             </Button>
                           </ButtonTip>
                           <ButtonTip text="Delete this schedule.">
@@ -11568,8 +12757,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                     </select>
                     <input
                       type="text"
-                      value={gatewayConnectorCreateName}
-                      onChange={(e) => setGatewayConnectorCreateName(e.target.value)}
+                      ref={gatewayConnectorCreateNameInputRef}
+                      defaultValue={gatewayConnectorCreateName}
+                      onBlur={(e) => setGatewayConnectorCreateName(e.target.value)}
                       placeholder="New instance name (optional)"
                       className="w-[180px] min-w-0 rounded-md border border-input bg-background px-2 py-1.5 text-xs"
                     />
@@ -11758,10 +12948,11 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                                   Command prefix
                                   <InfoTip text="Prefix used to invoke bot commands in non-DM chats (for example !desk)." />
                                 </label>
-                                <input
-                                  type="text"
-                                  value={gatewayConnectorRuntimeCommandPrefix}
-                                  onChange={(e) => setGatewayConnectorRuntimeCommandPrefix(e.target.value)}
+                                  <input
+                                    type="text"
+                                  ref={gatewayConnectorRuntimeCommandPrefixInputRef}
+                                  defaultValue={gatewayConnectorRuntimeCommandPrefix}
+                                  onBlur={(e) => setGatewayConnectorRuntimeCommandPrefix(e.target.value)}
                                   placeholder="!desk"
                                   className="w-full min-w-0 rounded-md border border-input bg-background px-3 py-2 text-sm"
                                 />
@@ -11771,10 +12962,11 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                                   Poll interval (ms)
                                   <InfoTip text="How often this runtime polls the provider API for new events. Lower values respond faster but increase API usage and rate-limit pressure." />
                                 </label>
-                                <input
-                                  type="text"
-                                  value={gatewayConnectorRuntimePollIntervalMs}
-                                  onChange={(e) => setGatewayConnectorRuntimePollIntervalMs(e.target.value)}
+                                  <input
+                                    type="text"
+                                  ref={gatewayConnectorRuntimePollIntervalMsInputRef}
+                                  defaultValue={gatewayConnectorRuntimePollIntervalMs}
+                                  onBlur={(e) => setGatewayConnectorRuntimePollIntervalMs(e.target.value)}
                                   placeholder="5000"
                                   className="w-full min-w-0 rounded-md border border-input bg-background px-3 py-2 text-sm"
                                 />
@@ -11804,10 +12996,11 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                                   Bot user ID (optional fallback)
                                   <InfoTip text="Optional explicit bot account ID used for mention detection if provider metadata does not include it." />
                                 </label>
-                                <input
-                                  type="text"
-                                  value={gatewayConnectorRuntimeBotUserId}
-                                  onChange={(e) => setGatewayConnectorRuntimeBotUserId(e.target.value)}
+                                  <input
+                                    type="text"
+                                  ref={gatewayConnectorRuntimeBotUserIdInputRef}
+                                  defaultValue={gatewayConnectorRuntimeBotUserId}
+                                  onBlur={(e) => setGatewayConnectorRuntimeBotUserId(e.target.value)}
                                   placeholder="Graph user id"
                                   className="w-full min-w-0 rounded-md border border-input bg-background px-3 py-2 text-sm"
                                 />
@@ -12209,8 +13402,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                             </label>
                             <input
                               type="text"
-                              value={gatewayConnectorAccountId}
-                              onChange={(e) => setGatewayConnectorAccountId(e.target.value)}
+                              ref={gatewayConnectorAccountIdInputRef}
+                              defaultValue={gatewayConnectorAccountId}
+                              onBlur={(e) => setGatewayConnectorAccountId(e.target.value)}
                               placeholder="Leave empty for *"
                               className="w-full min-w-0 rounded-md border border-input bg-background px-3 py-2 text-sm"
                             />
@@ -12252,8 +13446,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                                   <InfoTip text="Comma, space, or newline-separated user IDs allowed to interact when using allowlist mode." />
                                 </label>
                                 <textarea
-                                  value={gatewayConnectorAllowedUserIds}
-                                  onChange={(e) => setGatewayConnectorAllowedUserIds(e.target.value)}
+                                  ref={gatewayConnectorAllowedUserIdsInputRef}
+                                  defaultValue={gatewayConnectorAllowedUserIds}
+                                  onBlur={(e) => setGatewayConnectorAllowedUserIds(e.target.value)}
                                   placeholder="user_123, user_abc"
                                   className="w-full min-w-0 min-h-[60px] rounded-md border border-input bg-background px-3 py-2 text-sm resize-none"
                                 />
@@ -12264,8 +13459,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                                   <InfoTip text="Optional group/team/thread IDs allowed for this connector when applicable to the provider." />
                                 </label>
                                 <textarea
-                                  value={gatewayConnectorAllowedGroupIds}
-                                  onChange={(e) => setGatewayConnectorAllowedGroupIds(e.target.value)}
+                                  ref={gatewayConnectorAllowedGroupIdsInputRef}
+                                  defaultValue={gatewayConnectorAllowedGroupIds}
+                                  onBlur={(e) => setGatewayConnectorAllowedGroupIds(e.target.value)}
                                   placeholder="group_1, group_2"
                                   className="w-full min-w-0 min-h-[60px] rounded-md border border-input bg-background px-3 py-2 text-sm resize-none"
                                 />
@@ -12276,8 +13472,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                                   <InfoTip text="Optional channel/room IDs allowed for traffic. Commonly used for Slack/Discord/Matrix/Teams." />
                                 </label>
                                 <textarea
-                                  value={gatewayConnectorAllowedChannelIds}
-                                  onChange={(e) => setGatewayConnectorAllowedChannelIds(e.target.value)}
+                                  ref={gatewayConnectorAllowedChannelIdsInputRef}
+                                  defaultValue={gatewayConnectorAllowedChannelIds}
+                                  onBlur={(e) => setGatewayConnectorAllowedChannelIds(e.target.value)}
                                   placeholder="channel_1, channel_2"
                                   className="w-full min-w-0 min-h-[60px] rounded-md border border-input bg-background px-3 py-2 text-sm resize-none"
                                 />
@@ -12288,8 +13485,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                                   <InfoTip text="Optional provider account IDs permitted for this connector. Useful for multi-account bridge deployments." />
                                 </label>
                                 <textarea
-                                  value={gatewayConnectorAllowedAccountIds}
-                                  onChange={(e) => setGatewayConnectorAllowedAccountIds(e.target.value)}
+                                  ref={gatewayConnectorAllowedAccountIdsInputRef}
+                                  defaultValue={gatewayConnectorAllowedAccountIds}
+                                  onBlur={(e) => setGatewayConnectorAllowedAccountIds(e.target.value)}
                                   placeholder="account_1, account_2"
                                   className="w-full min-w-0 min-h-[60px] rounded-md border border-input bg-background px-3 py-2 text-sm resize-none"
                                 />
@@ -12306,8 +13504,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                               </label>
                               <input
                                 type="text"
-                                value={gatewayConnectorBridgeUrl}
-                                onChange={(e) => setGatewayConnectorBridgeUrl(e.target.value)}
+                                ref={gatewayConnectorBridgeUrlInputRef}
+                                defaultValue={gatewayConnectorBridgeUrl}
+                                onBlur={(e) => setGatewayConnectorBridgeUrl(e.target.value)}
                                 placeholder={connectorBridgeUrlPlaceholder}
                                 className="w-full min-w-0 rounded-md border border-input bg-background px-3 py-2 text-sm"
                               />
@@ -12343,8 +13542,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                                 )}
                               </div>
                               <textarea
-                                value={gatewayConnectorMetadataText}
-                                onChange={(e) => setGatewayConnectorMetadataText(e.target.value)}
+                                ref={gatewayConnectorMetadataTextInputRef}
+                                defaultValue={gatewayConnectorMetadataText}
+                                onBlur={(e) => setGatewayConnectorMetadataText(e.target.value)}
                                 placeholder={connectorMetadataPlaceholder}
                                 className="w-full min-w-0 min-h-[72px] rounded-md border border-input bg-background px-3 py-2 text-sm resize-none"
                               />
@@ -12369,8 +13569,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                                 <InfoTip text="Internal setup notes for this connector. Stored locally for operators and not sent to providers." />
                               </label>
                               <textarea
-                                value={gatewayConnectorNotes}
-                                onChange={(e) => setGatewayConnectorNotes(e.target.value)}
+                                ref={gatewayConnectorNotesInputRef}
+                                defaultValue={gatewayConnectorNotes}
+                                onBlur={(e) => setGatewayConnectorNotes(e.target.value)}
                                 placeholder="Internal setup notes for this connector."
                                 className="w-full min-w-0 min-h-[72px] rounded-md border border-input bg-background px-3 py-2 text-sm resize-none"
                               />
@@ -12410,8 +13611,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                               </label>
                               <input
                                 type="password"
-                                value={gatewayConnectorSecretInput}
-                                onChange={(e) => setGatewayConnectorSecretInput(e.target.value)}
+                                ref={gatewayConnectorSecretInputRef}
+                                defaultValue={gatewayConnectorSecretInput}
+                                onBlur={(e) => setGatewayConnectorSecretInput(e.target.value)}
                                 placeholder="Connector token / shared secret"
                                 className="rounded-md border border-input bg-background px-3 py-2 text-sm w-full"
                               />
@@ -12482,8 +13684,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                     </select>
                     <input
                       type="text"
-                      value={appConnectorCreateName}
-                      onChange={(e) => setAppConnectorCreateName(e.target.value)}
+                      ref={appConnectorCreateNameInputRef}
+                      defaultValue={appConnectorCreateName}
+                      onBlur={(e) => setAppConnectorCreateName(e.target.value)}
                       placeholder="New instance name (optional)"
                       className="w-[190px] min-w-0 rounded-md border border-input bg-background px-2 py-1.5 text-xs"
                     />
@@ -12669,8 +13872,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                                   </label>
                                   <input
                                     type="text"
-                                    value={appConnectorOauthClientId}
-                                    onChange={(e) => setAppConnectorOauthClientId(e.target.value)}
+                                    ref={appConnectorOauthClientIdInputRef}
+                                    defaultValue={appConnectorOauthClientId}
+                                    onBlur={(e) => setAppConnectorOauthClientId(e.target.value)}
                                     placeholder="Client ID"
                                     className="rounded-md border border-input bg-background px-3 py-2 text-sm"
                                   />
@@ -12683,8 +13887,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                                   </label>
                                   <input
                                     type="password"
-                                    value={appConnectorOauthClientSecret}
-                                    onChange={(e) => setAppConnectorOauthClientSecret(e.target.value)}
+                                    ref={appConnectorOauthClientSecretInputRef}
+                                    defaultValue={appConnectorOauthClientSecret}
+                                    onBlur={(e) => setAppConnectorOauthClientSecret(e.target.value)}
                                     placeholder="Client secret"
                                     className="rounded-md border border-input bg-background px-3 py-2 text-sm"
                                   />
@@ -12696,7 +13901,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                                       size="sm"
                                       variant="outline"
                                       onClick={() => void handleSaveAppConnectorOAuthClientSecret()}
-                                      disabled={appConnectorOauthClientSecretSaving || !appConnectorOauthClientSecret.trim()}
+                                      disabled={appConnectorOauthClientSecretSaving}
                                     >
                                       {appConnectorOauthClientSecretSaving ? 'Saving...' : 'Save client secret'}
                                     </Button>
@@ -12717,8 +13922,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                                 </label>
                                 <input
                                   type="text"
-                                  value={appConnectorOauthScopes}
-                                  onChange={(e) => setAppConnectorOauthScopes(e.target.value)}
+                                  ref={appConnectorOauthScopesInputRef}
+                                  defaultValue={appConnectorOauthScopes}
+                                  onBlur={(e) => setAppConnectorOauthScopes(e.target.value)}
                                   placeholder="openid email profile"
                                   className="rounded-md border border-input bg-background px-3 py-2 text-sm"
                                 />
@@ -12854,8 +14060,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                               </label>
                               <input
                                 type="text"
-                                value={appConnectorAccountId}
-                                onChange={(e) => setAppConnectorAccountId(e.target.value)}
+                                ref={appConnectorAccountIdInputRef}
+                                defaultValue={appConnectorAccountId}
+                                onBlur={(e) => setAppConnectorAccountId(e.target.value)}
                                 placeholder="workspace_1"
                                 className="rounded-md border border-input bg-background px-3 py-2 text-sm"
                               />
@@ -12875,8 +14082,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                             <div className="flex flex-wrap items-center gap-2">
                               <input
                                 type="text"
-                                value={appConnectorBaseUrl}
-                                onChange={(e) => setAppConnectorBaseUrl(e.target.value)}
+                                ref={appConnectorBaseUrlInputRef}
+                                defaultValue={appConnectorBaseUrl}
+                                onBlur={(e) => setAppConnectorBaseUrl(e.target.value)}
                                 placeholder={
                                   isSelectedAppConnectorObsidian
                                     ? 'C:\\Users\\you\\Documents\\ObsidianVault'
@@ -12911,8 +14119,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                               </div>
                               <input
                                 type="url"
-                                value={appConnectorWebhookUrl}
-                                onChange={(e) => setAppConnectorWebhookUrl(e.target.value)}
+                                ref={appConnectorWebhookUrlInputRef}
+                                defaultValue={appConnectorWebhookUrl}
+                                onBlur={(e) => setAppConnectorWebhookUrl(e.target.value)}
                                 placeholder="https://example.com/webhooks/email-triggers"
                                 className="rounded-md border border-input bg-background px-3 py-2 text-sm w-full"
                               />
@@ -12928,7 +14137,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                                   type="button"
                                   variant="outline"
                                   onClick={() => void handleSendEmailTriggerTestEvent()}
-                                  disabled={appConnectorWebhookTesting || appConnectorSaving || !appConnectorWebhookUrl.trim()}
+                                  disabled={appConnectorWebhookTesting || appConnectorSaving}
                                 >
                                   {appConnectorWebhookTesting ? 'Sending test...' : 'Send test event'}
                                 </Button>
@@ -12942,8 +14151,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                               <InfoTip text="Optional advanced overrides (for example oauth scopes, provider-specific headers, or custom endpoints). Most users can leave this empty." />
                             </label>
                             <textarea
-                              value={appConnectorMetadataText}
-                              onChange={(e) => setAppConnectorMetadataText(e.target.value)}
+                              ref={appConnectorMetadataTextInputRef}
+                              defaultValue={appConnectorMetadataText}
+                              onBlur={(e) => setAppConnectorMetadataText(e.target.value)}
                               placeholder="api_key_location=header&#10;api_key_name=x-api-key"
                               className="w-full min-w-0 min-h-[72px] rounded-md border border-input bg-background px-3 py-2 text-sm resize-none"
                             />
@@ -12955,8 +14165,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                               <InfoTip text="Internal operator notes for this connector instance." />
                             </label>
                             <textarea
-                              value={appConnectorNotes}
-                              onChange={(e) => setAppConnectorNotes(e.target.value)}
+                              ref={appConnectorNotesInputRef}
+                              defaultValue={appConnectorNotes}
+                              onBlur={(e) => setAppConnectorNotes(e.target.value)}
                               placeholder="Internal notes"
                               className="w-full min-w-0 min-h-[72px] rounded-md border border-input bg-background px-3 py-2 text-sm resize-none"
                             />
@@ -12982,8 +14193,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                           </p>
                           <input
                             type="password"
-                            value={appConnectorSecretInput}
-                            onChange={(e) => setAppConnectorSecretInput(e.target.value)}
+                            ref={appConnectorSecretInputRef}
+                            defaultValue={appConnectorSecretInput}
+                            onBlur={(e) => setAppConnectorSecretInput(e.target.value)}
                             placeholder="Token / API key / secret"
                             className="rounded-md border border-input bg-background px-3 py-2 text-sm w-full"
                           />
@@ -14164,7 +15376,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                       onChange={(e) => {
                         const enabled = e.target.checked;
                         setSkillAssistantModelOverrideEnabled(enabled);
-                        if (enabled && !skillAssistantModelId.trim()) {
+                        if (enabled && !readSkillAssistantModelTextFields().modelId.trim()) {
                           applySkillAssistantModelForm(selectedModel ?? AGENT_FALLBACK_MODEL);
                         }
                       }}
@@ -14221,8 +15433,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                         <label className="text-xs text-muted-foreground">Model ID</label>
                         <input
                           type="text"
-                          value={skillAssistantModelId}
-                          onChange={(e) => setSkillAssistantModelId(e.target.value)}
+                          ref={skillAssistantModelIdInputRef}
+                          defaultValue={skillAssistantModelId}
+                          onBlur={(e) => setSkillAssistantModelId(e.target.value)}
                           placeholder="provider/model-name"
                           className="rounded-md border border-input bg-background px-3 py-2 text-sm"
                         />
@@ -14246,8 +15459,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                         ) : (
                           <input
                             type="text"
-                            value={skillAssistantModelId.replace(/^ollama\//, '')}
-                            onChange={(e) => setSkillAssistantModelId(e.target.value)}
+                            ref={skillAssistantModelIdInputRef}
+                            defaultValue={skillAssistantModelId.replace(/^ollama\//, '')}
+                            onBlur={(e) => setSkillAssistantModelId(e.target.value)}
                             placeholder="llama3.1:8b"
                             className="rounded-md border border-input bg-background px-3 py-2 text-sm"
                           />
@@ -14261,8 +15475,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                         <label className="text-xs text-muted-foreground">Base URL (optional)</label>
                         <input
                           type="text"
-                          value={skillAssistantModelBaseUrl}
-                          onChange={(e) => setSkillAssistantModelBaseUrl(e.target.value)}
+                          ref={skillAssistantModelBaseUrlInputRef}
+                          defaultValue={skillAssistantModelBaseUrl}
+                          onBlur={(e) => setSkillAssistantModelBaseUrl(e.target.value)}
                           placeholder={skillAssistantModelProvider === 'ollama' ? (ollamaUrl || 'http://localhost:11434') : 'https://api.example.com/v1'}
                           className="rounded-md border border-input bg-background px-3 py-2 text-sm"
                         />
@@ -14369,7 +15584,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                         onChange={(e) => {
                           const enabled = e.target.checked;
                           setAgentModelOverrideEnabled(enabled);
-                          if (enabled && !agentModelId.trim()) {
+                          if (enabled && !readAgentModelTextFields().modelId.trim()) {
                             applyAgentModelForm(selectedModel ?? AGENT_FALLBACK_MODEL);
                           }
                         }}
@@ -14432,8 +15647,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                             <label className="text-xs text-muted-foreground">Model ID</label>
                             <input
                               type="text"
-                              value={agentModelId}
-                              onChange={(e) => setAgentModelId(e.target.value)}
+                              ref={agentModelIdInputRef}
+                              defaultValue={agentModelId}
+                              onBlur={(e) => setAgentModelId(e.target.value)}
                               placeholder="provider/model-name"
                               className="rounded-md border border-input bg-background px-3 py-2 text-sm"
                             />
@@ -14459,8 +15675,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                             ) : (
                               <input
                                 type="text"
-                                value={agentModelId.replace(/^ollama\//, '')}
-                                onChange={(e) => setAgentModelId(e.target.value)}
+                                ref={agentModelIdInputRef}
+                                defaultValue={agentModelId.replace(/^ollama\//, '')}
+                                onBlur={(e) => setAgentModelId(e.target.value)}
                                 placeholder="llama3.1:8b"
                                 className="rounded-md border border-input bg-background px-3 py-2 text-sm"
                               />
@@ -14470,8 +15687,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                             <label className="text-xs text-muted-foreground">Ollama base URL (optional)</label>
                             <input
                               type="text"
-                              value={agentModelBaseUrl}
-                              onChange={(e) => setAgentModelBaseUrl(e.target.value)}
+                              ref={agentModelBaseUrlInputRef}
+                              defaultValue={agentModelBaseUrl}
+                              onBlur={(e) => setAgentModelBaseUrl(e.target.value)}
                               placeholder={ollamaUrl || 'http://localhost:11434'}
                               className="rounded-md border border-input bg-background px-3 py-2 text-sm"
                             />
@@ -14485,8 +15703,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                           <label className="text-xs text-muted-foreground">Base URL (optional)</label>
                           <input
                             type="text"
-                            value={agentModelBaseUrl}
-                            onChange={(e) => setAgentModelBaseUrl(e.target.value)}
+                            ref={agentModelBaseUrlInputRef}
+                            defaultValue={agentModelBaseUrl}
+                            onBlur={(e) => setAgentModelBaseUrl(e.target.value)}
                             placeholder="https://api.example.com"
                             className="rounded-md border border-input bg-background px-3 py-2 text-sm"
                           />
@@ -14582,8 +15801,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                             type="number"
                             min={1}
                             max={12}
-                            value={agentSubagentMaxChildren}
-                            onChange={(e) => setAgentSubagentMaxChildren(e.target.value)}
+                            ref={agentSubagentMaxChildrenInputRef}
+                            defaultValue={agentSubagentMaxChildren}
+                            onBlur={(e) => setAgentSubagentMaxChildren(e.target.value)}
                             className="rounded-md border border-input bg-background px-3 py-2 text-sm"
                           />
                         </div>
@@ -14596,8 +15816,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                             type="number"
                             min={1}
                             max={4}
-                            value={agentSubagentMaxDepth}
-                            onChange={(e) => setAgentSubagentMaxDepth(e.target.value)}
+                            ref={agentSubagentMaxDepthInputRef}
+                            defaultValue={agentSubagentMaxDepth}
+                            onBlur={(e) => setAgentSubagentMaxDepth(e.target.value)}
                             className="rounded-md border border-input bg-background px-3 py-2 text-sm"
                           />
                         </div>
@@ -14609,8 +15830,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                         </label>
                         <input
                           type="text"
-                          value={agentSubagentAllowedAgentIds}
-                          onChange={(e) => setAgentSubagentAllowedAgentIds(e.target.value)}
+                          ref={agentSubagentAllowedAgentIdsInputRef}
+                          defaultValue={agentSubagentAllowedAgentIds}
+                          onBlur={(e) => setAgentSubagentAllowedAgentIds(e.target.value)}
                           placeholder="researcher, developer"
                           className="rounded-md border border-input bg-background px-3 py-2 text-sm"
                         />
@@ -14625,8 +15847,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                             type="number"
                             min={15}
                             max={3600}
-                            value={agentSubagentRunTimeoutSeconds}
-                            onChange={(e) => setAgentSubagentRunTimeoutSeconds(e.target.value)}
+                            ref={agentSubagentRunTimeoutSecondsInputRef}
+                            defaultValue={agentSubagentRunTimeoutSeconds}
+                            onBlur={(e) => setAgentSubagentRunTimeoutSeconds(e.target.value)}
                             className="rounded-md border border-input bg-background px-3 py-2 text-sm"
                           />
                         </div>
@@ -14667,11 +15890,11 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                               type="checkbox"
                               checked={agentSubagentDefaultModelEnabled}
                               onChange={(e) => {
-                                const enabled = e.target.checked;
-                                setAgentSubagentDefaultModelEnabled(enabled);
-                                if (enabled && !agentSubagentDefaultModelId.trim()) {
-                                  applyAgentSubagentDefaultModelForm(selectedModel ?? AGENT_FALLBACK_MODEL);
-                                }
+                                  const enabled = e.target.checked;
+                                  setAgentSubagentDefaultModelEnabled(enabled);
+                                  if (enabled && !readAgentSubagentTextFields().defaultModelId.trim()) {
+                                    applyAgentSubagentDefaultModelForm(selectedModel ?? AGENT_FALLBACK_MODEL);
+                                  }
                               }}
                             />
                             Override child model
@@ -14729,10 +15952,11 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                                 && (modelProviders.find((entry) => entry.id === agentSubagentDefaultModelProvider)?.models?.length ?? 0) === 0)) && (
                               <div className="grid gap-1">
                                 <label className="text-xs text-muted-foreground">Model ID</label>
-                                <input
-                                  type="text"
-                                  value={agentSubagentDefaultModelId}
-                                  onChange={(e) => setAgentSubagentDefaultModelId(e.target.value)}
+                                  <input
+                                    type="text"
+                                  ref={agentSubagentDefaultModelIdInputRef}
+                                  defaultValue={agentSubagentDefaultModelId}
+                                  onBlur={(e) => setAgentSubagentDefaultModelId(e.target.value)}
                                   placeholder="provider/model-name"
                                   className="rounded-md border border-input bg-background px-3 py-2 text-sm"
                                 />
@@ -14757,8 +15981,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                                   ) : (
                                     <input
                                       type="text"
-                                      value={agentSubagentDefaultModelId.replace(/^ollama\//, '')}
-                                      onChange={(e) => setAgentSubagentDefaultModelId(e.target.value)}
+                                      ref={agentSubagentDefaultModelIdInputRef}
+                                      defaultValue={agentSubagentDefaultModelId.replace(/^ollama\//, '')}
+                                      onBlur={(e) => setAgentSubagentDefaultModelId(e.target.value)}
                                       placeholder="llama3.1:8b"
                                       className="rounded-md border border-input bg-background px-3 py-2 text-sm"
                                     />
@@ -14768,8 +15993,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                                   <label className="text-xs text-muted-foreground">Ollama base URL (optional)</label>
                                   <input
                                     type="text"
-                                    value={agentSubagentDefaultModelBaseUrl}
-                                    onChange={(e) => setAgentSubagentDefaultModelBaseUrl(e.target.value)}
+                                    ref={agentSubagentDefaultModelBaseUrlInputRef}
+                                    defaultValue={agentSubagentDefaultModelBaseUrl}
+                                    onBlur={(e) => setAgentSubagentDefaultModelBaseUrl(e.target.value)}
                                     placeholder={ollamaUrl || 'http://localhost:11434'}
                                     className="rounded-md border border-input bg-background px-3 py-2 text-sm"
                                   />
@@ -14781,10 +16007,11 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                                 && Boolean(modelProviders.find((entry) => entry.id === agentSubagentDefaultModelProvider)?.baseUrl))) && (
                               <div className="grid gap-1">
                                 <label className="text-xs text-muted-foreground">Base URL (optional)</label>
-                                <input
-                                  type="text"
-                                  value={agentSubagentDefaultModelBaseUrl}
-                                  onChange={(e) => setAgentSubagentDefaultModelBaseUrl(e.target.value)}
+                                  <input
+                                    type="text"
+                                  ref={agentSubagentDefaultModelBaseUrlInputRef}
+                                  defaultValue={agentSubagentDefaultModelBaseUrl}
+                                  onBlur={(e) => setAgentSubagentDefaultModelBaseUrl(e.target.value)}
                                   placeholder="https://api.example.com"
                                   className="rounded-md border border-input bg-background px-3 py-2 text-sm"
                                 />
@@ -14952,8 +16179,13 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                           <div className="grid gap-1">
                             <label className="text-xs text-muted-foreground">Allowed tool names</label>
                             <textarea
-                              value={agentPermissionAllowedToolNames}
-                              onChange={(e) => setAgentPermissionAllowedToolNames(e.target.value)}
+                              ref={agentPermissionAllowedToolNamesRef}
+                              defaultValue={agentPermissionAllowedToolNames}
+                              onBlur={(e) => {
+                                if (e.target.value !== agentPermissionAllowedToolNames) {
+                                  setAgentPermissionAllowedToolNames(e.target.value);
+                                }
+                              }}
                               className="min-h-[84px] rounded-md border border-input bg-background px-3 py-2 font-mono text-xs"
                               placeholder="subagent_spawn&#10;build_mode_runtime_start"
                               spellCheck={false}
@@ -14986,10 +16218,10 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                             </div>
                             <div className="mt-3 grid gap-3">
                               {AGENT_EXECUTOR_OVERRIDE_RULES.map((rule) => {
-                                const selectedDecision = getListedToolDecision(
+                                const selectedDecision = getListedToolDecisionFromSets(
                                   rule.name,
-                                  agentPermissionAllowedToolNames,
-                                  agentPermissionBlockedToolNames
+                                  agentPermissionAllowedToolNameSet,
+                                  agentPermissionBlockedToolNameSet
                                 );
                                 const effectiveState = getCurrentAgentExecutorBuiltInState(rule.name);
                                 const defaultReason =
@@ -15074,8 +16306,13 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                           <div className="grid gap-1">
                             <label className="text-xs text-muted-foreground">Blocked tool names</label>
                             <textarea
-                              value={agentPermissionBlockedToolNames}
-                              onChange={(e) => setAgentPermissionBlockedToolNames(e.target.value)}
+                              ref={agentPermissionBlockedToolNamesRef}
+                              defaultValue={agentPermissionBlockedToolNames}
+                              onBlur={(e) => {
+                                if (e.target.value !== agentPermissionBlockedToolNames) {
+                                  setAgentPermissionBlockedToolNames(e.target.value);
+                                }
+                              }}
                               className="min-h-[84px] rounded-md border border-input bg-background px-3 py-2 font-mono text-xs"
                               placeholder="subagent_send"
                               spellCheck={false}
@@ -15632,8 +16869,10 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                   </label>
                   <input
                     type="text"
-                    value={browserProfile}
-                    onChange={(e) => setBrowserProfileState(e.target.value)}
+                    key={`browser-profile-${browserProfile}`}
+                    ref={browserProfileInputRef}
+                    defaultValue={browserProfile}
+                    onBlur={(e) => setBrowserProfileState(e.target.value || 'default')}
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                     placeholder="default"
                   />
@@ -15680,9 +16919,11 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
               </div>
               <textarea
                 ref={runtimeHooksTextRef}
-                value={runtimeHooksText}
-                onChange={(e) => {
-                  setRuntimeHooksText(e.target.value);
+                defaultValue={runtimeHooksText}
+                onBlur={(e) => {
+                  if (e.target.value !== runtimeHooksText) {
+                    setRuntimeHooksText(e.target.value);
+                  }
                   setRuntimeHooksStatus(null);
                 }}
                 className="min-h-[220px] w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-xs"
@@ -16000,10 +17241,10 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                     </div>
                     <div className="mt-3 grid gap-3">
                       {GLOBAL_EXECUTOR_BUILTIN_RULES.map((rule) => {
-                        const selectedDecision = getListedToolDecision(
+                        const selectedDecision = getListedToolDecisionFromSets(
                           rule.name,
-                          permissionPolicyAllowedToolNames,
-                          permissionPolicyBlockedToolNames
+                          permissionPolicyAllowedToolNameSet,
+                          permissionPolicyBlockedToolNameSet
                         );
                         const effectiveDecision = getCurrentGlobalExecutorBuiltInDecision(rule.name);
                         const defaultReason =
@@ -16100,9 +17341,12 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                     <div className="grid gap-1.5">
                       <label className="text-xs text-muted-foreground">Allowed tool names</label>
                       <textarea
-                        value={permissionPolicyAllowedToolNames}
-                        onChange={(e) => {
-                          setPermissionPolicyAllowedToolNames(e.target.value);
+                        ref={permissionPolicyAllowedToolNamesRef}
+                        defaultValue={permissionPolicyAllowedToolNames}
+                        onBlur={(e) => {
+                          if (e.target.value !== permissionPolicyAllowedToolNames) {
+                            setPermissionPolicyAllowedToolNames(e.target.value);
+                          }
                           setPermissionPolicyStatus(null);
                         }}
                         className="min-h-[96px] rounded-md border border-input bg-background px-3 py-2 font-mono text-xs"
@@ -16113,9 +17357,12 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                     <div className="grid gap-1.5">
                       <label className="text-xs text-muted-foreground">Blocked tool names</label>
                       <textarea
-                        value={permissionPolicyBlockedToolNames}
-                        onChange={(e) => {
-                          setPermissionPolicyBlockedToolNames(e.target.value);
+                        ref={permissionPolicyBlockedToolNamesRef}
+                        defaultValue={permissionPolicyBlockedToolNames}
+                        onBlur={(e) => {
+                          if (e.target.value !== permissionPolicyBlockedToolNames) {
+                            setPermissionPolicyBlockedToolNames(e.target.value);
+                          }
                           setPermissionPolicyStatus(null);
                         }}
                         className="min-h-[96px] rounded-md border border-input bg-background px-3 py-2 font-mono text-xs"
@@ -16140,9 +17387,12 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                       min={10}
                       max={1000}
                       step={10}
-                      value={permissionPolicyAuditMaxEntries}
-                      onChange={(e) => {
-                        setPermissionPolicyAuditMaxEntries(e.target.value);
+                      ref={permissionPolicyAuditMaxEntriesRef}
+                      defaultValue={permissionPolicyAuditMaxEntries}
+                      onBlur={(e) => {
+                        if (e.target.value !== permissionPolicyAuditMaxEntries) {
+                          setPermissionPolicyAuditMaxEntries(e.target.value);
+                        }
                         setPermissionPolicyStatus(null);
                       }}
                       className="rounded-md border border-input bg-background px-3 py-2 text-sm"
@@ -16436,7 +17686,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                 />
                 <div>
                   <div className="font-medium text-foreground">Open Deskmate</div>
-                  <div className="text-sm text-muted-foreground">Version {appVersion || '0.1.0'}</div>
+                  <div className="text-sm text-muted-foreground">Version {appVersion || 'loading...'}</div>
+                  <div className="text-sm text-muted-foreground">Platform {appPlatform || 'unknown'}</div>
                 </div>
               </div>
               <p className="mt-4 text-sm text-muted-foreground leading-relaxed">
@@ -16455,9 +17706,11 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
           onOpenChange={(next) => {
             setCreatingUserSkill(next);
             if (!next) {
-              setNewUserSkillId('');
-              setNewUserSkillName('');
-              setNewUserSkillDesc('');
+              syncUserSkillTextFields({
+                newSkillId: '',
+                newSkillName: '',
+                newSkillDesc: '',
+              });
             }
           }}
         >
@@ -16469,8 +17722,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
               <div className="grid gap-1.5">
                 <label className="text-xs text-muted-foreground">Skill ID (folder name)</label>
                 <input
-                  value={newUserSkillId}
-                  onChange={(e) => setNewUserSkillId(e.target.value)}
+                  ref={newUserSkillIdInputRef}
+                  defaultValue={newUserSkillId}
+                  onBlur={(e) => setNewUserSkillId(e.target.value)}
                   className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                   placeholder="e.g. camsnap"
                 />
@@ -16481,8 +17735,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
               <div className="grid gap-1.5">
                 <label className="text-xs text-muted-foreground">Name (optional)</label>
                 <input
-                  value={newUserSkillName}
-                  onChange={(e) => setNewUserSkillName(e.target.value)}
+                  ref={newUserSkillNameInputRef}
+                  defaultValue={newUserSkillName}
+                  onBlur={(e) => setNewUserSkillName(e.target.value)}
                   className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                   placeholder="Human-friendly name"
                 />
@@ -16490,8 +17745,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
               <div className="grid gap-1.5">
                 <label className="text-xs text-muted-foreground">Description (optional)</label>
                 <input
-                  value={newUserSkillDesc}
-                  onChange={(e) => setNewUserSkillDesc(e.target.value)}
+                  ref={newUserSkillDescInputRef}
+                  defaultValue={newUserSkillDesc}
+                  onBlur={(e) => setNewUserSkillDesc(e.target.value)}
                   className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                   placeholder="One-liner: what this skill is for"
                 />
@@ -16552,8 +17808,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                 <div className="grid gap-1.5">
                   <label className="text-xs text-muted-foreground">GitHub URL (repo or .zip)</label>
                   <input
-                    value={importZipUrl}
-                    onChange={(e) => setImportZipUrl(e.target.value)}
+                    ref={importZipUrlInputRef}
+                    defaultValue={importZipUrl}
+                    onBlur={(e) => setImportZipUrl(e.target.value)}
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                     placeholder="https://github.com/owner/repo or https://.../archive/refs/heads/main.zip"
                     disabled={importZipInspecting || importZipInstalling}
@@ -16608,7 +17865,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                       onChange={(e) => {
                         const selected = importZipCandidates.find((c) => c.relPath === e.target.value) || null;
                         setImportZipSelected(selected);
-                        setImportZipDestId(selected?.skillId || '');
+                        syncUserSkillTextFields({ importZipDestId: selected?.skillId || '' });
                       }}
                       className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                       disabled={importZipInspecting || importZipInstalling}
@@ -16627,8 +17884,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                   <div className="grid gap-1.5">
                     <label className="text-xs text-muted-foreground">Destination skill ID (folder name)</label>
                     <input
-                      value={importZipDestId}
-                      onChange={(e) => setImportZipDestId(e.target.value)}
+                      ref={importZipDestIdInputRef}
+                      defaultValue={importZipDestId}
+                      onBlur={(e) => setImportZipDestId(e.target.value)}
                       className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                       placeholder="e.g. my-skill"
                       disabled={importZipInspecting || importZipInstalling}
@@ -16900,7 +18158,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
           onOpenChange={(next) => {
             if (!next) {
               setEditingUserSkill(null);
-              setEditingUserSkillContent('');
+              syncUserSkillTextFields({ editingContent: '' });
             }
           }}
         >
@@ -16920,8 +18178,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                 </div>
               )}
               <textarea
-                value={editingUserSkillContent}
-                onChange={(e) => setEditingUserSkillContent(e.target.value)}
+                ref={editingUserSkillContentRef}
+                defaultValue={editingUserSkillContent}
+                onBlur={(e) => setEditingUserSkillContent(e.target.value)}
                 className="w-full min-h-[360px] rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
                 spellCheck={false}
               />
@@ -16932,7 +18191,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                 onClick={() => openSkillAssistantDialog({
                   mode: 'edit',
                   skill: editingUserSkill,
-                  draftContent: editingUserSkillContent,
+                  draftContent: readUserSkillTextFields().editingContent,
                   question: 'What should I change in this skill and why?',
                 })}
                 disabled={savingUserSkill}
@@ -16943,7 +18202,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                 variant="outline"
                 onClick={() => {
                   setEditingUserSkill(null);
-                  setEditingUserSkillContent('');
+                  syncUserSkillTextFields({ editingContent: '' });
                 }}
                 disabled={savingUserSkill}
               >
@@ -16963,7 +18222,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
           onOpenChange={(next) => {
             if (!next) {
               setConfiguringUserSkill(null);
-              setConfiguringUserSkillJson('');
+              syncUserSkillTextFields({ configuringJson: '' });
               setConfiguringUserSkillError(null);
             }
           }}
@@ -17017,8 +18276,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                 </div>
               )}
               <textarea
-                value={configuringUserSkillJson}
-                onChange={(e) => setConfiguringUserSkillJson(e.target.value)}
+                ref={configuringUserSkillJsonRef}
+                defaultValue={configuringUserSkillJson}
+                onBlur={(e) => setConfiguringUserSkillJson(e.target.value)}
                 className="w-full min-h-[320px] rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
                 spellCheck={false}
               />
@@ -17032,7 +18292,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                 onClick={() => openSkillAssistantDialog({
                   mode: 'configure',
                   skill: configuringUserSkill,
-                  draftContent: configuringUserSkillJson,
+                  draftContent: readUserSkillTextFields().configuringJson,
                   question: 'What config do I need to set for this skill?',
                 })}
                 disabled={savingUserSkillConfig}
@@ -17043,7 +18303,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                 variant="outline"
                 onClick={() => {
                   setConfiguringUserSkill(null);
-                  setConfiguringUserSkillJson('');
+                  syncUserSkillTextFields({ configuringJson: '' });
                   setConfiguringUserSkillError(null);
                 }}
                 disabled={savingUserSkillConfig}

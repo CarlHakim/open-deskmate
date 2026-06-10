@@ -31,24 +31,36 @@ import {
   getTasks,
   getTask,
   saveTask,
+  addTaskActivity,
   updateTaskStatus,
   updateTaskSessionFilePath,
   deleteTask,
   clearHistory,
 } from '../store/taskHistory';
 import {
+  createSavedPromptCategory,
+  deleteSavedPromptCategory,
   listSavedPrompts,
+  listSavedPromptCategories,
+  renameSavedPromptCategory,
   upsertSavedPrompt,
   deleteSavedPrompt,
 } from '../store/savedPrompts';
 import {
   getFoldersForAgent,
+  getFolder,
   createFolder,
   updateFolder,
   deleteFolder as deleteFolderFromStore,
   getTaskFolderAssignments,
   setTaskFolder,
 } from '../store/folderStore';
+import {
+  assignUsageProjectToBuildSessionTasks,
+  assignUsageProjectToBuildPresetSessions,
+  assignUsageProjectToFolderTasks,
+  assignUsageProjectToTasks,
+} from '../services/usage-project-assignments';
 import type { FolderConfig, FolderUpdateConfig } from '@accomplish/shared';
 import { getMemoryState, readMemoryFile, saveMemoryFile } from '../services/memory';
 import { planNextJobs } from '../services/proactive-planner';
@@ -72,6 +84,35 @@ import {
   writeWorkspaceFile,
 } from '../services/build-mode/file-service';
 import { buildTerminalManager } from '../services/build-mode/terminal-manager';
+import { getLatestBuildQualityCheckRun, runBuildQualityChecks } from '../services/build-mode/quality-checks';
+import {
+  addBuildGitRemote,
+  applyBuildGitStash,
+  checkoutBuildGitRemoteBranch,
+  commitBuildGitChanges,
+  createBuildGitBranch,
+  createBuildGitPullRequest,
+  createBuildGitRemoteRepository,
+  createBuildGitStash,
+  discardBuildGitChanges,
+  dropBuildGitStash,
+  fetchBuildGitRemote,
+  finishBuildGitMerge,
+  initBuildGitRepository,
+  listBuildGitBackupBranches,
+  listBuildGitReflog,
+  listBuildGitStashes,
+  pullBuildGitBranch,
+  pushBuildGitBranch,
+  readBuildGitConflicts,
+  readBuildGitSummary,
+  readBuildGitMismatchSummary,
+  resolveBuildGitMismatch,
+  restoreBuildGitBackupBranch,
+  stageBuildGitFiles,
+  switchBuildGitBranch,
+  updateBuildGitRemote,
+} from '../services/build-mode/git-service';
 import {
   deleteBuildModePreset,
   listBuildModePresets,
@@ -108,6 +149,32 @@ import { getUsagePricingSettings, setUsagePricingSettings } from '../store/usage
 import { getUsageSummary } from '../services/usage-summary';
 import { listModelsUsed } from '../services/usage-models';
 import { suggestPricingFromInternet } from '../services/usage-pricing-autofill';
+import { getUsageBudgetSettings, getUsageBudgetStatus, setUsageBudgetSettings } from '../store/usageBudgets';
+import {
+  archiveUsageAssignee,
+  archiveUsageProjectWorkItem,
+  archiveUsageProject,
+  createUsageProjectKanbanColumn,
+  createUsageAssignee,
+  createUsageProject,
+  createUsageProjectBudgetWindow,
+  createUsageProjectWorkItem,
+  deleteUsageProjectKanbanColumn,
+  deleteUsageProjectBudgetWindow,
+  getUsageProject,
+  listUsageAssignees,
+  listUsageProjectKanbanColumns,
+  listUsageProjectBudgetWindows,
+  listUsageProjects,
+  listUsageProjectWorkItems,
+  updateUsageProjectKanbanColumn,
+  updateUsageAssignee,
+  updateUsageProject,
+  updateUsageProjectBudgetWindow,
+  updateUsageProjectWorkItem,
+} from '../store/usageProjects';
+import { getUsageProjectAnalytics, getUsageProjectBudgetStatus, getUsageProjectSummary } from '../services/usage-projects';
+import { draftAutomationFromText } from '../services/automation-draft';
 import { clearHookDiagnostics, listHookDiagnostics } from '../hooks/hook-diagnostics';
 import { readRuntimeHooksRegistryRaw, saveRuntimeHooksRegistryRaw } from '../hooks/hook-registry';
 import {
@@ -224,11 +291,23 @@ import type {
   UsagePeriod,
   UsagePricingSettings,
   UsagePricingAutofillRequest,
+  UsageBudgetSettings,
+  UsageAssigneeInput,
+  UsageAssigneeUpdate,
+  UsageProjectBudgetWindowInput,
+  UsageProjectBudgetWindowUpdate,
+  UsageProjectKanbanColumnInput,
+  UsageProjectKanbanColumnUpdate,
+  UsageProjectInput,
+  UsageProjectUpdate,
+  UsageProjectWorkItemInput,
+  UsageProjectWorkItemUpdate,
   SelectedModel,
   ProviderConfig,
   ModelConfig,
   OllamaConfig,
   ScheduleConfig,
+  AutomationDraftRequest,
   DiscordConnectorConfig,
   TelegramConnectorConfig,
   VoiceWakeConfig,
@@ -248,6 +327,8 @@ import type {
   BuildTaskSessionRenameInput,
   BuildTaskSessionUpdateInput,
   BuildProjectPresetInput,
+  BuildQualityCheckKind,
+  BuildQualityCheckRunRequest,
   BuildStartRequest,
   BuildWorkspaceBaselineDecision,
   PermissionPolicySettings,
@@ -377,6 +458,36 @@ app.once('before-quit', () => {
   cleanupDesktopEphemeralSessionFilesOnQuit();
 });
 
+function emitPermissionResolvedActivity(taskId: string, detail: string): void {
+  const task = getTask(taskId);
+  const activity = {
+    id: `act_permission_resolved_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+    taskId,
+    agentId: task?.agentId,
+    kind: 'permission_resolved' as const,
+    title: 'Permission resolved',
+    detail,
+    timestamp: new Date().toISOString(),
+    status: 'success' as const,
+  };
+  addTaskActivity(taskId, activity);
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) {
+      window.webContents.send('task:activity', activity);
+    }
+  }
+}
+
+function sanitizeFileBaseName(input: unknown, fallback: string, maxLength = 64): string {
+  const raw = String(input ?? fallback)
+    .trim()
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/[. ]+$/g, '');
+  const normalized = raw || fallback;
+  return normalized.slice(0, maxLength).trim().replace(/[. ]+$/g, '') || fallback;
+}
+
 function saveDataUrlToTempFile(dataUrl: string, baseName: string): string {
   const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
   if (!match) {
@@ -386,13 +497,167 @@ function saveDataUrlToTempFile(dataUrl: string, baseName: string): string {
   const data = match[2];
   const buffer = Buffer.from(data, 'base64');
   const extension = mime === 'image/png' ? 'png' : mime === 'image/webp' ? 'webp' : 'jpg';
-  const safeBase = sanitizeString(baseName, 'fileBase', 64) || 'snapshot';
+  const safeBase = sanitizeFileBaseName(baseName, 'snapshot');
   const dir = path.join(os.tmpdir(), 'opendeskmate-snapshots');
   fs.mkdirSync(dir, { recursive: true });
   const filename = `${safeBase}-${Date.now()}.${extension}`;
   const filePath = path.join(dir, filename);
   fs.writeFileSync(filePath, buffer);
   return filePath;
+}
+
+async function saveDataUrlToChosenFile(window: BrowserWindow, dataUrl: string, baseName: string): Promise<{ filePath?: string; cancelled?: boolean }> {
+  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) {
+    throw new Error('Invalid data URL');
+  }
+  const mime = match[1];
+  const buffer = Buffer.from(match[2], 'base64');
+  const extension = mime === 'image/png' ? 'png' : mime === 'image/webp' ? 'webp' : 'jpg';
+  const safeBase = sanitizeFileBaseName(baseName, 'snapshot');
+  const saveResult = await dialog.showSaveDialog(window, {
+    title: 'Export screenshot',
+    defaultPath: path.join(os.homedir(), 'Downloads', `${safeBase}-${Date.now()}.${extension}`),
+    filters: [
+      { name: extension.toUpperCase(), extensions: [extension] },
+      { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] },
+    ],
+  });
+
+  if (saveResult.canceled || !saveResult.filePath) {
+    return { cancelled: true };
+  }
+
+  fs.writeFileSync(saveResult.filePath, buffer);
+  return { filePath: saveResult.filePath };
+}
+
+async function saveTextToChosenFile(window: BrowserWindow, params: {
+  content: string;
+  baseName?: string;
+  extension?: string;
+  title?: string;
+  filters?: Electron.FileFilter[];
+}): Promise<{ filePath?: string; cancelled?: boolean }> {
+  const extension = sanitizeString(params.extension || 'txt', 'extension', 12).replace(/^\.+/, '') || 'txt';
+  const safeBase = sanitizeFileBaseName(params.baseName, 'document');
+  const saveResult = await dialog.showSaveDialog(window, {
+    title: sanitizeOptionalText(params.title, 'title', 80) || 'Save file',
+    defaultPath: path.join(os.homedir(), 'Downloads', `${safeBase}.${extension}`),
+    filters: params.filters && params.filters.length > 0
+      ? params.filters
+      : [{ name: extension.toUpperCase(), extensions: [extension] }],
+  });
+
+  if (saveResult.canceled || !saveResult.filePath) {
+    return { cancelled: true };
+  }
+
+  fs.writeFileSync(saveResult.filePath, params.content, 'utf8');
+  return { filePath: saveResult.filePath };
+}
+
+const FULL_PREVIEW_CAPTURE_MAX_WIDTH = 6000;
+const FULL_PREVIEW_CAPTURE_MAX_HEIGHT = 12000;
+
+function normalizeLocalPreviewUrl(rawUrl: string): string {
+  const url = new URL(rawUrl);
+  const hostname = url.hostname.toLowerCase();
+  const isLocalHost = hostname === 'localhost'
+    || hostname === '127.0.0.1'
+    || hostname === '[::1]'
+    || hostname === '::1'
+    || hostname.endsWith('.localhost');
+
+  if ((url.protocol !== 'http:' && url.protocol !== 'https:') || !isLocalHost) {
+    throw new Error('Full preview screenshots are only available for local runtime preview URLs.');
+  }
+
+  return url.toString();
+}
+
+async function captureRuntimePreviewFullPage(previewUrl: string): Promise<{
+  dataUrl: string;
+  width: number;
+  height: number;
+  fullWidth: number;
+  fullHeight: number;
+  clipped: boolean;
+}> {
+  const url = normalizeLocalPreviewUrl(previewUrl);
+  let previewWindow: BrowserWindow | null = null;
+  try {
+    previewWindow = new BrowserWindow({
+      show: false,
+      width: 1280,
+      height: 800,
+      webPreferences: {
+        sandbox: true,
+        nodeIntegration: false,
+        contextIsolation: true,
+      },
+    });
+    previewWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+
+    await Promise.race([
+      previewWindow.loadURL(url),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Full preview screenshot timed out.')), 15_000)),
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 800));
+
+    const dimensions = await previewWindow.webContents.executeJavaScript(`(() => {
+      const doc = document.documentElement;
+      const body = document.body;
+      const width = Math.ceil(Math.max(
+        window.innerWidth || 0,
+        doc?.clientWidth || 0,
+        doc?.scrollWidth || 0,
+        doc?.offsetWidth || 0,
+        body?.clientWidth || 0,
+        body?.scrollWidth || 0,
+        body?.offsetWidth || 0
+      ));
+      const height = Math.ceil(Math.max(
+        window.innerHeight || 0,
+        doc?.clientHeight || 0,
+        doc?.scrollHeight || 0,
+        doc?.offsetHeight || 0,
+        body?.clientHeight || 0,
+        body?.scrollHeight || 0,
+        body?.offsetHeight || 0
+      ));
+      return { width, height };
+    })()`, true) as { width?: number; height?: number };
+
+    const fullWidth = Math.max(1, Math.round(Number(dimensions?.width) || 1280));
+    const fullHeight = Math.max(1, Math.round(Number(dimensions?.height) || 800));
+    const captureWidth = Math.min(FULL_PREVIEW_CAPTURE_MAX_WIDTH, fullWidth);
+    const captureHeight = Math.min(FULL_PREVIEW_CAPTURE_MAX_HEIGHT, fullHeight);
+    const clipped = captureWidth < fullWidth || captureHeight < fullHeight;
+
+    previewWindow.setContentSize(captureWidth, captureHeight);
+    await previewWindow.webContents.executeJavaScript('window.scrollTo(0, 0); undefined;', true);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    const image = await previewWindow.webContents.capturePage({
+      x: 0,
+      y: 0,
+      width: captureWidth,
+      height: captureHeight,
+    });
+    return {
+      dataUrl: image.toDataURL(),
+      width: captureWidth,
+      height: captureHeight,
+      fullWidth,
+      fullHeight,
+      clipped,
+    };
+  } finally {
+    if (previewWindow && !previewWindow.isDestroyed()) {
+      previewWindow.destroy();
+    }
+  }
 }
 
 interface OllamaModel {
@@ -456,6 +721,397 @@ function sanitizeOptionalText(input: unknown, field: string, maxLength: number):
     throw new Error(`${field} exceeds maximum length`);
   }
   return input;
+}
+
+function sanitizeUsageProjectBillingType(input: unknown): UsageProjectInput['billingType'] {
+  const raw = sanitizeOptionalText(input, 'billingType', 32).trim().toLowerCase();
+  return ['internal', 'client_billable', 'fixed_fee', 'retainer', 'r_and_d', 'support', 'other'].includes(raw)
+    ? raw as UsageProjectInput['billingType']
+    : 'internal';
+}
+
+function sanitizeUsageProjectPriority(input: unknown): UsageProjectInput['priority'] {
+  const raw = sanitizeOptionalText(input, 'priority', 32).trim().toLowerCase();
+  return ['low', 'normal', 'high', 'urgent'].includes(raw)
+    ? raw as UsageProjectInput['priority']
+    : 'normal';
+}
+
+function isAllowedUsageProjectLinkUrl(value: string): boolean {
+  if (/^https?:\/\//i.test(value)) return true;
+  if (/^[a-zA-Z]:[\\/]/.test(value)) return true;
+  if (/^\\\\/.test(value)) return true;
+  if (/^\//.test(value)) return true;
+  if (/^\.{1,2}[\\/]/.test(value)) return true;
+  return false;
+}
+
+function sanitizeUsageProjectLinks(input: unknown): UsageProjectInput['links'] {
+  if (!Array.isArray(input)) return [];
+  return input.slice(0, 12).flatMap((entry, index) => {
+    if (!entry || typeof entry !== 'object') return [];
+    const source = entry as Record<string, unknown>;
+    const url = sanitizeOptionalText(source.url, `links.${index}.url`, 1024).trim();
+    if (!url || !isAllowedUsageProjectLinkUrl(url)) return [];
+    return [{
+      id: sanitizeOptionalText(source.id, `links.${index}.id`, 80).trim() || randomUUID(),
+      label: sanitizeOptionalText(source.label, `links.${index}.label`, 80).trim() || 'Link',
+      url,
+    }];
+  });
+}
+
+function sanitizeUsageProjectTags(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  input.slice(0, 40).forEach((entry, index) => {
+    const tag = sanitizeOptionalText(entry, `tags.${index}`, 40).trim();
+    const key = tag.toLowerCase();
+    if (!tag || seen.has(key) || tags.length >= 20) return;
+    seen.add(key);
+    tags.push(tag);
+  });
+  return tags;
+}
+
+function sanitizeIdList(input: unknown, field = 'ids'): string[] {
+  if (!Array.isArray(input)) return [];
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  input.slice(0, 120).forEach((entry, index) => {
+    const id = sanitizeOptionalText(entry, `${field}.${index}`, 128).trim();
+    if (!id || seen.has(id) || ids.length >= 80) return;
+    seen.add(id);
+    ids.push(id);
+  });
+  return ids;
+}
+
+function sanitizeOptionalIdOverride(input: unknown, field = 'assigneeIds'): string[] | null | undefined {
+  if (input === undefined) return undefined;
+  if (input === null) return null;
+  if (Array.isArray(input)) return sanitizeIdList(input, field);
+  throw new Error(`${field} must be an array or null`);
+}
+
+function sanitizeUsageProjectNotes(input: unknown, legacyNotes: unknown): UsageProjectInput['noteEntries'] {
+  const hasStructuredNotes = Array.isArray(input);
+  const notes = hasStructuredNotes ? input.slice(0, 100).flatMap((entry, index) => {
+    if (!entry || typeof entry !== 'object') return [];
+    const source = entry as Record<string, unknown>;
+    const text = sanitizeOptionalText(source.text, `noteEntries.${index}.text`, 5000).trim();
+    if (!text) return [];
+    return [{
+      id: sanitizeOptionalText(source.id, `noteEntries.${index}.id`, 80).trim() || randomUUID(),
+      text,
+      createdAt: sanitizeOptionalText(source.createdAt, `noteEntries.${index}.createdAt`, 64).trim() || new Date().toISOString(),
+      updatedAt: source.updatedAt ? sanitizeOptionalText(source.updatedAt, `noteEntries.${index}.updatedAt`, 64).trim() : undefined,
+    }];
+  }) : [];
+
+  if (notes.length === 0 && !hasStructuredNotes) {
+    const legacy = sanitizeOptionalText(legacyNotes, 'notes', 5000).trim();
+    if (legacy) {
+      return [{
+        id: randomUUID(),
+        text: legacy,
+        createdAt: new Date().toISOString(),
+      }];
+    }
+  }
+
+  return notes;
+}
+
+function sanitizeUsageProjectMetadata(input: Partial<UsageProjectInput | UsageProjectUpdate>, includeMissing = false): Partial<UsageProjectInput> {
+  const output: Partial<UsageProjectInput> = {};
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'clientName')) {
+    output.clientName = sanitizeOptionalText(input.clientName, 'clientName', 120).trim();
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'projectCode')) {
+    output.projectCode = sanitizeOptionalText(input.projectCode, 'projectCode', 64).trim();
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'owner')) {
+    output.owner = sanitizeOptionalText(input.owner, 'owner', 120).trim();
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'billingType')) {
+    output.billingType = sanitizeUsageProjectBillingType(input.billingType);
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'billingReference')) {
+    output.billingReference = sanitizeOptionalText(input.billingReference, 'billingReference', 160).trim();
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'priority')) {
+    output.priority = sanitizeUsageProjectPriority(input.priority);
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'dueDate')) {
+    output.dueDate = input.dueDate ? sanitizeOptionalText(input.dueDate, 'dueDate', 64).trim() : null;
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'notes')) {
+    output.notes = sanitizeOptionalText(input.notes, 'notes', 5000).trim();
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'noteEntries')) {
+    output.noteEntries = sanitizeUsageProjectNotes(input.noteEntries, input.notes);
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'links')) {
+    output.links = sanitizeUsageProjectLinks(input.links);
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'tags')) {
+    output.tags = sanitizeUsageProjectTags(input.tags);
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'assigneeIds')) {
+    output.assigneeIds = sanitizeIdList(input.assigneeIds, 'assigneeIds');
+  }
+  return output;
+}
+
+function sanitizeUsageAssigneePayload(input: Partial<UsageAssigneeInput | UsageAssigneeUpdate>, includeMissing = false): Partial<UsageAssigneeInput> {
+  const output: Partial<UsageAssigneeInput> = {};
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'name')) {
+    output.name = sanitizeOptionalText(input.name, 'name', 120).trim();
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'role')) {
+    output.role = sanitizeOptionalText(input.role, 'role', 120).trim();
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'email')) {
+    output.email = sanitizeOptionalText(input.email, 'email', 160).trim();
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'phone')) {
+    output.phone = sanitizeOptionalText(input.phone, 'phone', 80).trim();
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'company')) {
+    output.company = sanitizeOptionalText(input.company, 'company', 120).trim();
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'notes')) {
+    output.notes = sanitizeOptionalText(input.notes, 'notes', 5000).trim();
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'color')) {
+    const rawColor = input.color === null ? '' : input.color;
+    output.color = sanitizeOptionalText(rawColor, 'color', 32).trim() || undefined;
+  }
+  return output;
+}
+
+function sanitizeWorkItemSourceType(input: unknown): UsageProjectWorkItemInput['sourceType'] {
+  const value = sanitizeOptionalText(input, 'sourceType', 40).trim();
+  return ['manual', 'chat_project', 'chat_task', 'build_preset', 'build_session'].includes(value)
+    ? value as UsageProjectWorkItemInput['sourceType']
+    : 'manual';
+}
+
+function sanitizeWorkItemChecklist(input: unknown): UsageProjectWorkItemInput['checklist'] {
+  if (!Array.isArray(input)) return [];
+  return input.slice(0, 80).flatMap((entry, index) => {
+    if (!entry || typeof entry !== 'object') return [];
+    const source = entry as Record<string, unknown>;
+    const text = sanitizeOptionalText(source.text, `checklist.${index}.text`, 300).trim();
+    if (!text) return [];
+    return [{
+      id: sanitizeOptionalText(source.id, `checklist.${index}.id`, 80).trim() || randomUUID(),
+      text,
+      completed: source.completed === true,
+      assigneeIds: sanitizeIdList(source.assigneeIds, `checklist.${index}.assigneeIds`),
+      dueDate: source.dueDate ? sanitizeOptionalText(source.dueDate, `checklist.${index}.dueDate`, 64).trim() : null,
+      createdAt: sanitizeOptionalText(source.createdAt, `checklist.${index}.createdAt`, 64).trim() || new Date().toISOString(),
+      updatedAt: source.updatedAt ? sanitizeOptionalText(source.updatedAt, `checklist.${index}.updatedAt`, 64).trim() : undefined,
+    }];
+  });
+}
+
+function sanitizeWorkItemChecklistLists(input: unknown): UsageProjectWorkItemInput['checklistLists'] {
+  if (!Array.isArray(input)) return [];
+  return input.slice(0, 20).flatMap((entry, index) => {
+    if (!entry || typeof entry !== 'object') return [];
+    const source = entry as Record<string, unknown>;
+    const name = sanitizeOptionalText(source.name, `checklistLists.${index}.name`, 80).trim();
+    const items = sanitizeWorkItemChecklist(source.items) || [];
+    if (!name && items.length === 0) return [];
+    return [{
+      id: sanitizeOptionalText(source.id, `checklistLists.${index}.id`, 80).trim() || randomUUID(),
+      name: name || 'List',
+      items,
+      createdAt: sanitizeOptionalText(source.createdAt, `checklistLists.${index}.createdAt`, 64).trim() || new Date().toISOString(),
+      updatedAt: source.updatedAt ? sanitizeOptionalText(source.updatedAt, `checklistLists.${index}.updatedAt`, 64).trim() : undefined,
+    }];
+  });
+}
+
+const WORK_ITEM_NOTE_TEXT_MAX_LENGTH = 100_000;
+const WORK_ITEM_NOTE_HTML_MAX_LENGTH = 300_000;
+
+function sanitizeWorkItemNotes(input: unknown): UsageProjectWorkItemInput['notes'] {
+  if (!Array.isArray(input)) return [];
+  return input.slice(0, 100).flatMap((entry, index) => {
+    if (!entry || typeof entry !== 'object') return [];
+    const source = entry as Record<string, unknown>;
+    const text = sanitizeOptionalText(source.text, `notes.${index}.text`, WORK_ITEM_NOTE_TEXT_MAX_LENGTH).trim();
+    const html = sanitizeOptionalText(source.html, `notes.${index}.html`, WORK_ITEM_NOTE_HTML_MAX_LENGTH)
+      .replace(/<\s*script\b[^>]*>[\s\S]*?<\s*\/\s*script\s*>/gi, '')
+      .replace(/<\s*style\b[^>]*>[\s\S]*?<\s*\/\s*style\s*>/gi, '')
+      .replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+      .replace(/javascript:/gi, '')
+      .trim();
+    if (!text) return [];
+    return [{
+      id: sanitizeOptionalText(source.id, `notes.${index}.id`, 80).trim() || randomUUID(),
+      title: sanitizeOptionalText(source.title, `notes.${index}.title`, 160).trim() || undefined,
+      text,
+      html: html || undefined,
+      createdAt: sanitizeOptionalText(source.createdAt, `notes.${index}.createdAt`, 64).trim() || new Date().toISOString(),
+      updatedAt: source.updatedAt ? sanitizeOptionalText(source.updatedAt, `notes.${index}.updatedAt`, 64).trim() : undefined,
+    }];
+  });
+}
+
+function sanitizeDrawingNumber(input: unknown, fallback = 0): number {
+  const num = typeof input === 'number' ? input : Number(input);
+  if (!Number.isFinite(num)) return fallback;
+  return Math.max(-10000, Math.min(10000, num));
+}
+
+function sanitizeDrawingColor(input: unknown, fallback: string): string {
+  const value = sanitizeOptionalText(input, 'drawingColor', 32).trim();
+  return /^#[0-9a-f]{6}$/i.test(value) || value === 'transparent' ? value : fallback;
+}
+
+function sanitizeDrawingStrokeStyle(input: unknown): 'solid' | 'dashed' | 'dotted' {
+  const value = sanitizeOptionalText(input, 'drawingStrokeStyle', 16).trim().toLowerCase();
+  return value === 'dashed' || value === 'dotted' ? value : 'solid';
+}
+
+function sanitizeDrawingOpacity(input: unknown): number {
+  const value = typeof input === 'number' ? input : Number(input);
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(0, Math.min(1, value));
+}
+
+function sanitizeWorkItemDrawings(input: unknown): UsageProjectWorkItemInput['drawings'] {
+  if (!Array.isArray(input)) return [];
+  const allowedKinds = ['rectangle', 'ellipse', 'triangle', 'line', 'arrow', 'text'];
+  return input.slice(0, 20).flatMap((entry, drawingIndex) => {
+    if (!entry || typeof entry !== 'object') return [];
+    const source = entry as Record<string, unknown>;
+    const elementsInput = Array.isArray(source.elements) ? source.elements : [];
+    const elements = elementsInput.slice(0, 80).flatMap((element, elementIndex) => {
+      if (!element || typeof element !== 'object') return [];
+      const elementSource = element as Record<string, unknown>;
+      const kind = sanitizeOptionalText(elementSource.kind, `drawings.${drawingIndex}.elements.${elementIndex}.kind`, 24).trim();
+      if (!allowedKinds.includes(kind)) return [];
+      return [{
+        id: sanitizeOptionalText(elementSource.id, `drawings.${drawingIndex}.elements.${elementIndex}.id`, 80).trim() || randomUUID(),
+        kind: kind as 'rectangle' | 'ellipse' | 'triangle' | 'line' | 'arrow' | 'text',
+        x1: sanitizeDrawingNumber(elementSource.x1),
+        y1: sanitizeDrawingNumber(elementSource.y1),
+        x2: sanitizeDrawingNumber(elementSource.x2),
+        y2: sanitizeDrawingNumber(elementSource.y2),
+        stroke: sanitizeDrawingColor(elementSource.stroke, '#38bdf8'),
+        fill: sanitizeDrawingColor(elementSource.fill, 'transparent'),
+        fillOpacity: sanitizeDrawingOpacity(elementSource.fillOpacity),
+        strokeWidth: Math.max(1, Math.min(12, sanitizeDrawingNumber(elementSource.strokeWidth, 2))),
+        strokeStyle: sanitizeDrawingStrokeStyle(elementSource.strokeStyle),
+        text: sanitizeOptionalText(elementSource.text, `drawings.${drawingIndex}.elements.${elementIndex}.text`, 500).trim() || undefined,
+        fontSize: Math.max(10, Math.min(72, sanitizeDrawingNumber(elementSource.fontSize, 24))),
+      }];
+    });
+    return [{
+      id: sanitizeOptionalText(source.id, `drawings.${drawingIndex}.id`, 80).trim() || randomUUID(),
+      title: sanitizeOptionalText(source.title, `drawings.${drawingIndex}.title`, 120).trim() || 'Drawing',
+      width: Math.max(320, Math.min(1600, sanitizeDrawingNumber(source.width, 640))),
+      height: Math.max(200, Math.min(1200, sanitizeDrawingNumber(source.height, 360))),
+      elements,
+      createdAt: sanitizeOptionalText(source.createdAt, `drawings.${drawingIndex}.createdAt`, 64).trim() || new Date().toISOString(),
+      updatedAt: source.updatedAt ? sanitizeOptionalText(source.updatedAt, `drawings.${drawingIndex}.updatedAt`, 64).trim() : undefined,
+    }];
+  });
+}
+
+function sanitizeWorkItemDocuments(input: unknown): UsageProjectWorkItemInput['documents'] {
+  if (!Array.isArray(input)) return [];
+  return input.slice(0, 50).flatMap((entry, index) => {
+    if (!entry || typeof entry !== 'object') return [];
+    const source = entry as Record<string, unknown>;
+    const kind = sanitizeOptionalText(source.kind, `documents.${index}.kind`, 16).trim() === 'url' ? 'url' : 'local';
+    const path = sanitizeOptionalText(source.path, `documents.${index}.path`, 1024).trim();
+    const url = sanitizeOptionalText(source.url, `documents.${index}.url`, 2048).trim();
+    if (kind === 'url' && !/^https?:\/\//i.test(url)) return [];
+    if (kind === 'local' && !path) return [];
+    const fallbackLabel = kind === 'url'
+      ? url.replace(/^https?:\/\//i, '').split(/[/?#]/)[0] || 'Document link'
+      : path.split(/[\\/]/).filter(Boolean).pop() || 'Local document';
+    return [{
+      id: sanitizeOptionalText(source.id, `documents.${index}.id`, 80).trim() || randomUUID(),
+      label: sanitizeOptionalText(source.label, `documents.${index}.label`, 160).trim() || fallbackLabel,
+      kind,
+      path: kind === 'local' ? path : undefined,
+      url: kind === 'url' ? url : undefined,
+      createdAt: sanitizeOptionalText(source.createdAt, `documents.${index}.createdAt`, 64).trim() || new Date().toISOString(),
+    }];
+  });
+}
+
+function sanitizeWorkItemPayload(input: Partial<UsageProjectWorkItemInput | UsageProjectWorkItemUpdate>, includeMissing = false): Partial<UsageProjectWorkItemInput> {
+  const output: Partial<UsageProjectWorkItemInput> = {};
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'title')) {
+    output.title = sanitizeOptionalText(input.title, 'title', 180).trim();
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'description')) {
+    output.description = sanitizeOptionalText(input.description, 'description', 5000).trim();
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'color')) {
+    output.color = input.color === null ? null : sanitizeOptionalText(input.color, 'color', 32).trim();
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'sourceType')) {
+    output.sourceType = sanitizeWorkItemSourceType(input.sourceType);
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'sourceId')) {
+    output.sourceId = input.sourceId ? sanitizeOptionalText(input.sourceId, 'sourceId', 160).trim() : null;
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'statusId')) {
+    output.statusId = sanitizeOptionalText(input.statusId, 'statusId', 128).trim();
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'priority')) {
+    output.priority = sanitizeUsageProjectPriority(input.priority);
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'assigneeIds')) {
+    output.assigneeIds = sanitizeIdList(input.assigneeIds, 'assigneeIds');
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'startDate')) {
+    output.startDate = input.startDate ? sanitizeOptionalText(input.startDate, 'startDate', 64).trim() : null;
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'dueDate')) {
+    output.dueDate = input.dueDate ? sanitizeOptionalText(input.dueDate, 'dueDate', 64).trim() : null;
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'completedAt')) {
+    output.completedAt = input.completedAt ? sanitizeOptionalText(input.completedAt, 'completedAt', 64).trim() : null;
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'blocked')) {
+    output.blocked = input.blocked === true;
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'blockedReason')) {
+    output.blockedReason = sanitizeOptionalText(input.blockedReason, 'blockedReason', 300).trim();
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'tags')) {
+    output.tags = sanitizeUsageProjectTags(input.tags);
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'checklist')) {
+    output.checklist = sanitizeWorkItemChecklist(input.checklist);
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'checklistLists')) {
+    output.checklistLists = sanitizeWorkItemChecklistLists(input.checklistLists);
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'notes')) {
+    output.notes = sanitizeWorkItemNotes(input.notes);
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'drawings')) {
+    output.drawings = sanitizeWorkItemDrawings(input.drawings);
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'documents')) {
+    output.documents = sanitizeWorkItemDocuments(input.documents);
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'archived')) {
+    output.archived = input.archived === true;
+  }
+  return output;
 }
 
 function normalizeEnvOverrides(input: unknown): Record<string, string> | undefined {
@@ -804,6 +1460,11 @@ function validateTaskConfig(config: TaskConfig): TaskConfig {
   }
   if (config.sessionId) {
     validated.sessionId = sanitizeString(config.sessionId, 'sessionId', 128);
+  }
+  if (config.usageProjectId) {
+    validated.usageProjectId = sanitizeString(config.usageProjectId, 'usageProjectId', 128);
+  } else if (config.usageProjectId === null) {
+    validated.usageProjectId = null;
   }
   if (config.workingDirectory) {
     validated.workingDirectory = sanitizeString(config.workingDirectory, 'workingDirectory', 1024);
@@ -1323,9 +1984,11 @@ export function registerIPCHandlers(): void {
       const message = parsedResponse.selectedOptions?.join(', ') || parsedResponse.message || 'yes';
       const sanitizedMessage = sanitizeString(message, 'permissionResponse', 1024);
       await sendAgentEngineTaskResponse(taskId, sanitizedMessage);
+      emitPermissionResolvedActivity(taskId, decision);
     } else {
       // Send denial to the correct task
       await sendAgentEngineTaskResponse(taskId, 'no');
+      emitPermissionResolvedActivity(taskId, decision);
     }
   });
 
@@ -1338,7 +2001,8 @@ export function registerIPCHandlers(): void {
       prompt: string,
       existingTaskId?: string,
       attachedFiles?: string[],
-      privacyMode?: 'normal' | 'incognito'
+      privacyMode?: 'normal' | 'incognito',
+      usageProjectId?: string | null
     ) => {
       const window = assertTrustedWindow(BrowserWindow.fromWebContents(event.sender));
       ensureDesktopRuntimeServices({
@@ -1358,6 +2022,7 @@ export function registerIPCHandlers(): void {
         validatedExistingTaskId,
         attachedFiles,
         privacyMode,
+        usageProjectId: usageProjectId ? sanitizeString(usageProjectId, 'usageProjectId', 128) : null,
         applyAgentContext,
       });
     }
@@ -2061,11 +2726,48 @@ export function registerIPCHandlers(): void {
     return listSavedPrompts();
   });
 
+  handle('saved-prompts:categories:list', async () => {
+    return listSavedPromptCategories();
+  });
+
+  handle('saved-prompts:categories:create', async (_event: IpcMainInvokeEvent, name: string) => {
+    return createSavedPromptCategory(sanitizeString(name, 'category', 80));
+  });
+
+  handle(
+    'saved-prompts:categories:rename',
+    async (_event: IpcMainInvokeEvent, payload: { from?: unknown; to?: unknown }) => {
+      if (!payload || typeof payload !== 'object') {
+        throw new Error('Invalid category rename payload');
+      }
+      return renameSavedPromptCategory(
+        sanitizeString(String(payload.from ?? ''), 'from', 80),
+        sanitizeString(String(payload.to ?? ''), 'to', 80)
+      );
+    }
+  );
+
+  handle(
+    'saved-prompts:categories:delete',
+    async (_event: IpcMainInvokeEvent, payload: { name?: unknown; replacement?: unknown }) => {
+      if (!payload || typeof payload !== 'object') {
+        throw new Error('Invalid category delete payload');
+      }
+      const replacement = payload.replacement == null
+        ? undefined
+        : sanitizeString(String(payload.replacement), 'replacement', 80);
+      return deleteSavedPromptCategory(
+        sanitizeString(String(payload.name ?? ''), 'category', 80),
+        replacement
+      );
+    }
+  );
+
   handle(
     'saved-prompts:upsert',
     async (
       _event: IpcMainInvokeEvent,
-      payload: { id?: string; title: string; content: string; createdAt?: string; updatedAt?: string }
+      payload: { id?: string; title: string; content: string; category?: string; createdAt?: string; updatedAt?: string }
     ) => {
       if (!payload || typeof payload !== 'object') {
         throw new Error('Invalid saved prompt payload');
@@ -2073,9 +2775,10 @@ export function registerIPCHandlers(): void {
       const id = payload.id ? sanitizeString(payload.id, 'id', 128) : undefined;
       const title = sanitizeString(payload.title, 'title', 256);
       const content = sanitizeString(payload.content, 'content', 50_000);
+      const category = payload.category ? sanitizeString(payload.category, 'category', 80) : undefined;
       const createdAt = payload.createdAt ? sanitizeString(payload.createdAt, 'createdAt', 64) : undefined;
       const updatedAt = payload.updatedAt ? sanitizeString(payload.updatedAt, 'updatedAt', 64) : undefined;
-      return upsertSavedPrompt({ id, title, content, createdAt, updatedAt });
+      return upsertSavedPrompt({ id, title, content, category, createdAt, updatedAt });
     }
   );
 
@@ -2110,7 +2813,9 @@ export function registerIPCHandlers(): void {
     const sanitizedProviders = providers.map((row) => {
       const provider = sanitizeString(row.provider, 'provider', 32) as UsagePricingSettings['providers'][number]['provider'];
       const model = row.model ? sanitizeString(row.model, 'model', 256) : null;
-      const inputCostPer1m = typeof row.inputCostPer1m === 'number' && Number.isFinite(row.inputCostPer1m) ? row.inputCostPer1m : null;
+      const legacyInputCostPer1m = typeof row.inputCostPer1m === 'number' && Number.isFinite(row.inputCostPer1m) ? row.inputCostPer1m : null;
+      const inputHitCostPer1m = typeof row.inputHitCostPer1m === 'number' && Number.isFinite(row.inputHitCostPer1m) ? row.inputHitCostPer1m : null;
+      const inputMissCostPer1m = typeof row.inputMissCostPer1m === 'number' && Number.isFinite(row.inputMissCostPer1m) ? row.inputMissCostPer1m : legacyInputCostPer1m;
       const outputCostPer1m = typeof row.outputCostPer1m === 'number' && Number.isFinite(row.outputCostPer1m) ? row.outputCostPer1m : null;
       const effectiveFrom = row.effectiveFrom ? sanitizeString(row.effectiveFrom, 'effectiveFrom', 32) : null;
       const pricingSource: 'manual' | 'ai' = row.pricingSource === 'ai' ? 'ai' : 'manual';
@@ -2119,7 +2824,8 @@ export function registerIPCHandlers(): void {
       return {
         provider,
         model,
-        inputCostPer1m,
+        inputHitCostPer1m,
+        inputMissCostPer1m,
         outputCostPer1m,
         effectiveFrom,
         pricingSource,
@@ -2139,6 +2845,242 @@ export function registerIPCHandlers(): void {
   handle('usage:pricing:autofill', async (_event: IpcMainInvokeEvent, request: UsagePricingAutofillRequest) => {
     const targets = Array.isArray(request?.targets) ? request.targets : [];
     return suggestPricingFromInternet({ currency: request?.currency, targets });
+  });
+
+  handle('usage:projects:list', async (_event: IpcMainInvokeEvent, payload?: { includeArchived?: unknown }) => {
+    return listUsageProjects({ includeArchived: Boolean(payload?.includeArchived) });
+  });
+
+  handle('usage:projects:create', async (_event: IpcMainInvokeEvent, input: UsageProjectInput) => {
+    if (!input || typeof input !== 'object') throw new Error('Invalid usage project input');
+    return createUsageProject({
+      name: sanitizeString(input.name, 'name', 120),
+      color: input.color ? sanitizeString(input.color, 'color', 32) : undefined,
+      trackingEnabled: input.trackingEnabled !== false,
+      ...sanitizeUsageProjectMetadata(input, true),
+    });
+  });
+
+  handle('usage:projects:update', async (_event: IpcMainInvokeEvent, projectId: string, update: UsageProjectUpdate) => {
+    const sanitizedId = sanitizeString(projectId, 'projectId', 128);
+    if (!update || typeof update !== 'object') throw new Error('Invalid usage project update');
+    return updateUsageProject(sanitizedId, {
+      name: update.name !== undefined ? sanitizeString(update.name, 'name', 120) : undefined,
+      color: update.color === null ? null : update.color !== undefined ? sanitizeString(update.color, 'color', 32) : undefined,
+      trackingEnabled: update.trackingEnabled,
+      status: update.status === 'archived' ? 'archived' : update.status === 'active' ? 'active' : undefined,
+      ...sanitizeUsageProjectMetadata(update),
+    });
+  });
+
+  handle('usage:projects:archive', async (_event: IpcMainInvokeEvent, projectId: string, archived?: boolean) => {
+    return archiveUsageProject(sanitizeString(projectId, 'projectId', 128), archived !== false);
+  });
+
+  handle('usage:assignees:list', async (_event: IpcMainInvokeEvent, payload?: { includeArchived?: unknown }) => {
+    return listUsageAssignees({ includeArchived: Boolean(payload?.includeArchived) });
+  });
+
+  handle('usage:assignees:create', async (_event: IpcMainInvokeEvent, input: UsageAssigneeInput) => {
+    if (!input || typeof input !== 'object') throw new Error('Invalid assignee input');
+    return createUsageAssignee({
+      ...sanitizeUsageAssigneePayload(input, true),
+      name: sanitizeString(input.name, 'name', 120),
+    });
+  });
+
+  handle('usage:assignees:update', async (_event: IpcMainInvokeEvent, assigneeId: string, update: UsageAssigneeUpdate) => {
+    const sanitizedId = sanitizeString(assigneeId, 'assigneeId', 128);
+    if (!update || typeof update !== 'object') throw new Error('Invalid assignee update');
+    return updateUsageAssignee(sanitizedId, {
+      ...sanitizeUsageAssigneePayload(update),
+      name: update.name !== undefined ? sanitizeString(update.name, 'name', 120) : undefined,
+      color: update.color === null ? null : update.color !== undefined ? sanitizeOptionalText(update.color, 'color', 32).trim() : undefined,
+      status: update.status === 'archived' ? 'archived' : update.status === 'active' ? 'active' : undefined,
+    });
+  });
+
+  handle('usage:assignees:archive', async (_event: IpcMainInvokeEvent, assigneeId: string, archived?: boolean) => {
+    return archiveUsageAssignee(sanitizeString(assigneeId, 'assigneeId', 128), archived !== false);
+  });
+
+  handle('usage:assignee-overview:get', async (_event: IpcMainInvokeEvent, payload?: { assigneeId?: unknown }) => {
+    const assigneeId = payload?.assigneeId ? sanitizeString(payload.assigneeId, 'assigneeId', 128) : null;
+    const projects = listUsageProjects({ includeArchived: true });
+    return listUsageAssignees({ includeArchived: true })
+      .filter((assignee) => !assigneeId || assignee.id === assigneeId)
+      .map((assignee) => {
+        const assignedProjects = projects.filter((project) => (project.assigneeIds || []).includes(assignee.id));
+        return {
+          assignee,
+          activeBudgetCount: assignedProjects.filter((project) => project.status === 'active').length,
+          chatProjectCount: 0,
+          buildPresetCount: 0,
+          buildSessionCount: 0,
+          taskCount: 0,
+          runCount: 0,
+          inputHitTokens: 0,
+          inputMissTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          cost: null,
+          work: assignedProjects.map((project) => ({
+            id: project.id,
+            type: 'budget',
+            name: project.name,
+            usageProjectId: project.id,
+            usageProjectName: project.name,
+            detail: project.status,
+          })),
+        };
+      });
+  });
+
+  handle('usage:project-budget-windows:list', async (_event: IpcMainInvokeEvent, payload?: { projectId?: unknown }) => {
+    const projectId = payload?.projectId ? sanitizeString(payload.projectId, 'projectId', 128) : undefined;
+    return listUsageProjectBudgetWindows(projectId);
+  });
+
+  handle('usage:project-budget-windows:create', async (_event: IpcMainInvokeEvent, input: UsageProjectBudgetWindowInput) => {
+    if (!input || typeof input !== 'object') throw new Error('Invalid budget window input');
+    return createUsageProjectBudgetWindow({
+      projectId: sanitizeString(input.projectId, 'projectId', 128),
+      name: input.name ? sanitizeString(input.name, 'name', 120) : undefined,
+      startsAt: sanitizeString(input.startsAt, 'startsAt', 64),
+      endsAt: input.endsAt ? sanitizeString(input.endsAt, 'endsAt', 64) : null,
+      enabled: input.enabled !== false,
+      mode: input.mode === 'block' ? 'block' : 'warn',
+      moneyLimit: typeof input.moneyLimit === 'number' && Number.isFinite(input.moneyLimit) ? input.moneyLimit : null,
+      tokenLimit: typeof input.tokenLimit === 'number' && Number.isFinite(input.tokenLimit) ? input.tokenLimit : null,
+      currency: input.currency,
+    });
+  });
+
+  handle('usage:project-budget-windows:update', async (_event: IpcMainInvokeEvent, windowId: string, update: UsageProjectBudgetWindowUpdate) => {
+    if (!update || typeof update !== 'object') throw new Error('Invalid budget window update');
+    return updateUsageProjectBudgetWindow(sanitizeString(windowId, 'windowId', 128), {
+      projectId: update.projectId ? sanitizeString(update.projectId, 'projectId', 128) : undefined,
+      name: update.name !== undefined ? sanitizeString(update.name, 'name', 120) : undefined,
+      startsAt: update.startsAt !== undefined ? sanitizeString(update.startsAt, 'startsAt', 64) : undefined,
+      endsAt: update.endsAt ? sanitizeString(update.endsAt, 'endsAt', 64) : update.endsAt === null ? null : undefined,
+      enabled: update.enabled,
+      mode: update.mode === 'block' ? 'block' : update.mode === 'warn' ? 'warn' : undefined,
+      moneyLimit: typeof update.moneyLimit === 'number' && Number.isFinite(update.moneyLimit) ? update.moneyLimit : update.moneyLimit === null ? null : undefined,
+      tokenLimit: typeof update.tokenLimit === 'number' && Number.isFinite(update.tokenLimit) ? update.tokenLimit : update.tokenLimit === null ? null : undefined,
+      currency: update.currency,
+    });
+  });
+
+  handle('usage:project-budget-windows:delete', async (_event: IpcMainInvokeEvent, windowId: string) => {
+    return deleteUsageProjectBudgetWindow(sanitizeString(windowId, 'windowId', 128));
+  });
+
+  handle('usage:project-summary:get', async (_event: IpcMainInvokeEvent, payload: { projectId?: unknown; startsAt?: unknown; endsAt?: unknown; windowId?: unknown }) => {
+    if (!payload || typeof payload !== 'object') throw new Error('Invalid project summary request');
+    return getUsageProjectSummary({
+      projectId: sanitizeString(payload.projectId, 'projectId', 128),
+      startsAt: payload.startsAt ? sanitizeString(payload.startsAt, 'startsAt', 64) : undefined,
+      endsAt: payload.endsAt ? sanitizeString(payload.endsAt, 'endsAt', 64) : null,
+      windowId: payload.windowId ? sanitizeString(payload.windowId, 'windowId', 128) : undefined,
+    });
+  });
+
+  handle('usage:project-analytics:get', async (_event: IpcMainInvokeEvent, payload: { projectId?: unknown; startsAt?: unknown; endsAt?: unknown; windowId?: unknown; days?: unknown }) => {
+    if (!payload || typeof payload !== 'object') throw new Error('Invalid project analytics request');
+    return getUsageProjectAnalytics({
+      projectId: sanitizeString(payload.projectId, 'projectId', 128),
+      startsAt: payload.startsAt ? sanitizeString(payload.startsAt, 'startsAt', 64) : undefined,
+      endsAt: payload.endsAt ? sanitizeString(payload.endsAt, 'endsAt', 64) : null,
+      windowId: payload.windowId ? sanitizeString(payload.windowId, 'windowId', 128) : undefined,
+      days: typeof payload.days === 'number' ? payload.days : undefined,
+    });
+  });
+
+  handle('usage:project-budget-status:get', async (_event: IpcMainInvokeEvent, payload?: { projectId?: unknown }) => {
+    const projectId = payload?.projectId ? sanitizeString(payload.projectId, 'projectId', 128) : null;
+    return getUsageProjectBudgetStatus(projectId);
+  });
+
+  handle('usage:project-work-items:list', async (_event: IpcMainInvokeEvent, payload: { projectId?: unknown; includeArchived?: unknown }) => {
+    if (!payload || typeof payload !== 'object') throw new Error('Invalid work item list request');
+    return listUsageProjectWorkItems(
+      sanitizeString(payload.projectId, 'projectId', 128),
+      { includeArchived: payload.includeArchived === true }
+    );
+  });
+
+  handle('usage:project-work-items:create', async (_event: IpcMainInvokeEvent, input: UsageProjectWorkItemInput) => {
+    if (!input || typeof input !== 'object') throw new Error('Invalid work item input');
+    const sanitized = sanitizeWorkItemPayload(input, true);
+    return createUsageProjectWorkItem({
+      ...sanitized,
+      usageProjectId: sanitizeString(input.usageProjectId, 'usageProjectId', 128),
+      title: sanitizeString(input.title, 'title', 180),
+    });
+  });
+
+  handle('usage:project-work-items:update', async (_event: IpcMainInvokeEvent, itemId: string, update: UsageProjectWorkItemUpdate) => {
+    if (!update || typeof update !== 'object') throw new Error('Invalid work item update');
+    return updateUsageProjectWorkItem(
+      sanitizeString(itemId, 'itemId', 128),
+      {
+        ...sanitizeWorkItemPayload(update),
+        usageProjectId: update.usageProjectId ? sanitizeString(update.usageProjectId, 'usageProjectId', 128) : undefined,
+      }
+    );
+  });
+
+  handle('usage:project-work-items:archive', async (_event: IpcMainInvokeEvent, itemId: string, archived?: boolean) => {
+    return archiveUsageProjectWorkItem(sanitizeString(itemId, 'itemId', 128), archived !== false);
+  });
+
+  handle('usage:project-kanban-columns:list', async (_event: IpcMainInvokeEvent, payload: { projectId?: unknown }) => {
+    if (!payload || typeof payload !== 'object') throw new Error('Invalid Kanban column list request');
+    return listUsageProjectKanbanColumns(sanitizeString(payload.projectId, 'projectId', 128));
+  });
+
+  handle('usage:project-kanban-columns:create', async (_event: IpcMainInvokeEvent, input: UsageProjectKanbanColumnInput) => {
+    if (!input || typeof input !== 'object') throw new Error('Invalid Kanban column input');
+    return createUsageProjectKanbanColumn({
+      usageProjectId: sanitizeString(input.usageProjectId, 'usageProjectId', 128),
+      name: sanitizeString(input.name, 'name', 80),
+      order: typeof input.order === 'number' && Number.isFinite(input.order) ? input.order : undefined,
+      color: input.color ? sanitizeString(input.color, 'color', 32) : undefined,
+      wipLimit: typeof input.wipLimit === 'number' && Number.isFinite(input.wipLimit) ? input.wipLimit : input.wipLimit === null ? null : undefined,
+      doneState: input.doneState === true,
+      archivedState: input.archivedState === true,
+    });
+  });
+
+  handle('usage:project-kanban-columns:update', async (_event: IpcMainInvokeEvent, columnId: string, update: UsageProjectKanbanColumnUpdate) => {
+    if (!update || typeof update !== 'object') throw new Error('Invalid Kanban column update');
+    return updateUsageProjectKanbanColumn(sanitizeString(columnId, 'columnId', 128), {
+      usageProjectId: update.usageProjectId ? sanitizeString(update.usageProjectId, 'usageProjectId', 128) : undefined,
+      name: update.name !== undefined ? sanitizeString(update.name, 'name', 80) : undefined,
+      order: typeof update.order === 'number' && Number.isFinite(update.order) ? update.order : undefined,
+      color: update.color !== undefined ? sanitizeOptionalText(update.color, 'color', 32).trim() : undefined,
+      wipLimit: typeof update.wipLimit === 'number' && Number.isFinite(update.wipLimit) ? update.wipLimit : update.wipLimit === null ? null : undefined,
+      doneState: update.doneState,
+      archivedState: update.archivedState,
+    });
+  });
+
+  handle('usage:project-kanban-columns:delete', async (_event: IpcMainInvokeEvent, columnId: string) => {
+    return deleteUsageProjectKanbanColumn(sanitizeString(columnId, 'columnId', 128));
+  });
+
+  handle('usage:budgets:get', async () => {
+    return getUsageBudgetSettings();
+  });
+
+  handle('usage:budgets:set', async (_event: IpcMainInvokeEvent, settings: UsageBudgetSettings) => {
+    if (!settings || typeof settings !== 'object') throw new Error('Invalid settings');
+    return setUsageBudgetSettings(settings);
+  });
+
+  handle('usage:budget-status:get', async (_event: IpcMainInvokeEvent, payload?: { agentId?: unknown }) => {
+    const agentId = payload?.agentId ? sanitizeString(payload.agentId, 'agentId', 64) : null;
+    return getUsageBudgetStatus(agentId);
   });
 
   // Settings: Memory (user context)
@@ -2170,6 +3112,61 @@ export function registerIPCHandlers(): void {
     }
     const filePath = saveDataUrlToTempFile(dataUrl, baseName);
     return { filePath };
+  });
+
+  handle('files:save-data-url-as', async (event: IpcMainInvokeEvent, payload: { dataUrl?: string; baseName?: string }) => {
+    const window = assertTrustedWindow(BrowserWindow.fromWebContents(event.sender));
+    const dataUrl = typeof payload?.dataUrl === 'string' ? payload.dataUrl : '';
+    const baseName = typeof payload?.baseName === 'string' ? payload.baseName : 'snapshot';
+    if (!dataUrl) {
+      throw new Error('dataUrl is required');
+    }
+    return saveDataUrlToChosenFile(window, dataUrl, baseName);
+  });
+
+  handle('files:save-text-as', async (event: IpcMainInvokeEvent, payload: {
+    content?: string;
+    baseName?: string;
+    extension?: string;
+    title?: string;
+  }) => {
+    const window = assertTrustedWindow(BrowserWindow.fromWebContents(event.sender));
+    const content = typeof payload?.content === 'string' ? payload.content : '';
+    if (!content) {
+      throw new Error('content is required');
+    }
+    const extension = sanitizeString(payload?.extension || 'txt', 'extension', 12).replace(/^\.+/, '') || 'txt';
+    return saveTextToChosenFile(window, {
+      content,
+      baseName: payload?.baseName || 'document',
+      extension,
+      title: payload?.title || 'Save file',
+      filters: extension === 'rtf'
+        ? [
+            { name: 'Rich Text Format', extensions: ['rtf'] },
+            { name: 'Text Files', extensions: ['txt'] },
+            { name: 'All Files', extensions: ['*'] },
+          ]
+        : undefined,
+    });
+  });
+
+  handle('window:capture-rect', async (event: IpcMainInvokeEvent, payload: { x?: unknown; y?: unknown; width?: unknown; height?: unknown }) => {
+    const window = assertTrustedWindow(BrowserWindow.fromWebContents(event.sender));
+    const x = Math.max(0, Math.round(Number(payload?.x) || 0));
+    const y = Math.max(0, Math.round(Number(payload?.y) || 0));
+    const width = Math.max(1, Math.min(6000, Math.round(Number(payload?.width) || 0)));
+    const height = Math.max(1, Math.min(6000, Math.round(Number(payload?.height) || 0)));
+    const image = await window.webContents.capturePage({ x, y, width, height });
+    return { dataUrl: image.toDataURL() };
+  });
+
+  handle('runtime-preview:capture-full-page', async (_event: IpcMainInvokeEvent, payload: { url?: unknown }) => {
+    const url = typeof payload?.url === 'string' ? payload.url : '';
+    if (!url) {
+      throw new Error('Runtime preview URL is required.');
+    }
+    return captureRuntimePreviewFullPage(url);
   });
 
   // Agents: List agents with default/active info
@@ -3547,6 +4544,13 @@ export function registerIPCHandlers(): void {
     return listSchedules().filter((schedule) => schedule.agentId === activeAgentId);
   });
 
+  handle('automation:draft-from-text', async (_event: IpcMainInvokeEvent, request: AutomationDraftRequest) => {
+    const text = sanitizeString(request?.text, 'text', 2000);
+    const agentId = request?.agentId ? sanitizeString(request.agentId, 'agentId', 64) : resolveActiveAgentId();
+    const timezone = request?.timezone ? sanitizeString(request.timezone, 'timezone', 80) : undefined;
+    return draftAutomationFromText({ text, agentId, timezone });
+  });
+
   // Automations: Create or update schedule
   handle('schedules:upsert', async (_event: IpcMainInvokeEvent, config: ScheduleConfig, scheduleId?: string) => {
     const validated = validateScheduleConfig({
@@ -3867,6 +4871,17 @@ export function registerIPCHandlers(): void {
     }
   });
 
+  // Shell: Open a local file or folder path with the OS default app.
+  handle('shell:open-path', async (_event: IpcMainInvokeEvent, filePath: string) => {
+    const targetPath = sanitizeOptionalText(filePath, 'filePath', 2048).trim();
+    if (!targetPath) throw new Error('filePath is required');
+    if (/^https?:\/\//i.test(targetPath)) throw new Error('Use openExternal for web URLs.');
+    const resolvedPath = path.resolve(targetPath);
+    const result = await shell.openPath(resolvedPath);
+    if (result) return { ok: false, path: resolvedPath, error: result };
+    return { ok: true, path: resolvedPath };
+  });
+
   // Help docs: List docs from writable help folder.
   handle('help-docs:list', async () => {
     return listHelpDocs();
@@ -4003,6 +5018,40 @@ export function registerIPCHandlers(): void {
       commandOverride: commandOverride || undefined,
       envOverrides,
     });
+  });
+
+  handle('build-mode:quality-checks:run', async (_event: IpcMainInvokeEvent, payload: BuildQualityCheckRunRequest) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const workspaceRelativePath = sanitizeOptionalText(payload?.workspaceRelativePath, 'workspaceRelativePath', 300) || '.';
+    const allowedKinds = new Set<BuildQualityCheckKind>(['typecheck', 'lint', 'test', 'build', 'runtime-health', 'preview']);
+    const kinds = Array.isArray(payload?.kinds)
+      ? payload.kinds.filter((kind): kind is BuildQualityCheckKind => allowedKinds.has(kind as BuildQualityCheckKind))
+      : undefined;
+    const commandOverrides = payload?.commandOverrides && typeof payload.commandOverrides === 'object'
+      ? Object.fromEntries(
+        Object.entries(payload.commandOverrides)
+          .filter(([kind]) => allowedKinds.has(kind as BuildQualityCheckKind))
+          .map(([kind, value]) => [kind, typeof value === 'string' ? sanitizeOptionalText(value, `commandOverrides.${kind}`, 500) : undefined])
+          .filter(([, value]) => Boolean(value))
+      ) as Partial<Record<BuildQualityCheckKind, string>>
+      : undefined;
+    return runBuildQualityChecks({
+      agentId,
+      workspaceRelativePath,
+      kinds,
+      commandOverrides,
+      diffSignature: sanitizeOptionalText(payload?.diffSignature, 'diffSignature', 500),
+      changedFileCount: typeof payload?.changedFileCount === 'number' && Number.isFinite(payload.changedFileCount)
+        ? Math.max(0, Math.floor(payload.changedFileCount))
+        : undefined,
+      trigger: payload?.trigger === 'suggested' ? 'suggested' : payload?.trigger === 'manual' ? 'manual' : undefined,
+    });
+  });
+
+  handle('build-mode:quality-checks:get', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; workspaceRelativePath?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const workspaceRelativePath = sanitizeOptionalText(payload?.workspaceRelativePath, 'workspaceRelativePath', 300) || '.';
+    return getLatestBuildQualityCheckRun(agentId, workspaceRelativePath);
   });
 
   handle('build-mode:runtime:run-once', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; workspaceRelativePath?: unknown; envOverrides?: unknown; commandOverride?: unknown }) => {
@@ -4230,6 +5279,234 @@ export function registerIPCHandlers(): void {
     return readWorkspaceGitDiff(agentId, relativePath, { maxChars, baselineId });
   });
 
+  handle('build-mode:git:summary', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    return readBuildGitSummary(agentId, relativePath);
+  });
+
+  handle('build-mode:git:mismatch:summary', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    return readBuildGitMismatchSummary(agentId, relativePath);
+  });
+
+  handle('build-mode:git:mismatch:resolve', async (
+    _event: IpcMainInvokeEvent,
+    payload: { agentId?: unknown; relativePath?: unknown; action?: unknown; createBackup?: unknown; backupBranchName?: unknown }
+  ) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    const actionRaw = sanitizeString(payload?.action, 'action', 40);
+    const allowedActions = ['backup', 'merge', 'rebase', 'reset-to-remote', 'force-push', 'abort-merge', 'abort-rebase', 'continue-rebase'];
+    if (!allowedActions.includes(actionRaw)) {
+      throw new Error('Unsupported Git mismatch action.');
+    }
+    return resolveBuildGitMismatch(agentId, relativePath, {
+      action: actionRaw as 'backup' | 'merge' | 'rebase' | 'reset-to-remote' | 'force-push' | 'abort-merge' | 'abort-rebase' | 'continue-rebase',
+      createBackup: payload?.createBackup === true,
+      backupBranchName: sanitizeOptionalText(payload?.backupBranchName, 'backupBranchName', 200) || undefined,
+    });
+  });
+
+  handle('build-mode:git:init', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    return initBuildGitRepository(agentId, relativePath);
+  });
+
+  handle('build-mode:git:commit', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown; message?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    const message = sanitizeString(payload?.message, 'message', 500);
+    return commitBuildGitChanges(agentId, relativePath, message);
+  });
+
+  handle('build-mode:git:remote:add', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown; remoteName?: unknown; remoteUrl?: unknown; provider?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    const remoteName = sanitizeString(payload?.remoteName, 'remoteName', 80);
+    const remoteUrl = sanitizeString(payload?.remoteUrl, 'remoteUrl', 1000);
+    const providerRaw = sanitizeOptionalText(payload?.provider, 'provider', 32);
+    const provider = ['github', 'gitlab', 'bitbucket', 'custom'].includes(providerRaw)
+      ? providerRaw as 'github' | 'gitlab' | 'bitbucket' | 'custom'
+      : 'custom';
+    return addBuildGitRemote(agentId, relativePath, { provider, remoteName, remoteUrl });
+  });
+
+  handle('build-mode:git:remote:update', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown; remoteName?: unknown; remoteUrl?: unknown; provider?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    const remoteName = sanitizeString(payload?.remoteName, 'remoteName', 80);
+    const remoteUrl = sanitizeString(payload?.remoteUrl, 'remoteUrl', 1000);
+    const providerRaw = sanitizeOptionalText(payload?.provider, 'provider', 32);
+    const provider = ['github', 'gitlab', 'bitbucket', 'custom'].includes(providerRaw)
+      ? providerRaw as 'github' | 'gitlab' | 'bitbucket' | 'custom'
+      : 'custom';
+    return updateBuildGitRemote(agentId, relativePath, { provider, remoteName, remoteUrl });
+  });
+
+  handle('build-mode:git:fetch', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    return fetchBuildGitRemote(agentId, relativePath);
+  });
+
+  handle('build-mode:git:pull', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    return pullBuildGitBranch(agentId, relativePath);
+  });
+
+  handle('build-mode:git:push', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown; branchName?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    const branchName = sanitizeOptionalText(payload?.branchName, 'branchName', 200) || undefined;
+    return pushBuildGitBranch(agentId, relativePath, branchName);
+  });
+
+  handle('build-mode:git:branch:switch', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown; branchName?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    const branchName = sanitizeString(payload?.branchName, 'branchName', 200);
+    return switchBuildGitBranch(agentId, relativePath, branchName);
+  });
+
+  handle('build-mode:git:branch:create', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown; branchName?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    const branchName = sanitizeString(payload?.branchName, 'branchName', 200);
+    return createBuildGitBranch(agentId, relativePath, branchName);
+  });
+
+  handle('build-mode:git:discard', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown; paths?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    const paths = Array.isArray(payload?.paths)
+      ? payload.paths.map((entry, index) => sanitizeString(entry, `paths[${index}]`, 500))
+      : [];
+    return discardBuildGitChanges(agentId, relativePath, paths);
+  });
+
+  handle('build-mode:git:conflicts:get', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    return readBuildGitConflicts(agentId, relativePath);
+  });
+
+  handle('build-mode:git:stage-files', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown; paths?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    const paths = Array.isArray(payload?.paths)
+      ? payload.paths.map((entry, index) => sanitizeString(entry, `paths[${index}]`, 500))
+      : [];
+    return stageBuildGitFiles(agentId, relativePath, { paths });
+  });
+
+  handle('build-mode:git:finish-merge', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown; message?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    const message = sanitizeOptionalText(payload?.message, 'message', 500) || '';
+    return finishBuildGitMerge(agentId, relativePath, message);
+  });
+
+  handle('build-mode:git:stash:create', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown; message?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    const message = sanitizeOptionalText(payload?.message, 'message', 500) || '';
+    return createBuildGitStash(agentId, relativePath, message);
+  });
+
+  handle('build-mode:git:stash:list', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    return listBuildGitStashes(agentId, relativePath);
+  });
+
+  handle('build-mode:git:stash:apply', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown; stashRef?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    const stashRef = sanitizeString(payload?.stashRef, 'stashRef', 80);
+    return applyBuildGitStash(agentId, relativePath, stashRef);
+  });
+
+  handle('build-mode:git:stash:drop', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown; stashRef?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    const stashRef = sanitizeString(payload?.stashRef, 'stashRef', 80);
+    return dropBuildGitStash(agentId, relativePath, stashRef);
+  });
+
+  handle('build-mode:git:branch:checkout-remote', async (
+    _event: IpcMainInvokeEvent,
+    payload: { agentId?: unknown; relativePath?: unknown; remoteBranchName?: unknown; localBranchName?: unknown }
+  ) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    const remoteBranchName = sanitizeString(payload?.remoteBranchName, 'remoteBranchName', 200);
+    const localBranchName = sanitizeOptionalText(payload?.localBranchName, 'localBranchName', 200) || undefined;
+    return checkoutBuildGitRemoteBranch(agentId, relativePath, remoteBranchName, localBranchName);
+  });
+
+  handle('build-mode:git:remote:create', async (
+    _event: IpcMainInvokeEvent,
+    payload: { agentId?: unknown; relativePath?: unknown; provider?: unknown; remoteName?: unknown; repositoryName?: unknown; visibility?: unknown }
+  ) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    const providerRaw = sanitizeOptionalText(payload?.provider, 'provider', 32);
+    const provider = ['github', 'gitlab', 'bitbucket', 'custom'].includes(providerRaw)
+      ? providerRaw as 'github' | 'gitlab' | 'bitbucket' | 'custom'
+      : 'github';
+    const visibilityRaw = sanitizeOptionalText(payload?.visibility, 'visibility', 16);
+    const visibility = visibilityRaw === 'public' ? 'public' : 'private';
+    return createBuildGitRemoteRepository(agentId, relativePath, {
+      provider,
+      remoteName: sanitizeOptionalText(payload?.remoteName, 'remoteName', 80) || 'origin',
+      repositoryName: sanitizeOptionalText(payload?.repositoryName, 'repositoryName', 200) || undefined,
+      visibility,
+    });
+  });
+
+  handle('build-mode:git:pr:create-draft', async (
+    _event: IpcMainInvokeEvent,
+    payload: { agentId?: unknown; relativePath?: unknown; provider?: unknown; title?: unknown; body?: unknown; baseBranch?: unknown; headBranch?: unknown; draft?: unknown }
+  ) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    const providerRaw = sanitizeOptionalText(payload?.provider, 'provider', 32);
+    const provider = ['github', 'gitlab', 'bitbucket', 'custom'].includes(providerRaw)
+      ? providerRaw as 'github' | 'gitlab' | 'bitbucket' | 'custom'
+      : undefined;
+    return createBuildGitPullRequest(agentId, relativePath, {
+      provider,
+      title: sanitizeString(payload?.title, 'title', 300),
+      body: sanitizeOptionalText(payload?.body, 'body', 10_000) || undefined,
+      baseBranch: sanitizeOptionalText(payload?.baseBranch, 'baseBranch', 200) || undefined,
+      headBranch: sanitizeOptionalText(payload?.headBranch, 'headBranch', 200) || undefined,
+      draft: payload?.draft !== false,
+    });
+  });
+
+  handle('build-mode:git:backup-branches:list', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    return listBuildGitBackupBranches(agentId, relativePath);
+  });
+
+  handle('build-mode:git:restore-backup', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown; branchName?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    const branchName = sanitizeString(payload?.branchName, 'branchName', 200);
+    return restoreBuildGitBackupBranch(agentId, relativePath, branchName);
+  });
+
+  handle('build-mode:git:reflog:list', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    return listBuildGitReflog(agentId, relativePath);
+  });
+
   handle('build-mode:workspace:baseline:capture', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown }) => {
     const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
     const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
@@ -4269,17 +5546,23 @@ export function registerIPCHandlers(): void {
     const name = sanitizeString(payload?.name, 'name', 120);
     const workspaceRelativePath = sanitizeString(payload?.workspaceRelativePath, 'workspaceRelativePath', 300);
     const id = sanitizeOptionalText(payload?.id, 'id', 64) || undefined;
+    const usageProjectId = sanitizeOptionalText(payload?.usageProjectId, 'usageProjectId', 128) || null;
+    const assigneeIds = sanitizeOptionalIdOverride(payload?.assigneeIds, 'assigneeIds');
     const activeEnvProfileId = sanitizeOptionalText(payload?.activeEnvProfileId, 'activeEnvProfileId', 64) || undefined;
 
-    return upsertBuildModePreset({
+    const saved = upsertBuildModePreset({
       id,
       agentId,
       name,
       workspaceRelativePath,
+      usageProjectId,
+      ...(assigneeIds !== undefined ? { assigneeIds } : {}),
       commands: payload?.commands,
       envProfiles: payload?.envProfiles,
       activeEnvProfileId,
     });
+    assignUsageProjectToBuildPresetSessions(agentId, saved.id, saved.usageProjectId ?? null);
+    return saved;
   });
 
   handle('build-mode:presets:delete', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; presetId?: unknown }) => {
@@ -4316,6 +5599,7 @@ export function registerIPCHandlers(): void {
     const goalPrompt = sanitizeString(payload?.goalPrompt, 'goalPrompt', MAX_TEXT_LENGTH);
     const workspaceRelativePath = sanitizeOptionalText(payload?.workspaceRelativePath, 'workspaceRelativePath', 400) || '.';
     const selectedPresetId = sanitizeOptionalText(payload?.selectedPresetId, 'selectedPresetId', 64) || null;
+    const usageProjectId = sanitizeOptionalText(payload?.usageProjectId, 'usageProjectId', 128) || null;
     return createBuildTaskSession({
       agentId,
       title,
@@ -4323,6 +5607,7 @@ export function registerIPCHandlers(): void {
       goalPrompt,
       workspaceRelativePath,
       selectedPresetId,
+      usageProjectId,
     });
   });
 
@@ -4341,6 +5626,9 @@ export function registerIPCHandlers(): void {
     if (payload?.selectedPresetId !== undefined) {
       next.selectedPresetId = sanitizeOptionalText(payload.selectedPresetId, 'selectedPresetId', 64) || null;
     }
+    if (payload?.usageProjectId !== undefined) {
+      next.usageProjectId = sanitizeOptionalText(payload.usageProjectId, 'usageProjectId', 128) || null;
+    }
     if (payload?.lifecycleStatus !== undefined) {
       const lifecycleStatus = sanitizeOptionalText(payload.lifecycleStatus, 'lifecycleStatus', 32);
       if (!['active', 'completed', 'failed', 'interrupted', 'archived'].includes(lifecycleStatus)) {
@@ -4348,7 +5636,11 @@ export function registerIPCHandlers(): void {
       }
       next.lifecycleStatus = lifecycleStatus as BuildTaskSessionUpdateInput['lifecycleStatus'];
     }
-    return updateBuildTaskSession(next);
+    const updated = updateBuildTaskSession(next);
+    if (payload?.usageProjectId !== undefined) {
+      assignUsageProjectToBuildSessionTasks(sessionId, updated.execution.usageProjectId ?? null);
+    }
+    return updated;
   });
 
   handle('build-mode:history:rename', async (_event: IpcMainInvokeEvent, payload: BuildTaskSessionRenameInput) => {
@@ -4474,12 +5766,27 @@ export function registerIPCHandlers(): void {
 
   // Folder: Create a new folder (associated with active agent)
   handle('folder:create', async (_event: IpcMainInvokeEvent, config: FolderConfig) => {
-    return createFolder(config, resolveActiveAgentId());
+    return createFolder({
+      ...config,
+      usageProjectId: sanitizeOptionalText(config?.usageProjectId, 'usageProjectId', 128) || null,
+      assigneeIds: sanitizeOptionalIdOverride(config?.assigneeIds, 'assigneeIds') ?? null,
+    }, resolveActiveAgentId());
   });
 
   // Folder: Update a folder
   handle('folder:update', async (_event: IpcMainInvokeEvent, folderId: string, config: FolderUpdateConfig) => {
-    return updateFolder(folderId, config);
+    const sanitizedConfig: FolderUpdateConfig = { ...config };
+    if (config?.usageProjectId !== undefined) {
+      sanitizedConfig.usageProjectId = sanitizeOptionalText(config.usageProjectId, 'usageProjectId', 128) || null;
+    }
+    if (config?.assigneeIds !== undefined) {
+      sanitizedConfig.assigneeIds = sanitizeOptionalIdOverride(config.assigneeIds, 'assigneeIds') ?? null;
+    }
+    const updated = updateFolder(folderId, sanitizedConfig);
+    if (updated && config?.usageProjectId !== undefined) {
+      assignUsageProjectToFolderTasks(folderId, updated.usageProjectId ?? null);
+    }
+    return updated;
   });
 
   // Folder: Delete a folder
@@ -4496,6 +5803,18 @@ export function registerIPCHandlers(): void {
   // Folder: Assign task to folder
   handle('folder:assignTask', async (_event: IpcMainInvokeEvent, taskId: string, folderId: string | null) => {
     setTaskFolder(taskId, folderId);
-    return { success: true };
+    const usageProjectId = folderId ? (getFolder(folderId)?.usageProjectId ?? null) : null;
+    assignUsageProjectToTasks([taskId], usageProjectId);
+    return { success: true, usageProjectId };
+  });
+
+  handle('task:assignUsageProject', async (_event: IpcMainInvokeEvent, taskId: string, usageProjectId: string | null) => {
+    const sanitizedTaskId = sanitizeString(taskId, 'taskId', 128);
+    const sanitizedUsageProjectId = sanitizeOptionalText(usageProjectId, 'usageProjectId', 128).trim() || null;
+    if (sanitizedUsageProjectId && !getUsageProject(sanitizedUsageProjectId)) {
+      throw new Error('Usage project not found.');
+    }
+    assignUsageProjectToTasks([sanitizedTaskId], sanitizedUsageProjectId);
+    return { success: true, usageProjectId: sanitizedUsageProjectId };
   });
 }

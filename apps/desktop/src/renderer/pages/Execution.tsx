@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useState, useRef, useMemo, useCallback, memo, forwardRef, useImperativeHandle, useLayoutEffect, type ChangeEvent, type ReactElement } from 'react';
+import { useEffect, useState, useRef, useMemo, useCallback, memo, forwardRef, useImperativeHandle, useLayoutEffect, type ChangeEvent, type PointerEvent, type ReactElement, type WheelEvent } from 'react';
 import { useParams, useNavigate, useLocation, Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
+import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import { useTaskStore } from '../stores/taskStore';
 import { useSavedPromptsStore } from '../stores/savedPromptsStore';
 import { useAgentStore } from '../stores/agentStore';
@@ -16,15 +17,21 @@ import type {
   SubagentRunTreeNode,
   Task,
   TaskMessage,
+  UsageProject,
+  UsageProjectWorkItem,
+  UsageProjectWorkItemDocumentLink,
+  UsageProjectWorkItemNote,
   UserSkillSharingScope,
 } from '@accomplish/shared';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
-import { XCircle, CornerDownLeft, ArrowLeft, CheckCircle2, AlertCircle, Terminal, Wrench, FileText, Search, Code, Brain, Clock, Square, Play, Download, File, Bug, ChevronUp, ChevronDown, Trash2, Check, Folder, X, Bookmark, BookmarkCheck, Settings, User, Mic, Copy, Plus, Image, Sparkles, Shield } from 'lucide-react';
+import { XCircle, CornerDownLeft, ArrowLeft, CheckCircle2, AlertCircle, Terminal, Wrench, FileText, Search, Code, Brain, Clock, Square, Play, Download, File, Bug, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Trash2, Check, Folder, FolderOpen, X, Bookmark, BookmarkCheck, Settings, User, Mic, Copy, Plus, Image, Sparkles, Shield, ZoomIn, ZoomOut, RotateCcw, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ReactMarkdown from 'react-markdown';
+import type { Components } from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import {
   DropdownMenu,
@@ -38,12 +45,31 @@ import SavedPromptsDialog from '../components/layout/SavedPromptsDialog';
 import ModeSwitch from '../components/layout/ModeSwitch';
 import BuildRuntimeIndicator from '../components/layout/BuildRuntimeIndicator';
 import ContextWindowIndicator from '../components/chat/ContextWindowIndicator';
+import ContextInspector from '../components/chat/ContextInspector';
+import TaskActivityTimeline from '../components/chat/TaskActivityTimeline';
+import { UsageBudgetPill } from '../components/usage/UsageBudgetPill';
+import { UsageProjectSelector } from '../components/usage/UsageProjectSelector';
+import BuildProjectWorkPopup from '../components/build/BuildProjectWorkPopup';
 import { useVoiceWakeTalkMode } from '../hooks/useVoiceWakeTalkMode';
 import { useAttachmentStore } from '../stores/attachmentStore';
 import InlineSlashCommandMenu from '../components/commands/InlineSlashCommandMenu';
 import { filterSlashCommands, type SlashCommandDefinition } from '../lib/slash-commands';
 import { APP_COMMAND_EVENTS, createAppSlashCommands } from '../lib/app-commands';
 import { usePluginSlashCommands } from '../hooks/usePluginSlashCommands';
+import {
+  addPromptHistoryEntry,
+  CHAT_PROMPT_HISTORY_STORAGE_KEY,
+  readPromptHistory,
+  shouldHandlePromptHistoryRecall,
+} from '../lib/prompt-history';
+import { normalizeMarkdownTables } from '../lib/markdown-tables';
+import { BUILD_RECIPES } from '../lib/build-recipes';
+import {
+  readChatProjectWorkPopupSession,
+  writeChatProjectWorkPopupSession,
+} from '../lib/project-work-popup-session';
+import { useUsageProjectStore } from '../stores/usageProjectStore';
+import { useFolderStore } from '../stores/folderStore';
 // Debug log entry type
 interface DebugLogEntry {
   taskId: string;
@@ -59,6 +85,14 @@ type ProactiveSuggestion = {
   why: string;
   prompt: string;
   confirmation: string;
+};
+
+type AnswerSavePending = {
+  mode: 'note' | 'rtf';
+  messageId: string;
+  content: string;
+  html: string;
+  rtf: string;
 };
 
 // Typing dots indicator for thinking/processing states
@@ -86,17 +120,431 @@ const TOOL_PROGRESS_MAP: Record<string, { label: string; icon: typeof FileText }
   dev_browser_execute: { label: 'Executing browser action', icon: Terminal },
 };
 
-// Debounce utility
-function debounce<T extends (...args: unknown[]) => void>(fn: T, ms: number): T {
-  let timeoutId: ReturnType<typeof setTimeout>;
-  return ((...args: unknown[]) => {
-    clearTimeout(timeoutId);
-    timeoutId = setTimeout(() => fn(...args), ms);
-  }) as T;
-}
-
 function createLocalTaskMessageId(): string {
   return `local_msg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+const IMAGE_LINK_EXTENSION_RE = /\.(?:avif|bmp|gif|jpe?g|png|svg|webp)(?:$|[?#/])/i;
+const IMAGE_CDN_HOST_RE = /(^|\.)((upload\.wikimedia\.org)|(images\.unsplash\.com)|(i\.imgur\.com)|(lh3\.googleusercontent\.com)|(pbs\.twimg\.com)|(media\.licdn\.com)|(res\.cloudinary\.com))$/i;
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function isPreviewableImageHref(value: string): boolean {
+  const href = normalizePreviewHref(value);
+  if (!href) return false;
+  if (/^data:image\//i.test(href) || /^blob:/i.test(href)) return true;
+
+  try {
+    const parsed = new URL(href);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    const urlText = `${parsed.pathname}${parsed.search}`;
+    if (IMAGE_LINK_EXTENSION_RE.test(urlText)) return true;
+    return IMAGE_CDN_HOST_RE.test(parsed.hostname);
+  } catch {
+    const pathOnly = href.split(/[?#]/, 1)[0] || href;
+    return IMAGE_LINK_EXTENSION_RE.test(pathOnly);
+  }
+}
+
+function getWikimediaOriginalImageUrl(value: string): string | null {
+  try {
+    const parsed = new URL(value);
+    if (!/^upload\.wikimedia\.org$/i.test(parsed.hostname)) return null;
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    const thumbIndex = parts.indexOf('thumb');
+    if (thumbIndex < 0 || parts.length <= thumbIndex + 4) return null;
+    const originalParts = [
+      ...parts.slice(0, thumbIndex),
+      ...parts.slice(thumbIndex + 1, -1),
+    ];
+    if (originalParts.length < 4) return null;
+    parsed.pathname = `/${originalParts.join('/')}`;
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+function normalizeImagePreviewUrl(value: string): string | null {
+  const href = normalizePreviewHref(value);
+  if (!href) return null;
+  return getWikimediaOriginalImageUrl(href) ?? href;
+}
+
+function getImagePreviewLabel(value: string): string {
+  try {
+    const parsed = new URL(value);
+    const fileName = parsed.pathname.split('/').filter(Boolean).pop();
+    return fileName ? decodeURIComponent(fileName) : parsed.hostname;
+  } catch {
+    const fileName = value.split(/[\\/]/).filter(Boolean).pop();
+    return fileName || 'Image preview';
+  }
+}
+
+function clampImageZoom(value: number): number {
+  return Math.min(6, Math.max(0.5, Math.round(value * 100) / 100));
+}
+
+type ImagePreviewItem = { url: string; label: string };
+
+type ImagePreviewState = {
+  images: ImagePreviewItem[];
+  index: number;
+};
+
+type AssistantLinkPreviews = {
+  imageLinks: ImagePreviewItem[];
+  siteLinks: Array<{ url: string; host: string; faviconUrl: string }>;
+};
+
+function normalizePreviewHref(value: string): string | null {
+  const cleaned = String(value || '')
+    .trim()
+    .replace(/^<|>$/g, '')
+    .replace(/^[("'“”‘’]+/g, '')
+    .replace(/[)"'“”‘’,.;!?]+$/g, '');
+  return cleaned || null;
+}
+
+function getFaviconUrl(host: string): string {
+  return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=64`;
+}
+
+function extractAssistantLinkPreviews(content: string): AssistantLinkPreviews {
+  const source = String(content || '')
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/`[^`]*`/g, '');
+  const imageLinks = new Map<string, { url: string; label: string }>();
+  const siteLinks = new Map<string, { url: string; host: string; faviconUrl: string }>();
+
+  const addImage = (rawUrl: string, label?: string) => {
+    const url = normalizeImagePreviewUrl(rawUrl);
+    if (!url || !isPreviewableImageHref(url) || imageLinks.has(url)) return;
+    imageLinks.set(url, {
+      url,
+      label: label?.trim() || getImagePreviewLabel(url),
+    });
+  };
+
+  const addSite = (rawUrl: string) => {
+    const url = normalizePreviewHref(rawUrl);
+    if (!url || !isHttpUrl(url) || isPreviewableImageHref(url)) return;
+    try {
+      const parsed = new URL(url);
+      const host = parsed.hostname.replace(/^www\./i, '');
+      if (!host || siteLinks.has(host)) return;
+      siteLinks.set(host, {
+        url,
+        host,
+        faviconUrl: getFaviconUrl(host),
+      });
+    } catch {
+      // Ignore malformed URLs in generated text.
+    }
+  };
+
+  const markdownImagePattern = /!\[([^\]]*)]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g;
+  let match: RegExpExecArray | null;
+  while ((match = markdownImagePattern.exec(source)) !== null) {
+    addImage(match[2] || '', match[1] || undefined);
+  }
+
+  const markdownLinkPattern = /(?<!!)\[([^\]]+)]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g;
+  while ((match = markdownLinkPattern.exec(source)) !== null) {
+    const rawUrl = match[2] || '';
+    if (isPreviewableImageHref(rawUrl)) {
+      addImage(rawUrl, match[1] || undefined);
+    } else {
+      addSite(rawUrl);
+    }
+  }
+
+  const bareUrlPattern = /https?:\/\/[^\s<>"'\]]+/g;
+  while ((match = bareUrlPattern.exec(source)) !== null) {
+    const rawUrl = match[0] || '';
+    if (isPreviewableImageHref(rawUrl)) {
+      addImage(rawUrl);
+    } else {
+      addSite(rawUrl);
+    }
+  }
+
+  return {
+    imageLinks: Array.from(imageLinks.values()).slice(0, 8),
+    siteLinks: Array.from(siteLinks.values()).slice(0, 10),
+  };
+}
+
+function escapeHtml(value: string): string {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function appendStyle(element: HTMLElement, style: string): void {
+  const existing = element.getAttribute('style');
+  element.setAttribute('style', existing ? `${existing}; ${style}` : style);
+}
+
+function escapeRtf(value: string): string {
+  let result = '';
+  for (const char of String(value || '')) {
+    if (char === '\\') {
+      result += '\\\\';
+    } else if (char === '{') {
+      result += '\\{';
+    } else if (char === '}') {
+      result += '\\}';
+    } else if (char === '\n') {
+      result += '\\line ';
+    } else if (char === '\r') {
+      // Ignore carriage returns; newlines are handled above.
+    } else {
+      const code = char.codePointAt(0) ?? 0;
+      if (code > 127) {
+        const signed = code > 32767 ? code - 65536 : code;
+        result += `\\u${signed}?`;
+      } else {
+        result += char;
+      }
+    }
+  }
+  return result;
+}
+
+function getRtfInlineContent(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return escapeRtf(node.textContent || '');
+  }
+
+  if (node.nodeType !== Node.ELEMENT_NODE) {
+    return '';
+  }
+
+  const element = node as HTMLElement;
+  const children = Array.from(element.childNodes).map(getRtfInlineContent).join('');
+
+  switch (element.tagName) {
+    case 'BR':
+      return '\\line ';
+    case 'STRONG':
+    case 'B':
+      return `{\\b ${children}\\b0}`;
+    case 'EM':
+    case 'I':
+      return `{\\i ${children}\\i0}`;
+    case 'CODE':
+      return `{\\f1 ${children}\\f0}`;
+    case 'A': {
+      const href = element.getAttribute('href');
+      return href ? `${children} (${escapeRtf(href)})` : children;
+    }
+    case 'IMG': {
+      const alt = element.getAttribute('alt') || element.getAttribute('src') || 'image';
+      return `[Image: ${escapeRtf(alt)}]`;
+    }
+    default:
+      return children;
+  }
+}
+
+function getRtfBlocksFromNodes(nodes: Node[]): string {
+  return nodes.map((node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent?.trim();
+      return text ? `\\pard\\plain\\fs22 ${escapeRtf(text)}\\par\n` : '';
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) return '';
+
+    const element = node as HTMLElement;
+    const tagName = element.tagName;
+
+    if (/^H[1-6]$/.test(tagName)) {
+      const level = Number(tagName.slice(1));
+      const fontSize = [0, 40, 32, 28, 24, 22, 20][level] || 24;
+      return `\\pard\\plain\\s${level}\\outlinelevel${level - 1}\\b\\fs${fontSize} ${getRtfInlineContent(element)}\\b0\\par\n`;
+    }
+
+    if (tagName === 'TABLE') {
+      return getRtfTable(element as HTMLTableElement);
+    }
+
+    if (tagName === 'UL' || tagName === 'OL') {
+      return Array.from(element.children)
+        .filter((child) => child.tagName === 'LI')
+        .map((child, index) => {
+          const marker = tagName === 'OL' ? `${index + 1}.` : '\\bullet';
+          return `\\pard\\plain\\fi-240\\li480\\fs22 ${marker}\\tab ${getRtfInlineContent(child)}\\par\n`;
+        })
+        .join('');
+    }
+
+    if (tagName === 'PRE') {
+      return `\\pard\\plain\\f1\\fs20 ${escapeRtf(element.textContent || '')}\\par\n`;
+    }
+
+    if (tagName === 'BLOCKQUOTE') {
+      return `\\pard\\plain\\li360\\fs22\\i ${getRtfInlineContent(element)}\\i0\\par\n`;
+    }
+
+    if (tagName === 'P') {
+      return `\\pard\\plain\\fs22 ${getRtfInlineContent(element)}\\par\n`;
+    }
+
+    const blockChildren = Array.from(element.childNodes);
+    if (blockChildren.some((child) => child.nodeType === Node.ELEMENT_NODE && /^(H[1-6]|P|UL|OL|TABLE|PRE|BLOCKQUOTE|DIV)$/i.test((child as HTMLElement).tagName))) {
+      return getRtfBlocksFromNodes(blockChildren);
+    }
+
+    const inline = getRtfInlineContent(element).trim();
+    return inline ? `\\pard\\plain\\fs22 ${inline}\\par\n` : '';
+  }).join('');
+}
+
+function getRtfTable(table: HTMLTableElement): string {
+  const rows = Array.from(table.rows);
+  const maxCells = rows.reduce((max, row) => Math.max(max, row.cells.length), 1);
+  const cellWidth = Math.floor(9000 / maxCells);
+
+  return rows.map((row) => {
+    const cells = Array.from(row.cells);
+    const cellDefinitions = Array.from({ length: maxCells }, (_unused, index) => `\\cellx${(index + 1) * cellWidth}`).join('');
+    const cellContents = cells.map((cell) => {
+      const isHeader = cell.tagName === 'TH';
+      const content = getRtfInlineContent(cell);
+      return `\\pard\\intbl\\plain\\fs20 ${isHeader ? `\\b ${content}\\b0` : content}\\cell`;
+    }).join('');
+    return `\\trowd\\trgaph108\\trleft0${cellDefinitions}${cellContents}\\row\n`;
+  }).join('');
+}
+
+function buildWordFriendlyClipboardRtf(source: HTMLElement | null, fallbackText: string): string {
+  const content = source
+    ? getRtfBlocksFromNodes(Array.from(source.childNodes))
+    : `\\pard\\plain\\fs22 ${escapeRtf(fallbackText)}\\par\n`;
+
+  return `{\\rtf1\\ansi\\deff0
+{\\fonttbl{\\f0 Arial;}{\\f1 Consolas;}}
+{\\stylesheet
+{\\s0 Normal;}
+{\\s1\\b\\fs40\\outlinelevel0 Heading 1;}
+{\\s2\\b\\fs32\\outlinelevel1 Heading 2;}
+{\\s3\\b\\fs28\\outlinelevel2 Heading 3;}
+{\\s4\\b\\fs24\\outlinelevel3 Heading 4;}
+{\\s5\\b\\fs22\\outlinelevel4 Heading 5;}
+{\\s6\\b\\fs20\\outlinelevel5 Heading 6;}
+}
+${content}}`;
+}
+
+function buildWordFriendlyClipboardHtml(source: HTMLElement | null, fallbackText: string): string {
+  const cloned = source?.cloneNode(true) as HTMLElement | undefined;
+  const bodyHtml = cloned?.innerHTML?.trim()
+    || `<p>${escapeHtml(fallbackText).replace(/\r?\n/g, '<br />')}</p>`;
+
+  const container = document.createElement('div');
+  container.innerHTML = bodyHtml;
+
+  container.querySelectorAll('table').forEach((element) => {
+    const table = element as HTMLTableElement;
+    table.setAttribute('border', '1');
+    table.setAttribute('cellpadding', '0');
+    table.setAttribute('cellspacing', '0');
+    appendStyle(table, 'border-collapse:collapse;width:100%;margin:8px 0;font-family:Arial,sans-serif;font-size:11pt');
+  });
+
+  container.querySelectorAll('th').forEach((element) => {
+    appendStyle(element as HTMLElement, 'border:1px solid #a8a8a8;background:#f1f3f5;padding:6px 8px;text-align:left;font-weight:bold;vertical-align:top');
+  });
+
+  container.querySelectorAll('td').forEach((element) => {
+    appendStyle(element as HTMLElement, 'border:1px solid #a8a8a8;padding:6px 8px;vertical-align:top');
+  });
+
+  const headingStyles: Record<string, string> = {
+    H1: 'mso-style-name:"Heading 1";mso-outline-level:1;font-family:Arial,sans-serif;font-size:20pt;font-weight:bold;margin:18px 0 10px 0;line-height:1.25;color:#111827',
+    H2: 'mso-style-name:"Heading 2";mso-outline-level:2;font-family:Arial,sans-serif;font-size:16pt;font-weight:bold;margin:16px 0 8px 0;line-height:1.25;color:#111827',
+    H3: 'mso-style-name:"Heading 3";mso-outline-level:3;font-family:Arial,sans-serif;font-size:14pt;font-weight:bold;margin:14px 0 7px 0;line-height:1.25;color:#111827',
+    H4: 'mso-style-name:"Heading 4";mso-outline-level:4;font-family:Arial,sans-serif;font-size:12pt;font-weight:bold;margin:12px 0 6px 0;line-height:1.25;color:#111827',
+    H5: 'mso-style-name:"Heading 5";mso-outline-level:5;font-family:Arial,sans-serif;font-size:11pt;font-weight:bold;margin:10px 0 5px 0;line-height:1.25;color:#111827',
+    H6: 'mso-style-name:"Heading 6";mso-outline-level:6;font-family:Arial,sans-serif;font-size:10pt;font-weight:bold;margin:10px 0 5px 0;line-height:1.25;color:#111827',
+  };
+
+  container.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach((element) => {
+    const heading = element as HTMLElement;
+    const level = heading.tagName.slice(1);
+    heading.classList.add(`MsoHeading${level}`);
+    appendStyle(heading, headingStyles[heading.tagName] || headingStyles.H3);
+  });
+
+  container.querySelectorAll('p').forEach((element) => {
+    appendStyle(element as HTMLElement, 'margin:0 0 8px 0');
+  });
+
+  container.querySelectorAll('ul,ol').forEach((element) => {
+    appendStyle(element as HTMLElement, 'margin:0 0 8px 24px;padding:0');
+  });
+
+  container.querySelectorAll('pre').forEach((element) => {
+    appendStyle(element as HTMLElement, 'white-space:pre-wrap;background:#f6f8fa;border:1px solid #d0d7de;padding:8px;font-family:Consolas,monospace;font-size:10pt');
+  });
+
+  container.querySelectorAll('code').forEach((element) => {
+    appendStyle(element as HTMLElement, 'font-family:Consolas,monospace');
+  });
+
+  container.querySelectorAll('a').forEach((element) => {
+    appendStyle(element as HTMLElement, 'color:#0563c1;text-decoration:underline');
+  });
+
+  return `<!doctype html><html><head><meta charset="utf-8"><style>
+h1,.MsoHeading1{mso-style-name:"Heading 1";mso-style-priority:9;mso-outline-level:1}
+h2,.MsoHeading2{mso-style-name:"Heading 2";mso-style-priority:9;mso-outline-level:2}
+h3,.MsoHeading3{mso-style-name:"Heading 3";mso-style-priority:9;mso-outline-level:3}
+h4,.MsoHeading4{mso-style-name:"Heading 4";mso-style-priority:9;mso-outline-level:4}
+h5,.MsoHeading5{mso-style-name:"Heading 5";mso-style-priority:9;mso-outline-level:5}
+h6,.MsoHeading6{mso-style-name:"Heading 6";mso-style-priority:9;mso-outline-level:6}
+</style></head><body>${container.innerHTML}</body></html>`;
+}
+
+function sanitizeSuggestedFileBaseName(value: string, fallback = 'task-answer'): string {
+  const cleaned = String(value || '')
+    .trim()
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '-')
+    .replace(/\s+/g, ' ')
+    .replace(/[. ]+$/g, '')
+    .slice(0, 80);
+  return cleaned || fallback;
+}
+
+function formatDateForFileBaseName(date = new Date()): string {
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}_${pad(date.getHours())}-${pad(date.getMinutes())}`;
+}
+
+function defaultTaskAnswerFileBaseName(): string {
+  return `task-answer_${formatDateForFileBaseName()}`;
+}
+
+function buildWorkItemNoteHtmlFragment(source: HTMLElement | null, fallbackText: string): string {
+  const cloned = source?.cloneNode(true) as HTMLElement | undefined;
+  const html = cloned?.innerHTML?.trim();
+  if (html) return html;
+  return `<p>${escapeHtml(fallbackText).replace(/\r?\n/g, '<br />')}</p>`;
 }
 
 function normalizeSkillIdCandidate(value: string): string {
@@ -298,6 +746,72 @@ interface ParsedPlanItem {
   priority?: string;
 }
 
+interface AssistantReasoningParts {
+  reasoning: string;
+  answer: string;
+  hasReasoning: boolean;
+}
+
+function splitAssistantReasoningContent(content: string): AssistantReasoningParts {
+  const source = String(content || '');
+  const answerParts: string[] = [];
+  const reasoningParts: string[] = [];
+  const reasoningTagPattern = 'think|thinks|thinking|reasoning';
+  const openTagPattern = new RegExp(`<(${reasoningTagPattern})>`, 'gi');
+  const closeTagPattern = new RegExp(`</(?:${reasoningTagPattern})>`, 'i');
+  let cursor = 0;
+
+  while (cursor < source.length) {
+    openTagPattern.lastIndex = cursor;
+    const openMatch = openTagPattern.exec(source);
+    const orphanCloseMatch = closeTagPattern.exec(source.slice(cursor));
+    if (orphanCloseMatch && (!openMatch || cursor + orphanCloseMatch.index < openMatch.index)) {
+      const closeStart = cursor + orphanCloseMatch.index;
+      const closeEnd = closeStart + orphanCloseMatch[0].length;
+      const reasoning = source.slice(cursor, closeStart);
+      if (reasoning.trim()) reasoningParts.push(reasoning.trim());
+      cursor = closeEnd;
+      continue;
+    }
+
+    if (!openMatch) break;
+
+    const before = source.slice(cursor, openMatch.index);
+    if (before.trim()) answerParts.push(before.trim());
+
+    const reasoningStart = openTagPattern.lastIndex;
+    const closeMatch = closeTagPattern.exec(source.slice(reasoningStart));
+
+    if (!closeMatch) {
+      const fallbackReasoning = source.slice(reasoningStart);
+      if (fallbackReasoning.trim()) reasoningParts.push(fallbackReasoning.trim());
+      cursor = source.length;
+      break;
+    }
+
+    const closeStart = reasoningStart + closeMatch.index;
+    const closeEnd = closeStart + closeMatch[0].length;
+    const reasoning = source.slice(reasoningStart, closeStart);
+    if (reasoning.trim()) reasoningParts.push(reasoning.trim());
+    cursor = closeEnd;
+  }
+
+  const after = source.slice(cursor);
+  if (after.trim()) answerParts.push(after.trim());
+
+  const reasoning = reasoningParts.join('\n\n').trim();
+  return {
+    reasoning,
+    answer: answerParts.join('\n\n').trim(),
+    hasReasoning: reasoning.length > 0,
+  };
+}
+
+function getAssistantAnswerContent(content: string): string {
+  const parts = splitAssistantReasoningContent(content);
+  return parts.hasReasoning ? parts.answer : String(content || '');
+}
+
 function parsePlanItemsFromAssistantContent(content: string): ParsedPlanItem[] | null {
   const raw = String(content || '').trim();
   if (!raw) return null;
@@ -377,12 +891,15 @@ interface FollowUpBarProps {
   hasSession: boolean;
   currentTaskStatus: string;
   promptsCount: number;
-  onSend: (message: string, files?: string[], workingFolder?: string | null, privacyMode?: 'normal' | 'incognito') => Promise<void>;
+  onSend: (message: string, files?: string[], workingFolder?: string | null, privacyMode?: 'normal' | 'incognito', usageProjectId?: string | null) => Promise<void>;
   onOpenSavedPrompts: (mode: 'select' | 'manage') => void;
+  onOpenProjectWork?: () => void;
+  onUsageProjectChange?: (projectId: string | null) => void | Promise<void>;
   onPlanNextJobs?: () => Promise<void>;
   planningJobs?: boolean;
   taskId?: string;
   agentId?: string;
+  usageProjectId?: string | null;
   privacyMode?: 'normal' | 'incognito';
   onPrivacyModeChange?: (mode: 'normal' | 'incognito') => void;
   slashCommands: SlashCommandDefinition[];
@@ -390,7 +907,7 @@ interface FollowUpBarProps {
 
 const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
   function FollowUpBar(
-    { isLoading, hasSession, currentTaskStatus, promptsCount, onSend, onOpenSavedPrompts, onPlanNextJobs, planningJobs, taskId, agentId, privacyMode = 'normal', onPrivacyModeChange, slashCommands },
+    { isLoading, hasSession, currentTaskStatus, promptsCount, onSend, onOpenSavedPrompts, onOpenProjectWork, onUsageProjectChange, onPlanNextJobs, planningJobs, taskId, agentId, usageProjectId, privacyMode = 'normal', onPrivacyModeChange, slashCommands },
     ref
   ) {
     const [followUp, setFollowUp] = useState('');
@@ -401,12 +918,18 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
     const clearAttachedFiles = useAttachmentStore((state) => state.clearFiles);
     const [workingFolder, setWorkingFolder] = useState<string | null>(null);
     const [selectedSlashIndex, setSelectedSlashIndex] = useState(0);
+    const [selectedUsageProjectId, setSelectedUsageProjectId] = useState<string | null>(usageProjectId ?? null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
     const resizeRafRef = useRef<number>(0);
+    const promptHistoryEntriesRef = useRef<string[]>([]);
+    const promptHistoryCursorRef = useRef<number | null>(null);
+    const promptHistoryDraftRef = useRef('');
     const accomplish = getAccomplish();
 
     useImperativeHandle(ref, () => ({
       setValue: (text: string) => {
+        promptHistoryCursorRef.current = null;
+        promptHistoryDraftRef.current = '';
         setFollowUp(text);
       },
       focus: () => {
@@ -418,6 +941,67 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
     useEffect(() => {
       inputRef.current?.focus();
     }, []);
+
+    useEffect(() => {
+      promptHistoryEntriesRef.current = readPromptHistory(CHAT_PROMPT_HISTORY_STORAGE_KEY);
+    }, []);
+
+    useEffect(() => {
+      setSelectedUsageProjectId(usageProjectId ?? null);
+    }, [usageProjectId, taskId]);
+
+    const resetPromptHistoryNavigation = useCallback(() => {
+      promptHistoryCursorRef.current = null;
+      promptHistoryDraftRef.current = '';
+    }, []);
+
+    const setFollowUpFromHistory = useCallback((value: string) => {
+      setFollowUp(value);
+      window.requestAnimationFrame(() => {
+        const input = inputRef.current;
+        if (!input) return;
+        input.focus();
+        const cursor = input.value.length;
+        input.setSelectionRange(cursor, cursor);
+      });
+    }, []);
+
+    const recallPromptHistory = useCallback((direction: 'older' | 'newer') => {
+      const entries = promptHistoryEntriesRef.current;
+      if (entries.length === 0) return;
+
+      const currentCursor = promptHistoryCursorRef.current;
+      if (direction === 'older') {
+        if (currentCursor === null) {
+          promptHistoryDraftRef.current = inputRef.current?.value ?? followUp;
+          promptHistoryCursorRef.current = entries.length - 1;
+        } else {
+          promptHistoryCursorRef.current = Math.max(0, currentCursor - 1);
+        }
+      } else if (currentCursor !== null) {
+        if (currentCursor >= entries.length - 1) {
+          promptHistoryCursorRef.current = null;
+          setFollowUpFromHistory(promptHistoryDraftRef.current);
+          return;
+        }
+        promptHistoryCursorRef.current = currentCursor + 1;
+      }
+
+      const nextCursor = promptHistoryCursorRef.current;
+      if (nextCursor !== null) {
+        setFollowUpFromHistory(entries[nextCursor] ?? '');
+      }
+    }, [followUp, setFollowUpFromHistory]);
+
+    const handleFollowUpChange = useCallback((value: string) => {
+      resetPromptHistoryNavigation();
+      setFollowUp(value);
+    }, [resetPromptHistoryNavigation]);
+
+    const handleUsageProjectChange = useCallback((projectId: string | null) => {
+      setSelectedUsageProjectId(projectId);
+      void onUsageProjectChange?.(projectId);
+    }, [onUsageProjectChange]);
 
     const filteredSlashCommands = useMemo(
       () => filterSlashCommands(followUp, slashCommands),
@@ -478,17 +1062,26 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
       if (!followUp.trim()) return;
       const message = followUp.trim();
       const files = attachedFiles.length > 0 ? [...attachedFiles] : undefined;
-      await onSend(message, files, workingFolder, privacyMode);
+      await onSend(message, files, workingFolder, privacyMode, selectedUsageProjectId);
+      if (privacyMode !== 'incognito') {
+        promptHistoryEntriesRef.current = addPromptHistoryEntry(
+          CHAT_PROMPT_HISTORY_STORAGE_KEY,
+          message,
+          promptHistoryEntriesRef.current
+        );
+      }
+      resetPromptHistoryNavigation();
       setFollowUp('');
       clearAttachedFiles();
       setWorkingFolder(null);
-    }, [followUp, attachedFiles, workingFolder, onSend, clearAttachedFiles]);
+    }, [followUp, attachedFiles, workingFolder, onSend, privacyMode, selectedUsageProjectId, clearAttachedFiles, resetPromptHistoryNavigation]);
 
     const handleExecuteSlashCommand = useCallback(async (command: SlashCommandDefinition) => {
       await command.execute();
+      resetPromptHistoryNavigation();
       setFollowUp('');
       setSelectedSlashIndex(0);
-    }, []);
+    }, [resetPromptHistoryNavigation]);
 
     const {
       voiceEnabled,
@@ -502,7 +1095,7 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
       voiceMeterLevel,
     } = useVoiceWakeTalkMode({
       value: followUp,
-      onChange: setFollowUp,
+      onChange: handleFollowUpChange,
       onSubmit: handleSubmit,
       focusRef: inputRef,
       disabled: isLoading,
@@ -530,7 +1123,24 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
       <div className="flex-shrink-0 border-t border-border bg-card/50 px-6 py-4">
         <div className="max-w-5xl mx-auto space-y-2">
           <div className="flex items-center justify-between gap-2">
-            <ContextWindowIndicator stats={contextStats} />
+            <div className="flex min-w-0 items-center gap-2">
+              <ContextWindowIndicator stats={contextStats} />
+              <ContextInspector
+                stats={contextStats}
+                agentId={agentId}
+                workspace={workingFolder}
+                attachedFiles={attachedFiles}
+                privacyMode={privacyMode}
+                usageProjectId={selectedUsageProjectId}
+              />
+              <UsageProjectSelector
+                mode="chat"
+                value={selectedUsageProjectId}
+                onChange={handleUsageProjectChange}
+                compact
+                disabled={isLoading}
+              />
+            </div>
             {privacyMode === 'incognito' && (
               <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/40 bg-amber-400/10 px-2 py-0.5 text-[10px] font-medium text-amber-700">
                 <Shield className="h-3 w-3" />
@@ -549,7 +1159,7 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
               <textarea
                 ref={inputRef}
                 value={followUp}
-                onChange={(e) => setFollowUp(e.target.value)}
+                onChange={(e) => handleFollowUpChange(e.target.value)}
                 onKeyDown={(e) => {
                   if (filteredSlashCommands.length > 0) {
                     if (e.key === 'ArrowDown') {
@@ -576,8 +1186,41 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
                     }
                     if (e.key === 'Escape') {
                       e.preventDefault();
+                      resetPromptHistoryNavigation();
                       setFollowUp('');
                       setSelectedSlashIndex(0);
+                      return;
+                    }
+                  }
+                  if (e.key === 'ArrowUp') {
+                    const shouldRecall = shouldHandlePromptHistoryRecall({
+                      key: e.key,
+                      altKey: e.altKey,
+                      ctrlKey: e.ctrlKey,
+                      metaKey: e.metaKey,
+                      shiftKey: e.shiftKey,
+                      isComposing: e.nativeEvent.isComposing,
+                      currentTarget: e.currentTarget,
+                    }, 'older', promptHistoryCursorRef.current !== null);
+                    if (shouldRecall) {
+                      e.preventDefault();
+                      recallPromptHistory('older');
+                      return;
+                    }
+                  }
+                  if (e.key === 'ArrowDown') {
+                    const shouldRecall = shouldHandlePromptHistoryRecall({
+                      key: e.key,
+                      altKey: e.altKey,
+                      ctrlKey: e.ctrlKey,
+                      metaKey: e.metaKey,
+                      shiftKey: e.shiftKey,
+                      isComposing: e.nativeEvent.isComposing,
+                      currentTarget: e.currentTarget,
+                    }, 'newer', promptHistoryCursorRef.current !== null);
+                    if (shouldRecall) {
+                      e.preventDefault();
+                      recallPromptHistory('newer');
                       return;
                     }
                   }
@@ -634,6 +1277,7 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
 
           {/* Action buttons under prompt input */}
           <div className="flex flex-wrap items-center gap-2">
+            <UsageBudgetPill usageProjectId={selectedUsageProjectId} label="Task budget" className="max-w-[220px]" />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button
@@ -686,7 +1330,7 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
               onClick={() => onOpenSavedPrompts('select')}
               disabled={isLoading || promptsCount === 0}
               className="flex items-center gap-1.5 shrink-0 px-2.5 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50 border border-border/50 hover:border-border"
-              title={promptsCount === 0 ? 'No saved prompts' : 'Use a saved prompt'}
+              title={promptsCount === 0 ? 'No saved prompts or recipes' : 'Use a saved prompt or recipe'}
             >
               <FileText className="h-3.5 w-3.5" />
               {promptsCount > 0 && (
@@ -704,6 +1348,16 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
               title="Manage saved prompts"
             >
               <Settings className="h-3.5 w-3.5" />
+            </button>
+
+            <button
+              type="button"
+              onClick={onOpenProjectWork}
+              disabled={isLoading || !onOpenProjectWork}
+              className="flex items-center gap-1.5 shrink-0 px-2.5 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50 border border-border/50 hover:border-border"
+              title="Open project work linked to this Chat task."
+            >
+              <FolderOpen className="h-3.5 w-3.5" />
             </button>
 
             <button
@@ -837,10 +1491,10 @@ export default function ExecutionPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const accomplish = getAccomplish();
-  const messagesScrollRef = useRef<HTMLDivElement>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesVirtuosoRef = useRef<VirtuosoHandle | null>(null);
   const followUpBarRef = useRef<FollowUpBarHandle>(null);
   const isNearBottomRef = useRef(true);
+  const lastAutoScrollRef = useRef<{ taskId: string | null; messageCount: number }>({ taskId: null, messageCount: 0 });
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [privacyMode, setPrivacyMode] = useState<'normal' | 'incognito'>('normal');
   const [taskRunCount, setTaskRunCount] = useState(0);
@@ -883,6 +1537,14 @@ export default function ExecutionPage() {
   const addAttachedFiles = useAttachmentStore((state) => state.addFiles);
   const autoFollowUpSentRef = useRef<Set<string>>(new Set());
   const { agents, activeAgentId, loadAgents } = useAgentStore();
+  const {
+    projects: usageProjects,
+    assignees: usageAssignees,
+    selectedChatProjectId,
+    loadProjects: loadUsageProjects,
+    createProject: createUsageProject,
+  } = useUsageProjectStore();
+  const { folders, loadFolders } = useFolderStore();
 
   const {
     currentTask,
@@ -890,12 +1552,14 @@ export default function ExecutionPage() {
     isLoading,
     error,
     addTaskUpdate,
+    addTaskActivity,
     addTaskUpdateBatch,
     updateTaskStatus,
     setPermissionRequest,
     permissionRequest,
     respondToPermission,
     sendFollowUp,
+    setTaskUsageProject,
     startTask,
     interruptTask,
     setupProgress,
@@ -920,6 +1584,25 @@ export default function ExecutionPage() {
     && ['completed', 'failed', 'cancelled', 'interrupted'].includes(currentTask.status)
     && currentTask.messages.length > 0
   );
+  const visibleTaskMessages = useMemo(() => {
+    const messages = currentTask?.messages ?? [];
+    const lastMessage = messages[messages.length - 1];
+    const isLastMessageBashTool = lastMessage?.type === 'tool' && lastMessage?.toolName?.toLowerCase() === 'bash';
+    const taskIsComplete = ['completed', 'failed', 'cancelled', 'interrupted'].includes(currentTask?.status ?? '');
+
+    return messages.filter((message, index) => {
+      if (!(message.type === 'tool' && message.toolName?.toLowerCase() === 'bash')) {
+        return true;
+      }
+      return taskIsComplete && isLastMessageBashTool && index === messages.length - 1;
+    });
+  }, [currentTask?.messages, currentTask?.status]);
+  const lastVisibleAssistantIndex = useMemo(() => {
+    for (let index = visibleTaskMessages.length - 1; index >= 0; index -= 1) {
+      if (visibleTaskMessages[index]?.type === 'assistant') return index;
+    }
+    return -1;
+  }, [visibleTaskMessages]);
   const executionSlashCommands = useMemo<SlashCommandDefinition[]>(() => {
     return createAppSlashCommands({
       navigate,
@@ -1162,35 +1845,22 @@ export default function ExecutionPage() {
     }
   }, [addAttachedFiles]);
 
-  const updateScrollDownVisibility = useCallback(() => {
-    const container = messagesScrollRef.current;
-    if (!container) {
-      isNearBottomRef.current = true;
-      setShowScrollToBottom(false);
-      return;
-    }
-    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-    const nearBottom = distanceFromBottom <= 120;
-    isNearBottomRef.current = nearBottom;
-    setShowScrollToBottom(!nearBottom);
-  }, []);
-
-  const handleMessagesScroll = useCallback(() => {
-    updateScrollDownVisibility();
-  }, [updateScrollDownVisibility]);
-
   const scrollToBottomNow = useCallback((behavior: ScrollBehavior = 'smooth') => {
-    messagesEndRef.current?.scrollIntoView({ behavior });
-  }, []);
+    const messageCount = visibleTaskMessages.length;
+    if (messageCount <= 0) return;
+    messagesVirtuosoRef.current?.scrollToIndex({
+      index: messageCount - 1,
+      align: 'end',
+      behavior: behavior === 'smooth' ? 'smooth' : 'auto',
+    });
+    isNearBottomRef.current = true;
+    setShowScrollToBottom(false);
+  }, [visibleTaskMessages.length]);
 
-  // Debounced scroll function
-  const scrollToBottom = useMemo(
-    () =>
-      debounce(() => {
-        scrollToBottomNow('smooth');
-      }, 100),
-    [scrollToBottomNow]
-  );
+  const handleMessagesAtBottomChange = useCallback((isAtBottom: boolean) => {
+    isNearBottomRef.current = isAtBottom;
+    setShowScrollToBottom(!isAtBottom);
+  }, []);
 
   // Load debug mode setting on mount and subscribe to changes
   useEffect(() => {
@@ -1209,6 +1879,11 @@ export default function ExecutionPage() {
   useEffect(() => {
     void loadAgents();
   }, [loadAgents]);
+
+  useEffect(() => {
+    void loadUsageProjects(true);
+    void loadFolders();
+  }, [loadFolders, loadUsageProjects]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1312,6 +1987,10 @@ export default function ExecutionPage() {
       }
     });
 
+    const unsubscribeActivity = accomplish.onTaskActivity?.((event) => {
+      addTaskActivity(event);
+    });
+
     const unsubscribePermission = accomplish.onPermissionRequest((request) => {
       setPermissionRequest(request);
     });
@@ -1333,12 +2012,13 @@ export default function ExecutionPage() {
 
     return () => {
       unsubscribeTask();
+      unsubscribeActivity?.();
       unsubscribeTaskBatch?.();
       unsubscribePermission();
       unsubscribeStatusChange?.();
       unsubscribeDebugLog();
     };
-  }, [id, loadTaskById, addTaskUpdate, addTaskUpdateBatch, updateTaskStatus, setPermissionRequest, accomplish]);
+  }, [id, loadTaskById, addTaskUpdate, addTaskActivity, addTaskUpdateBatch, updateTaskStatus, setPermissionRequest, accomplish]);
 
   // Increment counter when task starts/resumes
   useEffect(() => {
@@ -1347,21 +2027,28 @@ export default function ExecutionPage() {
     }
   }, [currentTask?.status]);
 
-  // Auto-scroll to bottom (debounced for performance)
+  // Auto-scroll to bottom only when opening a task or when new output arrives
+  // while the user is already at the bottom. This avoids fighting manual upward scroll.
   useEffect(() => {
-    if (isNearBottomRef.current) {
-      scrollToBottom();
+    if (!currentTask) return;
+    const messageCount = visibleTaskMessages.length;
+    const previous = lastAutoScrollRef.current;
+    const taskChanged = previous.taskId !== currentTask.id;
+    const messageCountIncreased = previous.taskId === currentTask.id && messageCount > previous.messageCount;
+    lastAutoScrollRef.current = { taskId: currentTask.id, messageCount };
+    if (messageCount <= 0) return;
+
+    if (taskChanged) {
+      isNearBottomRef.current = true;
+      setShowScrollToBottom(false);
+      window.requestAnimationFrame(() => scrollToBottomNow('auto'));
       return;
     }
-    updateScrollDownVisibility();
-  }, [currentTask?.messages?.length, scrollToBottom, updateScrollDownVisibility]);
 
-  useEffect(() => {
-    const frame = window.requestAnimationFrame(() => {
-      updateScrollDownVisibility();
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [currentTask?.id, currentTask?.status, updateScrollDownVisibility]);
+    if (messageCountIncreased && currentTask.status === 'running' && isNearBottomRef.current) {
+      window.requestAnimationFrame(() => scrollToBottomNow('auto'));
+    }
+  }, [currentTask?.id, currentTask?.status, scrollToBottomNow, visibleTaskMessages.length]);
 
   // Auto-scroll debug panel when new logs arrive
   useEffect(() => {
@@ -1599,11 +2286,13 @@ export default function ExecutionPage() {
     message: string,
     files?: string[],
     folder?: string | null,
-    mode: 'normal' | 'incognito' = privacyMode
+    mode: 'normal' | 'incognito' = privacyMode,
+    usageProjectId?: string | null
   ) => {
     if (!currentTask) return;
+    const nextUsageProjectId = usageProjectId !== undefined ? usageProjectId : currentTask.usageProjectId ?? null;
     if (hasSession || currentTask.status === 'interrupted') {
-      await sendFollowUp(message, files);
+      await sendFollowUp(message, files, nextUsageProjectId);
     } else {
       const task = await startTask({
         prompt: message,
@@ -1611,12 +2300,22 @@ export default function ExecutionPage() {
         workingDirectory: folder ?? undefined,
         attachedFiles: files,
         privacyMode: mode,
+        usageProjectId: nextUsageProjectId,
       });
       if (task && task.id !== currentTask.id) {
         navigate(`/execution/${task.id}`);
       }
     }
   }, [currentTask, hasSession, navigate, privacyMode, sendFollowUp, startTask]);
+
+  const handleFollowUpUsageProjectChange = useCallback(async (usageProjectId: string | null) => {
+    if (!currentTask?.id) return;
+    try {
+      await setTaskUsageProject(currentTask.id, usageProjectId);
+    } catch (err) {
+      console.warn('Failed to save task budget project:', err);
+    }
+  }, [currentTask?.id, setTaskUsageProject]);
 
   const handlePlanNextJobs = useCallback(async () => {
     setPlanningJobs(true);
@@ -1652,10 +2351,43 @@ export default function ExecutionPage() {
     await sendFollowUp('continue');
   };
 
+  const handleRecoveryContinue = useCallback(async () => {
+    await sendFollowUp(
+      'Continue from the tool results already in this session. Do not repeat the tool calls unless needed. Provide the final answer now.'
+    );
+  }, [sendFollowUp]);
+
+  const handleRecoveryRetry = useCallback(async () => {
+    await sendFollowUp(
+      'Retry the final response. Use the existing tool results where possible, and only rerun a tool if the result is missing or clearly stale.'
+    );
+  }, [sendFollowUp]);
+
   const { savePrompt, prompts, loadPrompts } = useSavedPromptsStore();
+  const promptPickerCount = prompts.length + BUILD_RECIPES.length;
   const [promptToSave, setPromptToSave] = useState<string | null>(null);
   const [savePromptTitle, setSavePromptTitle] = useState('');
   const [showSavePromptDialog, setShowSavePromptDialog] = useState(false);
+  const [answerSaveDialogOpen, setAnswerSaveDialogOpen] = useState(false);
+  const [answerSavePending, setAnswerSavePending] = useState<AnswerSavePending | null>(null);
+  const [answerSaveDialogMode, setAnswerSaveDialogMode] = useState<'existing-project' | 'new-project'>('existing-project');
+  const [answerSaveTargetProjectId, setAnswerSaveTargetProjectId] = useState('');
+  const [answerSaveTargetWorkItemId, setAnswerSaveTargetWorkItemId] = useState('');
+  const [answerSaveWorkItems, setAnswerSaveWorkItems] = useState<UsageProjectWorkItem[]>([]);
+  const [answerSaveWorkItemsProjectId, setAnswerSaveWorkItemsProjectId] = useState('');
+  const [answerSaveWorkItemsLoading, setAnswerSaveWorkItemsLoading] = useState(false);
+  const [answerSaveNewProjectName, setAnswerSaveNewProjectName] = useState('');
+  const [answerSaveNewWorkItemTitle, setAnswerSaveNewWorkItemTitle] = useState('');
+  const [answerSaveTitle, setAnswerSaveTitle] = useState('');
+  const [answerSaveRtfAttachToWorkItem, setAnswerSaveRtfAttachToWorkItem] = useState(true);
+  const [answerSaveSaving, setAnswerSaveSaving] = useState(false);
+  const [answerSaveNotice, setAnswerSaveNotice] = useState<string | null>(null);
+  const [answerSaveError, setAnswerSaveError] = useState<string | null>(null);
+  const [projectWorkPopupOpen, setProjectWorkPopupOpen] = useState(false);
+  const [projectWorkPopupInitialProjectId, setProjectWorkPopupInitialProjectId] = useState<string | null>(null);
+  const answerSaveTitleRef = useRef('');
+  const answerSaveWorkItemsRequestRef = useRef(0);
+  const answerSaveNoticeTimeoutRef = useRef<number | null>(null);
   const [showSavedPromptsSelector, setShowSavedPromptsSelector] = useState(false);
   const [savedPromptsMode, setSavedPromptsMode] = useState<'select' | 'manage'>('select');
 
@@ -1683,6 +2415,309 @@ export default function ExecutionPage() {
       setSavePromptTitle('');
     }
   };
+
+  useEffect(() => () => {
+    if (answerSaveNoticeTimeoutRef.current !== null) {
+      window.clearTimeout(answerSaveNoticeTimeoutRef.current);
+    }
+  }, []);
+
+  const showAnswerSaveNotice = useCallback((message: string) => {
+    setAnswerSaveNotice(message);
+    if (answerSaveNoticeTimeoutRef.current !== null) {
+      window.clearTimeout(answerSaveNoticeTimeoutRef.current);
+    }
+    answerSaveNoticeTimeoutRef.current = window.setTimeout(() => {
+      setAnswerSaveNotice(null);
+      answerSaveNoticeTimeoutRef.current = null;
+    }, 5000);
+  }, []);
+
+  const getDefaultAnswerSaveProjectId = useCallback(() => {
+    const activeProjectIds = new Set(usageProjects.map((project) => project.id));
+    const directTaskProjectId = currentTask?.usageProjectId || null;
+    if (directTaskProjectId && activeProjectIds.has(directTaskProjectId)) {
+      return directTaskProjectId;
+    }
+
+    const folderBudgetProjectId = currentTask?.folderId
+      ? folders.find((folder) => folder.id === currentTask.folderId)?.usageProjectId || null
+      : null;
+    if (folderBudgetProjectId && activeProjectIds.has(folderBudgetProjectId)) {
+      return folderBudgetProjectId;
+    }
+
+    if (selectedChatProjectId && activeProjectIds.has(selectedChatProjectId)) {
+      return selectedChatProjectId;
+    }
+
+    return usageProjects[0]?.id || '';
+  }, [currentTask?.folderId, currentTask?.usageProjectId, folders, selectedChatProjectId, usageProjects]);
+
+  const currentTaskFolder = useMemo(
+    () => currentTask?.folderId ? folders.find((folder) => folder.id === currentTask.folderId) || null : null,
+    [currentTask?.folderId, folders]
+  );
+
+  const getLinkedChatProjectWorkProjectId = useCallback(() => {
+    const activeProjectIds = new Set(usageProjects.map((project) => project.id));
+    const directTaskProjectId = currentTask?.usageProjectId || null;
+    if (directTaskProjectId && activeProjectIds.has(directTaskProjectId)) {
+      return directTaskProjectId;
+    }
+
+    const folderBudgetProjectId = currentTaskFolder?.usageProjectId || null;
+    if (folderBudgetProjectId && activeProjectIds.has(folderBudgetProjectId)) {
+      return folderBudgetProjectId;
+    }
+
+    return null;
+  }, [currentTask?.usageProjectId, currentTaskFolder?.usageProjectId, usageProjects]);
+
+  const chatProjectWorkSourceLabel = useMemo(() => {
+    if (currentTaskFolder) return `Chat project: ${currentTaskFolder.name}`;
+    const taskTitle = (currentTask?.summary || currentTask?.prompt || '').trim();
+    if (taskTitle) return `Chat task: ${taskTitle.slice(0, 80)}`;
+    return 'Chat project work';
+  }, [currentTask?.prompt, currentTask?.summary, currentTaskFolder]);
+
+  const openChatProjectWorkPopup = useCallback(() => {
+    const linkedProjectId = getLinkedChatProjectWorkProjectId();
+    setProjectWorkPopupInitialProjectId(linkedProjectId);
+    setProjectWorkPopupOpen(true);
+    writeChatProjectWorkPopupSession(true, linkedProjectId);
+  }, [getLinkedChatProjectWorkProjectId]);
+
+  useEffect(() => {
+    if (!currentTask?.id) return;
+    const session = readChatProjectWorkPopupSession();
+    if (!session.open) return;
+    setProjectWorkPopupInitialProjectId(session.projectId || getLinkedChatProjectWorkProjectId());
+    setProjectWorkPopupOpen(true);
+  }, [currentTask?.id, getLinkedChatProjectWorkProjectId]);
+
+  const loadAnswerSaveWorkItemsForProject = useCallback(async (projectId: string) => {
+    const normalizedProjectId = projectId.trim();
+    const requestId = answerSaveWorkItemsRequestRef.current + 1;
+    answerSaveWorkItemsRequestRef.current = requestId;
+    if (!normalizedProjectId) {
+      setAnswerSaveWorkItems([]);
+      setAnswerSaveWorkItemsProjectId('');
+      setAnswerSaveTargetWorkItemId('');
+      setAnswerSaveWorkItemsLoading(false);
+      return;
+    }
+
+    setAnswerSaveWorkItems([]);
+    setAnswerSaveWorkItemsProjectId(normalizedProjectId);
+    setAnswerSaveTargetWorkItemId('');
+    setAnswerSaveWorkItemsLoading(true);
+    try {
+      const items = await accomplish.listUsageProjectWorkItems({
+        projectId: normalizedProjectId,
+        includeArchived: true,
+      });
+      if (answerSaveWorkItemsRequestRef.current !== requestId) return;
+      const sortedItems = [...items].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      setAnswerSaveWorkItems(sortedItems);
+      setAnswerSaveTargetWorkItemId((current) => (
+        current && sortedItems.some((item) => item.id === current)
+          ? current
+          : (sortedItems[0]?.id || '__new__')
+      ));
+    } catch (err) {
+      if (answerSaveWorkItemsRequestRef.current !== requestId) return;
+      setAnswerSaveWorkItems([]);
+      setAnswerSaveWorkItemsProjectId(normalizedProjectId);
+      setAnswerSaveTargetWorkItemId('__new__');
+      setAnswerSaveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (answerSaveWorkItemsRequestRef.current === requestId) {
+        setAnswerSaveWorkItemsLoading(false);
+      }
+    }
+  }, [accomplish]);
+
+  const openAnswerSaveDialog = useCallback((
+    mode: 'note' | 'rtf',
+    payload: { messageId: string; content: string; sourceElement?: HTMLElement | null }
+  ) => {
+    const trimmed = payload.content.trim();
+    if (!trimmed) return;
+    const defaultProjectId = getDefaultAnswerSaveProjectId();
+    const fallbackProject = usageProjects.find((project) => project.id === defaultProjectId) || usageProjects[0] || null;
+    const workItemTitle = (currentTask?.summary || currentTask?.prompt || 'Chat task answer').trim().slice(0, 120);
+    const defaultTitle = mode === 'rtf' ? defaultTaskAnswerFileBaseName() : 'Task answer';
+
+    setAnswerSavePending({
+      mode,
+      messageId: payload.messageId,
+      content: trimmed,
+      html: buildWorkItemNoteHtmlFragment(payload.sourceElement || null, trimmed),
+      rtf: buildWordFriendlyClipboardRtf(payload.sourceElement || null, trimmed),
+    });
+    setAnswerSaveError(null);
+    answerSaveTitleRef.current = defaultTitle;
+    setAnswerSaveTitle(defaultTitle);
+    setAnswerSaveDialogMode(fallbackProject ? 'existing-project' : 'new-project');
+    setAnswerSaveTargetProjectId(fallbackProject?.id || '');
+    setAnswerSaveTargetWorkItemId('');
+    setAnswerSaveWorkItems([]);
+    setAnswerSaveWorkItemsProjectId(fallbackProject?.id || '');
+    setAnswerSaveNewProjectName(
+      currentTask?.summary
+        ? `${currentTask.summary} budget`
+        : currentTask?.prompt
+          ? `${currentTask.prompt.slice(0, 64)} budget`
+          : 'Chat budget project'
+    );
+    setAnswerSaveNewWorkItemTitle(workItemTitle || 'Chat task answer');
+    setAnswerSaveRtfAttachToWorkItem(true);
+    setAnswerSaveDialogOpen(true);
+    if (fallbackProject?.id) void loadAnswerSaveWorkItemsForProject(fallbackProject.id);
+  }, [
+    currentTask?.prompt,
+    currentTask?.summary,
+    getDefaultAnswerSaveProjectId,
+    loadAnswerSaveWorkItemsForProject,
+    usageProjects,
+  ]);
+
+  const handleSaveAnswerAsProjectNote = useCallback((payload: { messageId: string; content: string; sourceElement?: HTMLElement | null }) => {
+    openAnswerSaveDialog('note', payload);
+  }, [openAnswerSaveDialog]);
+
+  const handleSaveAnswerAsRtf = useCallback((payload: { messageId: string; content: string; sourceElement?: HTMLElement | null }) => {
+    openAnswerSaveDialog('rtf', payload);
+  }, [openAnswerSaveDialog]);
+
+  const savePendingAnswer = useCallback(async () => {
+    if (!answerSavePending || !currentTask) return;
+    setAnswerSaveSaving(true);
+    setAnswerSaveError(null);
+    try {
+      let savedRtfPath: string | null = null;
+      let savedRtfLabel = '';
+      if (answerSavePending.mode === 'rtf') {
+        const fileTitle = sanitizeSuggestedFileBaseName(answerSaveTitleRef.current, defaultTaskAnswerFileBaseName());
+        const saved = await accomplish.saveTextToFileAs(answerSavePending.rtf, {
+          baseName: fileTitle,
+          extension: 'rtf',
+          title: 'Save answer as Rich Text File',
+        });
+        if (saved.cancelled || !saved.filePath) {
+          showAnswerSaveNotice('RTF export cancelled.');
+          return;
+        }
+        savedRtfPath = saved.filePath;
+        savedRtfLabel = fileTitle;
+        if (!answerSaveRtfAttachToWorkItem) {
+          showAnswerSaveNotice(`Saved RTF: ${saved.filePath}`);
+          setAnswerSaveDialogOpen(false);
+          return;
+        }
+      }
+
+      let project: UsageProject | null = null;
+      if (answerSaveDialogMode === 'new-project') {
+        const created = await createUsageProject({
+          name: answerSaveNewProjectName.trim() || 'Chat budget project',
+          color: '#2dd4bf',
+          trackingEnabled: true,
+        });
+        if (!created) throw new Error('Unable to create project.');
+        project = created;
+        setAnswerSaveTargetProjectId(created.id);
+      } else {
+        project = usageProjects.find((entry) => entry.id === answerSaveTargetProjectId) || null;
+      }
+      if (!project) throw new Error('Choose a project before saving.');
+
+      let workItem: UsageProjectWorkItem | null = null;
+      if (answerSaveTargetWorkItemId && answerSaveTargetWorkItemId !== '__new__') {
+        const cachedItems = answerSaveWorkItemsProjectId === project.id ? answerSaveWorkItems : [];
+        workItem = cachedItems.find((item) => item.id === answerSaveTargetWorkItemId) || null;
+        if (!workItem) {
+          const items = await accomplish.listUsageProjectWorkItems({ projectId: project.id, includeArchived: true });
+          workItem = items.find((item) => item.id === answerSaveTargetWorkItemId) || null;
+        }
+      }
+
+      if (answerSavePending.mode === 'note') {
+        const note: UsageProjectWorkItemNote = {
+          id: `note-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          title: answerSaveTitleRef.current.trim() || undefined,
+          text: answerSavePending.content,
+          html: answerSavePending.html,
+          createdAt: new Date().toISOString(),
+        };
+        if (!workItem) {
+          workItem = await accomplish.createUsageProjectWorkItem({
+            usageProjectId: project.id,
+            title: answerSaveNewWorkItemTitle.trim() || 'Chat task answer',
+            sourceType: 'chat_task',
+            sourceId: currentTask.id,
+            notes: [note],
+          });
+        } else {
+          workItem = await accomplish.updateUsageProjectWorkItem(workItem.id, {
+            notes: [note, ...(workItem.notes || [])],
+          });
+        }
+        showAnswerSaveNotice(`Saved answer note to "${workItem.title}" in "${project.name}".`);
+      } else {
+        if (!savedRtfPath) throw new Error('RTF file was not saved.');
+        const documentLink: UsageProjectWorkItemDocumentLink = {
+          id: `doc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          label: savedRtfLabel,
+          kind: 'local',
+          path: savedRtfPath,
+          createdAt: new Date().toISOString(),
+        };
+        if (!workItem) {
+          workItem = await accomplish.createUsageProjectWorkItem({
+            usageProjectId: project.id,
+            title: answerSaveNewWorkItemTitle.trim() || 'Chat task answer',
+            sourceType: 'chat_task',
+            sourceId: currentTask.id,
+            documents: [documentLink],
+          });
+        } else {
+          workItem = await accomplish.updateUsageProjectWorkItem(workItem.id, {
+            documents: [documentLink, ...(workItem.documents || [])],
+          });
+        }
+        showAnswerSaveNotice(`Saved RTF and attached it to "${workItem.title}" in "${project.name}".`);
+      }
+
+      setAnswerSaveDialogOpen(false);
+      setAnswerSavePending(null);
+      setAnswerSaveWorkItems([]);
+      setAnswerSaveWorkItemsProjectId('');
+      setAnswerSaveTargetWorkItemId('');
+      await loadUsageProjects(true);
+    } catch (err) {
+      setAnswerSaveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAnswerSaveSaving(false);
+    }
+  }, [
+    accomplish,
+    answerSaveDialogMode,
+    answerSaveNewProjectName,
+    answerSaveNewWorkItemTitle,
+    answerSavePending,
+    answerSaveRtfAttachToWorkItem,
+    answerSaveTargetProjectId,
+    answerSaveTargetWorkItemId,
+    answerSaveWorkItems,
+    answerSaveWorkItemsProjectId,
+    createUsageProject,
+    currentTask,
+    loadUsageProjects,
+    showAnswerSaveNotice,
+    usageProjects,
+  ]);
 
   const handleExportDebugLogs = useCallback(() => {
     const text = debugLogs
@@ -1919,6 +2954,21 @@ export default function ExecutionPage() {
         </div>
       ) : null}
 
+      {currentTask.activity && currentTask.activity.length > 0 ? (
+        <div className="px-6">
+          <div className="mx-auto max-w-5xl">
+            <TaskActivityTimeline
+              activity={currentTask.activity}
+              onContinue={hasSession ? () => void handleRecoveryContinue() : undefined}
+              onRetry={hasSession ? () => void handleRecoveryRetry() : undefined}
+              onViewRawLog={() => setDebugPanelOpen(true)}
+              busy={isLoading || currentTask.status === 'running' || currentTask.status === 'queued'}
+              className="my-3"
+            />
+          </div>
+        </div>
+      ) : null}
+
       {/* Browser installation modal - only shown during Playwright download */}
       <AnimatePresence>
         {setupProgress && setupProgressTaskId === id && (setupProgress.toLowerCase().includes('download') || setupProgress.includes('% of')) && (
@@ -2019,141 +3069,139 @@ export default function ExecutionPage() {
 
       {/* Queued state - inline (follow-up, has previous messages) */}
       {currentTask.status === 'queued' && currentTask.messages.length > 0 && (
-        <div
-          ref={messagesScrollRef}
-          onScroll={handleMessagesScroll}
-          className="flex-1 overflow-y-auto px-6 py-6"
-        >
-          <div className="max-w-5xl mx-auto space-y-4">
-            {currentTask.messages
-              .filter((m) => !(m.type === 'tool' && m.toolName?.toLowerCase() === 'bash'))
-              .map((message, index) => (
-              <MessageBubble key={`${message.id}-${index}`} message={message} onSavePrompt={handleSavePrompt} debugMode={debugModeEnabled} />
-            ))}
-
-            {/* Inline waiting indicator */}
-            <motion.div
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={springs.gentle}
-              className="flex flex-col items-center gap-4 py-8"
-            >
-              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-amber-500/10">
-                <Clock className="h-6 w-6 text-amber-600" />
+        <div className="min-h-0 flex-1">
+          <Virtuoso
+            ref={messagesVirtuosoRef}
+            className="h-full"
+            data={visibleTaskMessages}
+            computeItemKey={(_index, message) => message.id}
+            defaultItemHeight={180}
+            increaseViewportBy={{ top: 500, bottom: 700 }}
+            atBottomStateChange={handleMessagesAtBottomChange}
+            itemContent={(index, message) => (
+              <div className={cn('px-6', index === 0 ? 'pt-6' : 'pt-2', index === visibleTaskMessages.length - 1 ? 'pb-2' : 'pb-2')}>
+                <div className="mx-auto max-w-5xl">
+                  <MessageBubble
+                    message={message}
+                    onSavePrompt={handleSavePrompt}
+                    onSaveAnswerAsProjectNote={handleSaveAnswerAsProjectNote}
+                    onSaveAnswerAsRtf={handleSaveAnswerAsRtf}
+                    debugMode={debugModeEnabled}
+                  />
+                </div>
               </div>
-              <div className="text-center">
-                <p className="text-sm font-medium text-foreground">
-                  Waiting for another task
-                </p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Your follow-up will continue automatically
-                </p>
-              </div>
-            </motion.div>
-
-            <div ref={messagesEndRef} />
-          </div>
+            )}
+            components={{
+              Footer: () => (
+                <div className="px-6 pb-6 pt-2">
+                  <motion.div
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={springs.gentle}
+                    className="mx-auto flex max-w-5xl flex-col items-center gap-4 py-8"
+                  >
+                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-amber-500/10">
+                      <Clock className="h-6 w-6 text-amber-600" />
+                    </div>
+                    <div className="text-center">
+                      <p className="text-sm font-medium text-foreground">
+                        Waiting for another task
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Your follow-up will continue automatically
+                      </p>
+                    </div>
+                  </motion.div>
+                </div>
+              ),
+            }}
+          />
         </div>
       )}
 
       {/* Messages - normal state (running, completed, failed, etc.) */}
       {currentTask.status !== 'queued' && (
-        <div
-          ref={messagesScrollRef}
-          onScroll={handleMessagesScroll}
-          className="flex-1 overflow-y-auto px-6 py-6"
-        >
-          <div className="max-w-5xl mx-auto space-y-4">
-            {(() => {
-              // Filter out Bash tool messages EXCEPT keep the last one if it's the final message
-              // This ensures we show the answer when Gemini doesn't emit a final text message
-              const messages = currentTask.messages;
-              const lastMessage = messages[messages.length - 1];
-              const isLastMessageBashTool = lastMessage?.type === 'tool' && lastMessage?.toolName?.toLowerCase() === 'bash';
-              const taskIsComplete = ['completed', 'failed', 'cancelled', 'interrupted'].includes(currentTask.status);
-
-              const filtered = messages.filter((m, index) => {
-                // Always show non-bash-tool messages
-                if (!(m.type === 'tool' && m.toolName?.toLowerCase() === 'bash')) {
-                  return true;
-                }
-                // Show the last bash tool message if task is complete and it's the final message
-                // This ensures the answer is visible when Gemini doesn't emit a final text
-                if (taskIsComplete && isLastMessageBashTool && index === messages.length - 1) {
-                  return true;
-                }
-                return false;
-              });
-              return filtered;
-            })()
-              .map((message, index, filteredMessages) => {
-              const isLastMessage = index === filteredMessages.length - 1;
+        <div className="min-h-0 flex-1">
+          <Virtuoso
+            ref={messagesVirtuosoRef}
+            className="h-full"
+            data={visibleTaskMessages}
+            computeItemKey={(_index, message) => message.id}
+            defaultItemHeight={180}
+            increaseViewportBy={{ top: 500, bottom: 700 }}
+            followOutput={(isAtBottom) => {
+              if (currentTask.status !== 'running') return false;
+              return isAtBottom ? 'auto' : false;
+            }}
+            atBottomStateChange={handleMessagesAtBottomChange}
+            itemContent={(index, message) => {
+              const isLastMessage = index === visibleTaskMessages.length - 1;
               const isLastAssistantMessage =
                 message.type === 'assistant' && isLastMessage;
-              // Find the last assistant message index for the continue button
-              let lastAssistantIndex = -1;
-              for (let i = filteredMessages.length - 1; i >= 0; i--) {
-                if (filteredMessages[i].type === 'assistant') {
-                  lastAssistantIndex = i;
-                  break;
-                }
-              }
-              const isLastAssistantForContinue = index === lastAssistantIndex;
+              const isLastAssistantForContinue = index === lastVisibleAssistantIndex;
               // Show continue button on last assistant message when:
               // - Task was interrupted (user can always continue)
               // - Task completed AND the message indicates agent is waiting for user action
               const showContinue = isLastAssistantForContinue && !!hasSession &&
                 (currentTask.status === 'interrupted' ||
-                 (currentTask.status === 'completed' && isWaitingForUser(message.content)));
+                 (currentTask.status === 'completed' && isWaitingForUser(getAssistantAnswerContent(message.content))));
               return (
-                <MessageBubble
-                  key={`${message.id}-${index}`}
-                  message={message}
-                  shouldStream={isLastAssistantMessage && currentTask.status === 'running'}
-                  isLastMessage={isLastMessage}
-                  isRunning={currentTask.status === 'running'}
-                  showContinueButton={showContinue}
-                  continueLabel={currentTask.status === 'interrupted' ? 'Continue' : 'Done, Continue'}
-                  onContinue={handleContinue}
-                  isLoading={isLoading}
-                  onSavePrompt={handleSavePrompt}
-                  debugMode={debugModeEnabled}
-                />
+                <div className={cn('px-6', index === 0 ? 'pt-6' : 'pt-2', index === visibleTaskMessages.length - 1 ? 'pb-2' : 'pb-2')}>
+                  <div className="mx-auto max-w-5xl">
+                    <MessageBubble
+                      message={message}
+                      shouldStream={isLastAssistantMessage && currentTask.status === 'running'}
+                      isLastMessage={isLastMessage}
+                      isRunning={currentTask.status === 'running'}
+                      showContinueButton={showContinue}
+                      continueLabel={currentTask.status === 'interrupted' ? 'Continue' : 'Done, Continue'}
+                      onContinue={handleContinue}
+                      isLoading={isLoading}
+                      onSavePrompt={handleSavePrompt}
+                      onSaveAnswerAsProjectNote={handleSaveAnswerAsProjectNote}
+                      onSaveAnswerAsRtf={handleSaveAnswerAsRtf}
+                      debugMode={debugModeEnabled}
+                    />
+                  </div>
+                </div>
               );
-            })}
-
-            <AnimatePresence>
-              {currentTask.status === 'running' && !permissionRequest && (
-                <motion.div
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -8 }}
-                  transition={springs.gentle}
-                  className="flex items-center gap-2 text-muted-foreground py-2"
-                  data-testid="execution-thinking-indicator"
-                >
-                  <TypingDots />
-                  <span className="text-sm">
-                    {currentTool
-                      ? ((currentToolInput as { description?: string })?.description || TOOL_PROGRESS_MAP[currentTool]?.label || currentTool)
-                      : 'Thinking...'}
-                  </span>
-                  {currentTool && !(currentToolInput as { description?: string })?.description && (
-                    <span className="text-xs text-muted-foreground/60">
-                      ({currentTool})
-                    </span>
-                  )}
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            <div ref={messagesEndRef} />
-          </div>
+            }}
+            components={{
+              Footer: () => (
+                <AnimatePresence>
+                  {currentTask.status === 'running' && !permissionRequest ? (
+                    <div className="px-6 pb-6 pt-2">
+                      <motion.div
+                        initial={{ opacity: 0, y: 8 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -8 }}
+                        transition={springs.gentle}
+                        className="mx-auto flex max-w-5xl items-center gap-2 py-2 text-muted-foreground"
+                        data-testid="execution-thinking-indicator"
+                      >
+                        <TypingDots />
+                        <span className="text-sm">
+                          {currentTool
+                            ? ((currentToolInput as { description?: string })?.description || TOOL_PROGRESS_MAP[currentTool]?.label || currentTool)
+                            : 'Thinking...'}
+                        </span>
+                        {currentTool && !(currentToolInput as { description?: string })?.description && (
+                          <span className="text-xs text-muted-foreground/60">
+                            ({currentTool})
+                          </span>
+                        )}
+                      </motion.div>
+                    </div>
+                  ) : null}
+                </AnimatePresence>
+              ),
+            }}
+          />
         </div>
       )}
 
       <AnimatePresence>
-        {showScrollToBottom && currentTask.messages.length > 0 && (
+        {showScrollToBottom && visibleTaskMessages.length > 0 && (
           <motion.button
             type="button"
             initial={{ opacity: 0, y: 8 }}
@@ -2389,12 +3437,13 @@ export default function ExecutionPage() {
           isLoading={isLoading}
           hasSession={!!hasSession}
           currentTaskStatus={currentTask.status}
-          promptsCount={prompts.length}
+          promptsCount={promptPickerCount}
           onSend={handleFollowUpSend}
           onPlanNextJobs={handlePlanNextJobs}
           planningJobs={planningJobs}
           taskId={currentTask.id}
           agentId={currentTask.agentId}
+          usageProjectId={currentTask.usageProjectId ?? null}
           privacyMode={privacyMode}
           onPrivacyModeChange={setPrivacyMode}
           slashCommands={executionSlashCommands}
@@ -2402,6 +3451,8 @@ export default function ExecutionPage() {
             setSavedPromptsMode(mode);
             setShowSavedPromptsSelector(true);
           }}
+          onOpenProjectWork={openChatProjectWorkPopup}
+          onUsageProjectChange={handleFollowUpUsageProjectChange}
         />
       )}
 
@@ -2412,6 +3463,263 @@ export default function ExecutionPage() {
         onSelectPrompt={handleSelectSavedPrompt}
         mode={savedPromptsMode}
       />
+      <BuildProjectWorkPopup
+        open={projectWorkPopupOpen}
+        projects={usageProjects}
+        assignees={usageAssignees}
+        linkedProjectId={projectWorkPopupInitialProjectId}
+        initialProjectId={projectWorkPopupInitialProjectId}
+        sourceLabel={chatProjectWorkSourceLabel}
+        fallbackLabel="Chat project work"
+        storageScope="chat"
+        onSelectedProjectChange={(projectId) => writeChatProjectWorkPopupSession(true, projectId)}
+        onClose={() => {
+          setProjectWorkPopupOpen(false);
+          writeChatProjectWorkPopupSession(false);
+        }}
+      />
+
+      {answerSaveNotice ? (
+        <div className="pointer-events-none fixed bottom-4 right-4 z-[100] max-w-[min(28rem,calc(100vw-2rem))]">
+          <Card className="flex items-start gap-2 border-primary/30 bg-background/95 p-3 text-sm text-primary shadow-xl backdrop-blur">
+            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+            <span className="min-w-0 break-words">{answerSaveNotice}</span>
+          </Card>
+        </div>
+      ) : null}
+
+      <Dialog open={answerSaveDialogOpen} onOpenChange={(open) => {
+        setAnswerSaveDialogOpen(open);
+        if (!open && !answerSaveSaving) {
+          answerSaveWorkItemsRequestRef.current += 1;
+          setAnswerSavePending(null);
+          setAnswerSaveWorkItems([]);
+          setAnswerSaveWorkItemsProjectId('');
+          setAnswerSaveTargetWorkItemId('');
+          setAnswerSaveError(null);
+          answerSaveTitleRef.current = '';
+          setAnswerSaveTitle('');
+        }
+      }}>
+        <DialogContent className="flex max-h-[88vh] w-[92vw] max-w-xl flex-col overflow-hidden">
+          <DialogHeader className="pr-8">
+            <DialogTitle>
+              {answerSavePending?.mode === 'rtf' ? 'Save Answer As RTF' : 'Save Answer As Note'}
+            </DialogTitle>
+            <DialogDescription>
+              {answerSavePending?.mode === 'rtf'
+                ? 'Save this answer as a Rich Text File. You can also attach the saved file to a project Workboard item.'
+                : 'Save this answer as a formatted note on a project Workboard item.'}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
+            {answerSaveError ? (
+              <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {answerSaveError}
+              </div>
+            ) : null}
+
+            <div className="rounded-md border border-border/60 bg-background p-3">
+              <label className="text-xs font-medium text-muted-foreground" htmlFor="chat-answer-save-title">
+                {answerSavePending?.mode === 'rtf' ? 'File name' : 'Note title'}
+              </label>
+              <Input
+                key={`answer-save-title:${answerSavePending?.messageId || 'new'}:${answerSavePending?.mode || 'note'}`}
+                id="chat-answer-save-title"
+                className="mt-1.5"
+                defaultValue={answerSaveTitle}
+                onChange={(event) => {
+                  answerSaveTitleRef.current = event.target.value;
+                }}
+                placeholder={answerSavePending?.mode === 'rtf' ? 'task-answer_YYYY-MM-DD_HH-MM' : 'Task answer'}
+              />
+            </div>
+
+            {answerSavePending?.mode === 'rtf' ? (
+              <label className="flex items-start gap-2 rounded-md border border-border/60 bg-muted/20 p-3 text-sm">
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={answerSaveRtfAttachToWorkItem}
+                  onChange={(event) => {
+                    setAnswerSaveRtfAttachToWorkItem(event.target.checked);
+                    if (event.target.checked) {
+                      const nextProjectId = answerSaveTargetProjectId || getDefaultAnswerSaveProjectId();
+                      setAnswerSaveTargetProjectId(nextProjectId);
+                      if (nextProjectId) void loadAnswerSaveWorkItemsForProject(nextProjectId);
+                    }
+                  }}
+                />
+                <span>
+                  <span className="block font-medium text-foreground">Attach saved file to a project work item</span>
+                  <span className="mt-1 block text-xs text-muted-foreground">
+                    This links the saved local RTF file. If the file is moved later, the document link will break.
+                  </span>
+                </span>
+              </label>
+            ) : null}
+
+            {answerSavePending?.mode !== 'rtf' || answerSaveRtfAttachToWorkItem ? (
+              <>
+                <div className="rounded-md border border-border/60 bg-muted/20 p-3">
+                  <div className="mb-2 text-xs font-medium text-muted-foreground">Project</div>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <button
+                      type="button"
+                      className={cn(
+                        'rounded-md border px-3 py-2 text-left text-sm',
+                        answerSaveDialogMode === 'existing-project'
+                          ? 'border-primary bg-primary/10 text-foreground'
+                          : 'border-border/60 bg-background text-muted-foreground hover:bg-muted/40'
+                      )}
+                      onClick={() => {
+                        setAnswerSaveDialogMode('existing-project');
+                        const nextProjectId = answerSaveTargetProjectId || getDefaultAnswerSaveProjectId();
+                        setAnswerSaveTargetProjectId(nextProjectId);
+                        if (nextProjectId) void loadAnswerSaveWorkItemsForProject(nextProjectId);
+                      }}
+                      disabled={usageProjects.length === 0}
+                    >
+                      Existing project
+                      <div className="mt-1 text-xs text-muted-foreground">Use one of your current budget projects.</div>
+                    </button>
+                    <button
+                      type="button"
+                      className={cn(
+                        'rounded-md border px-3 py-2 text-left text-sm',
+                        answerSaveDialogMode === 'new-project'
+                          ? 'border-primary bg-primary/10 text-foreground'
+                          : 'border-border/60 bg-background text-muted-foreground hover:bg-muted/40'
+                      )}
+                      onClick={() => {
+                        setAnswerSaveDialogMode('new-project');
+                        answerSaveWorkItemsRequestRef.current += 1;
+                        setAnswerSaveWorkItems([]);
+                        setAnswerSaveWorkItemsProjectId('');
+                        setAnswerSaveTargetWorkItemId('__new__');
+                      }}
+                    >
+                      New project
+                      <div className="mt-1 text-xs text-muted-foreground">Create a budget project and save this answer under it.</div>
+                    </button>
+                  </div>
+
+                  {answerSaveDialogMode === 'existing-project' ? (
+                    <div className="mt-3 space-y-1.5">
+                      <label className="text-xs font-medium text-muted-foreground" htmlFor="chat-answer-save-project">Choose project</label>
+                      <select
+                        id="chat-answer-save-project"
+                        className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                        value={answerSaveTargetProjectId}
+                        onChange={(event) => {
+                          const nextProjectId = event.target.value;
+                          setAnswerSaveTargetProjectId(nextProjectId);
+                          setAnswerSaveTargetWorkItemId('');
+                          if (nextProjectId) void loadAnswerSaveWorkItemsForProject(nextProjectId);
+                        }}
+                      >
+                        {usageProjects.length === 0 ? (
+                          <option value="">No projects yet</option>
+                        ) : (
+                          <>
+                            <option value="">Choose a project...</option>
+                            {usageProjects.map((project) => (
+                              <option key={project.id} value={project.id}>{project.name}</option>
+                            ))}
+                          </>
+                        )}
+                      </select>
+                    </div>
+                  ) : (
+                    <div className="mt-3 space-y-1.5">
+                      <label className="text-xs font-medium text-muted-foreground" htmlFor="chat-answer-save-new-project">New project name</label>
+                      <Input
+                        id="chat-answer-save-new-project"
+                        value={answerSaveNewProjectName}
+                        onChange={(event) => setAnswerSaveNewProjectName(event.target.value)}
+                        placeholder="Budget project name"
+                      />
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-md border border-border/60 bg-muted/20 p-3">
+                  <div className="mb-2 text-xs font-medium text-muted-foreground">Work item</div>
+                  {answerSaveDialogMode === 'existing-project' && answerSaveTargetProjectId ? (
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium text-muted-foreground" htmlFor="chat-answer-save-work-item">Choose work item</label>
+                      <select
+                        id="chat-answer-save-work-item"
+                        className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                        value={answerSaveTargetWorkItemId || '__new__'}
+                        onChange={(event) => setAnswerSaveTargetWorkItemId(event.target.value)}
+                        disabled={answerSaveWorkItemsLoading}
+                      >
+                        {(answerSaveWorkItemsProjectId === answerSaveTargetProjectId ? answerSaveWorkItems : []).map((item) => (
+                          <option key={item.id} value={item.id}>{item.title}{item.archived ? ' (archived)' : ''}</option>
+                        ))}
+                        <option value="__new__">Create new work item</option>
+                      </select>
+                      {answerSaveWorkItemsLoading ? (
+                        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          Loading work items...
+                        </div>
+                      ) : null}
+                      {!answerSaveWorkItemsLoading
+                        && answerSaveWorkItemsProjectId === answerSaveTargetProjectId
+                        && answerSaveWorkItems.length === 0 ? (
+                        <div className="text-xs text-muted-foreground">
+                          No work items are saved under this project yet.
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <div className="text-xs text-muted-foreground">Choose a project to see its work items.</div>
+                  )}
+
+                  {(!answerSaveWorkItemsLoading && (answerSaveDialogMode === 'new-project' || answerSaveTargetWorkItemId === '__new__' || !answerSaveTargetWorkItemId)) ? (
+                    <div className="mt-3 space-y-1.5">
+                      <label className="text-xs font-medium text-muted-foreground" htmlFor="chat-answer-save-new-work-item">New work item title</label>
+                      <Input
+                        id="chat-answer-save-new-work-item"
+                        value={answerSaveNewWorkItemTitle}
+                        onChange={(event) => setAnswerSaveNewWorkItemTitle(event.target.value)}
+                        placeholder="Work item title"
+                      />
+                    </div>
+                  ) : null}
+                </div>
+              </>
+            ) : null}
+          </div>
+          <DialogFooter className="gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setAnswerSaveDialogOpen(false)}
+              disabled={answerSaveSaving}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void savePendingAnswer()}
+              disabled={
+                answerSaveSaving
+                || !answerSavePending
+                || ((answerSavePending.mode !== 'rtf' || answerSaveRtfAttachToWorkItem) && answerSaveDialogMode === 'existing-project' && !answerSaveTargetProjectId)
+                || ((answerSavePending.mode !== 'rtf' || answerSaveRtfAttachToWorkItem) && (answerSaveTargetWorkItemId === '__new__' || answerSaveDialogMode === 'new-project') && !answerSaveNewWorkItemTitle.trim())
+              }
+            >
+              {answerSaveSaving ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : (
+                answerSavePending?.mode === 'rtf' ? <Download className="mr-1.5 h-4 w-4" /> : <FileText className="mr-1.5 h-4 w-4" />
+              )}
+              {answerSavePending?.mode === 'rtf' ? 'Save RTF' : 'Save note'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Proactive suggestions dialog */}
       <Dialog
@@ -2561,6 +3869,8 @@ export default function ExecutionPage() {
                     <MessageBubble
                       key={`${message.id}-${index}`}
                       message={message}
+                      onSaveAnswerAsProjectNote={handleSaveAnswerAsProjectNote}
+                      onSaveAnswerAsRtf={handleSaveAnswerAsRtf}
                       debugMode={debugModeEnabled}
                     />
                   ))}
@@ -2937,18 +4247,24 @@ interface MessageBubbleProps {
   onContinue?: () => void;
   isLoading?: boolean;
   onSavePrompt?: (content: string) => void;
+  onSaveAnswerAsProjectNote?: (payload: { messageId: string; content: string; sourceElement?: HTMLElement | null }) => void;
+  onSaveAnswerAsRtf?: (payload: { messageId: string; content: string; sourceElement?: HTMLElement | null }) => void;
   debugMode?: boolean;
 }
 
 // Memoized MessageBubble to prevent unnecessary re-renders and markdown re-parsing
-const MessageBubble = memo(function MessageBubble({ message, shouldStream = false, isLastMessage = false, isRunning = false, showContinueButton = false, continueLabel, onContinue, isLoading = false, onSavePrompt, debugMode = false }: MessageBubbleProps) {
+const MessageBubble = memo(function MessageBubble({ message, shouldStream = false, isLastMessage = false, isRunning = false, showContinueButton = false, continueLabel, onContinue, isLoading = false, onSavePrompt, onSaveAnswerAsProjectNote, onSaveAnswerAsRtf, debugMode = false }: MessageBubbleProps) {
   const [streamComplete, setStreamComplete] = useState(!shouldStream);
   const [saved, setSaved] = useState(false);
   const [copied, setCopied] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [canExpand, setCanExpand] = useState(false);
+  const [imagePreview, setImagePreview] = useState<ImagePreviewState | null>(null);
+  const [imageZoom, setImageZoom] = useState(1);
+  const [imagePan, setImagePan] = useState({ x: 0, y: 0 });
   const contentRef = useRef<HTMLDivElement>(null);
   const expandableMeasureRef = useRef<HTMLElement | null>(null);
+  const imageDragRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
   const isUser = message.type === 'user';
   const isTool = message.type === 'tool';
   const isSystem = message.type === 'system';
@@ -2958,10 +4274,20 @@ const MessageBubble = memo(function MessageBubble({ message, shouldStream = fals
     && toolContent.length > 0
     && !/^using tool:/i.test(toolContent)
     && !/^tool\s+.+\s+(completed|error)$/i.test(toolContent);
+  const assistantReasoningParts = useMemo(
+    () => (isAssistant ? splitAssistantReasoningContent(message.content || '') : null),
+    [isAssistant, message.content]
+  );
+  const assistantAnswerContent = assistantReasoningParts?.hasReasoning
+    ? assistantReasoningParts.answer
+    : message.content;
+  const assistantHasReasoning = Boolean(assistantReasoningParts?.hasReasoning);
+  const assistantCopyContent = assistantAnswerContent?.trim() || message.content;
+  const currentPreviewImage = imagePreview?.images[imagePreview.index] ?? null;
   const parsedAssistantPlan = useMemo(() => {
     if (!isAssistant || isTool || isSystem || isUser) return null;
-    return parsePlanItemsFromAssistantContent(message.content || '');
-  }, [isAssistant, isTool, isSystem, isUser, message.content]);
+    return parsePlanItemsFromAssistantContent(assistantAnswerContent || '');
+  }, [assistantAnswerContent, isAssistant, isTool, isSystem, isUser]);
 
   // Get tool icon from mapping
   const toolName = message.toolName || message.content?.match(/Using tool: (\w+)/)?.[1];
@@ -2992,7 +4318,7 @@ const MessageBubble = memo(function MessageBubble({ message, shouldStream = fals
   }, [message.content, isTool, showToolOutput, collapsedMaxHeight, streamComplete, toolContent]);
 
   const proseClasses = cn(
-    'text-sm prose prose-sm max-w-none',
+    'text-sm prose prose-sm max-w-none overflow-x-auto',
     'prose-headings:text-foreground',
     'prose-p:text-foreground prose-p:my-2',
     'prose-strong:text-foreground prose-strong:font-semibold',
@@ -3003,56 +4329,549 @@ const MessageBubble = memo(function MessageBubble({ message, shouldStream = fals
     'prose-li:text-foreground prose-li:my-1',
     'prose-a:text-primary prose-a:underline',
     'prose-blockquote:text-muted-foreground prose-blockquote:border-l-4 prose-blockquote:border-border prose-blockquote:pl-4',
+    'prose-table:my-3 prose-table:w-full prose-table:border-collapse prose-table:text-sm',
+    'prose-thead:border-b prose-thead:border-border',
+    'prose-th:border prose-th:border-border prose-th:bg-muted/70 prose-th:px-3 prose-th:py-2 prose-th:text-left prose-th:font-semibold prose-th:text-foreground prose-th:break-words',
+    'prose-td:border prose-td:border-border prose-td:px-3 prose-td:py-2 prose-td:align-top prose-td:text-foreground prose-td:break-words',
+    'prose-tr:border-border',
     'prose-hr:border-border'
   );
 
   const handleCopyToClipboard = useCallback(async (preferRichHtml: boolean) => {
     try {
       if (preferRichHtml) {
-        const html = contentRef.current?.innerHTML || message.content;
+        const html = buildWordFriendlyClipboardHtml(contentRef.current, assistantCopyContent);
+        const rtf = buildWordFriendlyClipboardRtf(contentRef.current, assistantCopyContent);
         const htmlBlob = new Blob([html], { type: 'text/html' });
-        const textBlob = new Blob([message.content], { type: 'text/plain' });
-        await navigator.clipboard.write([
-          new ClipboardItem({
-            'text/html': htmlBlob,
-            'text/plain': textBlob,
-          }),
-        ]);
+        const rtfBlob = new Blob([rtf], { type: 'text/rtf' });
+        const textBlob = new Blob([assistantCopyContent], { type: 'text/plain' });
+        try {
+          await navigator.clipboard.write([
+            new ClipboardItem({
+              'text/rtf': rtfBlob,
+              'text/html': htmlBlob,
+              'text/plain': textBlob,
+            }),
+          ]);
+        } catch {
+          await navigator.clipboard.write([
+            new ClipboardItem({
+              'text/html': htmlBlob,
+              'text/plain': textBlob,
+            }),
+          ]);
+        }
       } else {
         await navigator.clipboard.writeText(message.content);
       }
     } catch {
       // Fallback to plain text when rich copy is unavailable
-      await navigator.clipboard.writeText(message.content);
+      await navigator.clipboard.writeText(preferRichHtml ? assistantCopyContent : message.content);
     }
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-  }, [message.content]);
+  }, [assistantCopyContent, message.content]);
+
+  const openImagePreview = useCallback((src: string, label: string, gallery?: ImagePreviewItem[]) => {
+    const seen = new Set<string>();
+    const normalizedSrc = normalizeImagePreviewUrl(src) ?? src;
+    const images = (gallery && gallery.length > 0 ? gallery : [{ url: normalizedSrc, label }])
+      .map((image) => ({
+        url: normalizeImagePreviewUrl(image.url) ?? image.url,
+        label: image.label?.trim() || getImagePreviewLabel(image.url),
+      }))
+      .filter((image) => {
+        if (!image.url || seen.has(image.url)) return false;
+        seen.add(image.url);
+        return true;
+      });
+    if (!images.some((image) => image.url === normalizedSrc)) {
+      images.unshift({ url: normalizedSrc, label });
+    }
+    const index = Math.max(0, images.findIndex((image) => image.url === normalizedSrc));
+    imageDragRef.current = null;
+    setImageZoom(1);
+    setImagePan({ x: 0, y: 0 });
+    setImagePreview({ images, index });
+  }, []);
+
+  const resetImageViewport = useCallback(() => {
+    imageDragRef.current = null;
+    setImageZoom(1);
+    setImagePan({ x: 0, y: 0 });
+  }, []);
+
+  const showImagePreviewIndex = useCallback((index: number) => {
+    setImagePreview((current) => {
+      if (!current || current.images.length === 0) return current;
+      const nextIndex = ((index % current.images.length) + current.images.length) % current.images.length;
+      imageDragRef.current = null;
+      setImageZoom(1);
+      setImagePan({ x: 0, y: 0 });
+      return { ...current, index: nextIndex };
+    });
+  }, []);
+
+  const showPreviousImagePreview = useCallback(() => {
+    setImagePreview((current) => {
+      if (!current || current.images.length <= 1) return current;
+      imageDragRef.current = null;
+      setImageZoom(1);
+      setImagePan({ x: 0, y: 0 });
+      return {
+        ...current,
+        index: (current.index - 1 + current.images.length) % current.images.length,
+      };
+    });
+  }, []);
+
+  const showNextImagePreview = useCallback(() => {
+    setImagePreview((current) => {
+      if (!current || current.images.length <= 1) return current;
+      imageDragRef.current = null;
+      setImageZoom(1);
+      setImagePan({ x: 0, y: 0 });
+      return {
+        ...current,
+        index: (current.index + 1) % current.images.length,
+      };
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!imagePreview) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        showPreviousImagePreview();
+      } else if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        showNextImagePreview();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [imagePreview, showNextImagePreview, showPreviousImagePreview]);
+
+  const zoomImageBy = useCallback((delta: number) => {
+    setImageZoom((current) => {
+      const next = clampImageZoom(current + delta);
+      if (next <= 1) {
+        imageDragRef.current = null;
+        setImagePan({ x: 0, y: 0 });
+      }
+      return next;
+    });
+  }, []);
+
+  const handleImageWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    zoomImageBy(event.deltaY > 0 ? -0.15 : 0.15);
+  }, [zoomImageBy]);
+
+  const handleImagePointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    if (imageZoom <= 1) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    imageDragRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: imagePan.x,
+      originY: imagePan.y,
+    };
+  }, [imagePan.x, imagePan.y, imageZoom]);
+
+  const handleImagePointerMove = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    const drag = imageDragRef.current;
+    if (!drag) return;
+    event.preventDefault();
+    setImagePan({
+      x: drag.originX + event.clientX - drag.startX,
+      y: drag.originY + event.clientY - drag.startY,
+    });
+  }, []);
+
+  const handleImagePointerEnd = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    imageDragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }, []);
+
+  const createMarkdownComponents = useCallback((imageGallery?: ImagePreviewItem[]): Components => ({
+    a: ({ href, children, ...props }) => {
+      const rawHref = typeof href === 'string' ? href.trim() : '';
+      if (!rawHref) {
+        return <a {...props}>{children}</a>;
+      }
+
+      if (isPreviewableImageHref(rawHref)) {
+        const previewHref = normalizeImagePreviewUrl(rawHref) ?? rawHref;
+        return (
+          <a
+            {...props}
+            href={rawHref}
+            onClick={(event) => {
+              event.preventDefault();
+              openImagePreview(previewHref, getImagePreviewLabel(previewHref), imageGallery);
+            }}
+          >
+            {children}
+          </a>
+        );
+      }
+
+      if (isHttpUrl(rawHref)) {
+        return (
+          <a
+            {...props}
+            href={rawHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(event) => {
+              event.preventDefault();
+              void getAccomplish().openExternal(rawHref);
+            }}
+          >
+            {children}
+          </a>
+        );
+      }
+
+      return (
+        <a
+          {...props}
+          href={rawHref}
+          onClick={(event) => {
+            if (isPreviewableImageHref(rawHref)) {
+              const previewHref = normalizeImagePreviewUrl(rawHref) ?? rawHref;
+              event.preventDefault();
+              openImagePreview(previewHref, getImagePreviewLabel(previewHref), imageGallery);
+            }
+          }}
+        >
+          {children}
+        </a>
+      );
+    },
+    img: ({ src, alt, title }) => {
+      const rawSrc = typeof src === 'string' ? normalizeImagePreviewUrl(src) : null;
+      const label = typeof alt === 'string' && alt.trim()
+        ? alt.trim()
+        : rawSrc
+          ? getImagePreviewLabel(rawSrc)
+          : 'Image preview';
+
+      if (!rawSrc) {
+        return null;
+      }
+
+      return (
+        <span className="my-3 block max-w-full">
+          <button
+            type="button"
+            className="block max-w-full cursor-zoom-in overflow-hidden rounded-lg border border-border bg-muted/30 p-0 text-left shadow-sm transition-colors hover:border-primary/60"
+            title={title || 'Open image preview'}
+            onClick={() => openImagePreview(rawSrc, label, imageGallery)}
+          >
+            <img
+              src={rawSrc}
+              alt={label}
+              className="block max-h-80 max-w-full object-contain"
+              loading="lazy"
+              referrerPolicy="no-referrer"
+            />
+          </button>
+        </span>
+      );
+    },
+  }), [openImagePreview]);
+
+  const markdownComponents = useMemo<Components>(() => createMarkdownComponents(), [createMarkdownComponents]);
+
+  const renderAssistantLinkPreviewStrip = useCallback((content: string, linkPreviews?: AssistantLinkPreviews): ReactElement | null => {
+    const previews = linkPreviews ?? extractAssistantLinkPreviews(content);
+    if (previews.imageLinks.length === 0 && previews.siteLinks.length === 0) {
+      return null;
+    }
+
+    return (
+      <div className="mt-3 space-y-2 border-t border-border/50 pt-2">
+        {previews.imageLinks.length > 0 ? (
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {previews.imageLinks.map((image) => (
+              <button
+                key={image.url}
+                type="button"
+                className="group/image relative h-14 w-14 shrink-0 overflow-hidden rounded-md border border-border bg-muted/40 shadow-sm transition-colors hover:border-primary/60"
+                title={image.label}
+                aria-label={`Open image preview: ${image.label}`}
+                onClick={() => openImagePreview(image.url, image.label, previews.imageLinks)}
+              >
+                <span className="absolute inset-0 flex items-center justify-center bg-muted/60 text-muted-foreground">
+                  <Image className="h-4 w-4" />
+                </span>
+                <img
+                  src={image.url}
+                  alt={image.label}
+                  className="absolute inset-0 h-full w-full object-cover transition-transform duration-150 group-hover/image:scale-105"
+                  loading="lazy"
+                  referrerPolicy="no-referrer"
+                  onError={(event) => {
+                    event.currentTarget.style.display = 'none';
+                  }}
+                />
+              </button>
+            ))}
+          </div>
+        ) : null}
+
+        {previews.siteLinks.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {previews.siteLinks.map((site) => (
+              <button
+                key={site.host}
+                type="button"
+                className="relative flex h-7 w-7 items-center justify-center overflow-hidden rounded-full border border-border bg-muted text-[10px] font-semibold uppercase text-muted-foreground shadow-sm transition-colors hover:border-primary/60 hover:bg-muted/80"
+                title={`Open ${site.host}`}
+                aria-label={`Open ${site.host}`}
+                onClick={() => void getAccomplish().openExternal(site.url)}
+              >
+                <span aria-hidden="true">{site.host[0] || '?'}</span>
+                <img
+                  src={site.faviconUrl}
+                  alt=""
+                  className="absolute h-5 w-5 rounded-full"
+                  loading="lazy"
+                  onError={(event) => {
+                    event.currentTarget.style.display = 'none';
+                  }}
+                />
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    );
+  }, [openImagePreview]);
+
+  const renderAssistantFooter = () => (
+    <div className="mt-1.5 flex items-center justify-between gap-2">
+      <div className="flex items-center gap-1">
+        {onSaveAnswerAsProjectNote ? (
+          <button
+            type="button"
+            onClick={() => onSaveAnswerAsProjectNote({ messageId: message.id, content: assistantCopyContent, sourceElement: contentRef.current })}
+            className="p-1 rounded-md opacity-0 group-hover:opacity-100 transition-opacity duration-200 hover:bg-muted text-muted-foreground hover:text-foreground"
+            title="Save this answer as a note on a project work item"
+          >
+            <FileText className="h-3.5 w-3.5" />
+          </button>
+        ) : null}
+        {onSaveAnswerAsRtf ? (
+          <button
+            type="button"
+            onClick={() => onSaveAnswerAsRtf({ messageId: message.id, content: assistantCopyContent, sourceElement: contentRef.current })}
+            className="p-1 rounded-md opacity-0 group-hover:opacity-100 transition-opacity duration-200 hover:bg-muted text-muted-foreground hover:text-foreground"
+            title="Save this answer as an RTF file and optionally attach it to a work item"
+          >
+            <Download className="h-3.5 w-3.5" />
+          </button>
+        ) : null}
+        <button
+          type="button"
+          onClick={() => void handleCopyToClipboard(true)}
+          className="p-1 rounded-md opacity-0 group-hover:opacity-100 transition-opacity duration-200 hover:bg-muted text-muted-foreground hover:text-foreground"
+          title={copied ? 'Copied!' : 'Copy final answer'}
+        >
+          {copied ? (
+            <Check className="h-3.5 w-3.5" />
+          ) : (
+            <Copy className="h-3.5 w-3.5" />
+          )}
+        </button>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {new Date(message.timestamp).toLocaleTimeString()}
+      </p>
+    </div>
+  );
+
+  const renderContinueButton = () => (
+    isAssistant && showContinueButton && onContinue ? (
+      <Button
+        size="sm"
+        onClick={onContinue}
+        disabled={isLoading}
+        className="mt-3 gap-1.5"
+      >
+        <Play className="h-3 w-3" />
+        {continueLabel || 'Continue'}
+      </Button>
+    ) : null
+  );
+
+  const renderAssistantReasoningBubble = (
+    reasoning: string,
+    includeFooter = false
+  ): ReactElement | null => {
+    if (!reasoning.trim()) return null;
+    return (
+      <div className="rounded-2xl border border-border/70 bg-muted/45 px-4 py-3 text-muted-foreground">
+        <div className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+          <Brain className="h-3.5 w-3.5" />
+          Reasoning
+        </div>
+        <div
+          ref={includeFooter ? contentRef : undefined}
+          className={cn(
+            proseClasses,
+            'text-muted-foreground',
+            'prose-p:text-muted-foreground prose-li:text-muted-foreground prose-strong:text-muted-foreground prose-em:text-muted-foreground'
+          )}
+        >
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+            {normalizeMarkdownTables(reasoning)}
+          </ReactMarkdown>
+        </div>
+        {includeFooter && renderAssistantFooter()}
+        {includeFooter && renderContinueButton()}
+      </div>
+    );
+  };
+
+  const renderAssistantAnswerContent = (
+    content: string,
+    planItems: ParsedPlanItem[] | null,
+    linkPreviews?: AssistantLinkPreviews
+  ): ReactElement => (
+    planItems ? (
+      <div ref={contentRef} className="space-y-2 text-sm">
+        {planItems.map((item, index) => (
+          <div key={`${message.id}:${item.id}:${index}`} className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2">
+            <div className="flex items-start gap-2">
+              <div className="mt-0.5 shrink-0">
+                {item.status === 'completed' ? (
+                  <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                ) : item.status === 'in_progress' ? (
+                  <Clock className="h-4 w-4 text-amber-600" />
+                ) : item.status === 'failed' || item.status === 'blocked' ? (
+                  <AlertCircle className="h-4 w-4 text-destructive" />
+                ) : (
+                  <Clock className="h-4 w-4 text-muted-foreground" />
+                )}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="whitespace-pre-wrap break-words text-foreground">{item.content}</div>
+                <div className="mt-1.5 flex items-center gap-1.5 text-[10px]">
+                  <span className="rounded border border-border/60 bg-background px-1 py-0.5 text-muted-foreground">#{item.id}</span>
+                  <span className={cn('rounded px-1 py-0.5', getPlanStatusBadgeClasses(item.status))}>
+                    {formatPlanStatus(item.status)}
+                  </span>
+                  {item.priority ? (
+                    <span className={cn('rounded px-1 py-0.5', getPlanPriorityBadgeClasses(item.priority))}>
+                      {item.priority}
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    ) : (
+      <div ref={contentRef} className={proseClasses}>
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={createMarkdownComponents(linkPreviews?.imageLinks)}>
+          {normalizeMarkdownTables(content)}
+        </ReactMarkdown>
+      </div>
+    )
+  );
+
+  const renderAssistantAnswerBubble = (
+    content: string,
+    planItems: ParsedPlanItem[] | null
+  ): ReactElement | null => {
+    if (!content.trim()) return null;
+    const linkPreviews = extractAssistantLinkPreviews(content);
+    return (
+      <div className="rounded-2xl border border-border bg-card px-4 py-3 transition-colors duration-150 group">
+        {renderAssistantAnswerContent(content, planItems, linkPreviews)}
+        {renderAssistantLinkPreviewStrip(content, linkPreviews)}
+        {renderAssistantFooter()}
+        {renderContinueButton()}
+      </div>
+    );
+  };
+
+  const renderSplitAssistantContent = (rawContent: string, planItems: ParsedPlanItem[] | null) => {
+    const parts = splitAssistantReasoningContent(rawContent);
+    const answer = parts.hasReasoning ? parts.answer : rawContent;
+    const hasAnswer = answer.trim().length > 0;
+    return (
+      <>
+        {parts.hasReasoning && renderAssistantReasoningBubble(parts.reasoning, !hasAnswer)}
+        {hasAnswer && renderAssistantAnswerBubble(answer, planItems)}
+      </>
+    );
+  };
+
+  const renderStandardAssistantContent = (): ReactElement => {
+    const linkPreviews = extractAssistantLinkPreviews(message.content);
+    return (
+      <>
+        {shouldStream && !streamComplete ? (
+          <StreamingText
+            text={message.content}
+            speed={120}
+            isComplete={streamComplete}
+            onComplete={() => setStreamComplete(true)}
+          >
+            {(streamedText) => {
+              const streamedPreviews = extractAssistantLinkPreviews(streamedText);
+              return (
+                <div ref={contentRef} className={proseClasses}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={createMarkdownComponents(streamedPreviews.imageLinks)}>
+                    {normalizeMarkdownTables(streamedText)}
+                  </ReactMarkdown>
+                </div>
+              );
+            }}
+          </StreamingText>
+        ) : (
+          renderAssistantAnswerContent(message.content, parsedAssistantPlan, linkPreviews)
+        )}
+        {(!shouldStream || streamComplete) && renderAssistantLinkPreviewStrip(message.content, linkPreviews)}
+        {renderAssistantFooter()}
+        {renderContinueButton()}
+      </>
+    );
+  };
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={springs.gentle}
-      className={cn('flex', isUser ? 'justify-end' : 'justify-start')}
-      style={{
-        contentVisibility: 'auto',
-        containIntrinsicSize: '180px',
-      }}
-    >
-      <div
-        className={cn(
-          'max-w-[85%] rounded-2xl px-4 py-3 transition-colors duration-150',
-          isUser
-            ? 'bg-primary text-primary-foreground'
-            : isTool
-              ? 'bg-muted border border-border'
-              : isSystem
-              ? 'bg-muted/50 border border-border'
-              : 'bg-card border border-border',
-          (isAssistant || isUser) && 'group'
-        )}
+    <>
+      <motion.div
+        initial={false}
+        className={cn('flex', isUser ? 'justify-end' : 'justify-start')}
       >
+        <div
+          className={cn(
+            'max-w-[85%] transition-colors duration-150',
+            assistantHasReasoning
+              ? 'space-y-2'
+              : cn(
+                  'rounded-2xl px-4 py-3',
+                  isUser
+                    ? 'bg-primary text-primary-foreground'
+                    : isTool
+                      ? 'bg-muted border border-border'
+                      : isSystem
+                      ? 'bg-muted/50 border border-border'
+                      : 'bg-card border border-border'
+                ),
+            (isAssistant || isUser) && 'group'
+          )}
+        >
         {/* Tool messages: show only label and loading animation */}
         {isTool ? (
           <>
@@ -3186,102 +5005,224 @@ const MessageBubble = memo(function MessageBubble({ message, shouldStream = fals
                 </p>
               </div>
               </>
-            ) : (
-              <>
-                {isAssistant && shouldStream && !streamComplete ? (
+            ) : isAssistant ? (
+              assistantHasReasoning ? (
+                shouldStream && !streamComplete ? (
                   <StreamingText
                     text={message.content}
                     speed={120}
                     isComplete={streamComplete}
                     onComplete={() => setStreamComplete(true)}
                   >
-                    {(streamedText) => (
-                      <div ref={contentRef} className={proseClasses}>
-                        <ReactMarkdown>{streamedText}</ReactMarkdown>
-                      </div>
-                    )}
+                    {(streamedText) => renderSplitAssistantContent(streamedText, null)}
                   </StreamingText>
                 ) : (
-                  parsedAssistantPlan ? (
-                    <div ref={isAssistant ? contentRef : undefined} className="space-y-2 text-sm">
-                      {parsedAssistantPlan.map((item, index) => (
-                        <div key={`${message.id}:${item.id}:${index}`} className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2">
-                          <div className="flex items-start gap-2">
-                            <div className="mt-0.5 shrink-0">
-                              {item.status === 'completed' ? (
-                                <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                              ) : item.status === 'in_progress' ? (
-                                <Clock className="h-4 w-4 text-amber-600" />
-                              ) : item.status === 'failed' || item.status === 'blocked' ? (
-                                <AlertCircle className="h-4 w-4 text-destructive" />
-                              ) : (
-                                <Clock className="h-4 w-4 text-muted-foreground" />
-                              )}
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <div className="whitespace-pre-wrap break-words text-foreground">{item.content}</div>
-                              <div className="mt-1.5 flex items-center gap-1.5 text-[10px]">
-                                <span className="rounded border border-border/60 bg-background px-1 py-0.5 text-muted-foreground">#{item.id}</span>
-                                <span className={cn('rounded px-1 py-0.5', getPlanStatusBadgeClasses(item.status))}>
-                                  {formatPlanStatus(item.status)}
-                                </span>
-                                {item.priority ? (
-                                  <span className={cn('rounded px-1 py-0.5', getPlanPriorityBadgeClasses(item.priority))}>
-                                    {item.priority}
-                                  </span>
-                                ) : null}
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div ref={isAssistant ? contentRef : undefined} className={proseClasses}>
-                      <ReactMarkdown>{message.content}</ReactMarkdown>
-                    </div>
-                  )
-                )}
-                {isAssistant ? (
-                  <div className="mt-1.5 flex items-center justify-between gap-2">
-                    <button
-                      type="button"
-                      onClick={() => void handleCopyToClipboard(true)}
-                      className="p-1 rounded-md opacity-0 group-hover:opacity-100 transition-opacity duration-200 hover:bg-muted text-muted-foreground hover:text-foreground"
-                      title={copied ? 'Copied!' : 'Copy to clipboard'}
-                    >
-                      {copied ? (
-                        <Check className="h-3.5 w-3.5" />
-                      ) : (
-                        <Copy className="h-3.5 w-3.5" />
-                      )}
-                    </button>
-                    <p className="text-xs text-muted-foreground">
-                      {new Date(message.timestamp).toLocaleTimeString()}
-                    </p>
-                  </div>
-                ) : (
-                  <p className="text-xs mt-1.5 text-muted-foreground">
-                    {new Date(message.timestamp).toLocaleTimeString()}
-                  </p>
-                )}
+                  renderSplitAssistantContent(message.content, parsedAssistantPlan)
+                )
+              ) : (
+                renderStandardAssistantContent()
+              )
+            ) : (
+              <>
+                <div className={proseClasses}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                    {normalizeMarkdownTables(message.content)}
+                  </ReactMarkdown>
+                </div>
+                <p className="text-xs mt-1.5 text-muted-foreground">
+                  {new Date(message.timestamp).toLocaleTimeString()}
+                </p>
               </>
-            )}
-            {/* Continue button inside assistant bubble */}
-            {isAssistant && showContinueButton && onContinue && (
-              <Button
-                size="sm"
-                onClick={onContinue}
-                disabled={isLoading}
-                className="mt-3 gap-1.5"
-              >
-                <Play className="h-3 w-3" />
-                {continueLabel || 'Continue'}
-              </Button>
             )}
           </>
         )}
-      </div>
-    </motion.div>
+        </div>
+      </motion.div>
+      <Dialog
+        open={Boolean(imagePreview)}
+        onOpenChange={(open) => {
+          if (!open) setImagePreview(null);
+        }}
+      >
+        <DialogContent className="max-h-[88vh] max-w-[min(92vw,1100px)] gap-0 overflow-hidden p-0">
+          <DialogHeader className="border-b border-border px-4 py-3 pr-12">
+            <DialogTitle className="truncate text-base">Image preview</DialogTitle>
+            <DialogDescription className="truncate">
+              {currentPreviewImage?.label || currentPreviewImage?.url || 'Image'}
+              {imagePreview && imagePreview.images.length > 1
+                ? ` (${imagePreview.index + 1} of ${imagePreview.images.length})`
+                : ''}
+            </DialogDescription>
+          </DialogHeader>
+          <div
+            className={cn(
+              'relative flex h-[calc(88vh-13rem)] min-h-[280px] select-none items-center justify-center overflow-hidden bg-black/70 p-3',
+              imageZoom > 1 ? 'cursor-grab active:cursor-grabbing' : 'cursor-zoom-in'
+            )}
+            onWheel={handleImageWheel}
+            onPointerDown={handleImagePointerDown}
+            onPointerMove={handleImagePointerMove}
+            onPointerUp={handleImagePointerEnd}
+            onPointerCancel={handleImagePointerEnd}
+            onDoubleClick={() => {
+              if (imageZoom > 1) {
+                resetImageViewport();
+              } else {
+                setImageZoom(2);
+              }
+            }}
+          >
+            {imagePreview && imagePreview.images.length > 1 ? (
+              <>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="absolute left-3 top-1/2 z-10 h-9 w-9 -translate-y-1/2 rounded-full bg-background/85 px-0 backdrop-blur"
+                  title="Previous image"
+                  aria-label="Previous image"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    showPreviousImagePreview();
+                  }}
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="absolute right-3 top-1/2 z-10 h-9 w-9 -translate-y-1/2 rounded-full bg-background/85 px-0 backdrop-blur"
+                  title="Next image"
+                  aria-label="Next image"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    showNextImagePreview();
+                  }}
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+              </>
+            ) : null}
+            {currentPreviewImage ? (
+              <img
+                src={currentPreviewImage.url}
+                alt={currentPreviewImage.label}
+                draggable={false}
+                className="max-h-full max-w-full rounded-md object-contain shadow-2xl"
+                referrerPolicy="no-referrer"
+                style={{
+                  transform: `translate3d(${imagePan.x}px, ${imagePan.y}px, 0) scale(${imageZoom})`,
+                  transformOrigin: 'center',
+                }}
+              />
+            ) : null}
+          </div>
+          {imagePreview && imagePreview.images.length > 1 ? (
+            <div className="flex gap-1.5 overflow-x-auto border-t border-border bg-background px-4 py-2">
+              {imagePreview.images.map((image, index) => (
+                <button
+                  key={image.url}
+                  type="button"
+                  className={cn(
+                    'relative h-10 w-10 shrink-0 overflow-hidden rounded border bg-muted',
+                    index === imagePreview.index ? 'border-primary ring-1 ring-primary/40' : 'border-border hover:border-primary/60'
+                  )}
+                  title={image.label}
+                  aria-label={`Show image ${index + 1}: ${image.label}`}
+                  onClick={() => showImagePreviewIndex(index)}
+                >
+                  <span className="absolute inset-0 flex items-center justify-center text-muted-foreground">
+                    <Image className="h-3.5 w-3.5" />
+                  </span>
+                  <img
+                    src={image.url}
+                    alt=""
+                    className="absolute inset-0 h-full w-full object-cover"
+                    loading="lazy"
+                    referrerPolicy="no-referrer"
+                    onError={(event) => {
+                      event.currentTarget.style.display = 'none';
+                    }}
+                  />
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <DialogFooter className="items-center justify-between gap-2 border-t border-border bg-background px-4 pb-5 pt-3 sm:justify-between sm:space-x-0">
+            <div className="flex items-center gap-1">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 w-8 px-0"
+                title="Zoom out"
+                aria-label="Zoom out"
+                onClick={() => zoomImageBy(-0.25)}
+                disabled={imageZoom <= 0.5}
+              >
+                <ZoomOut className="h-4 w-4" />
+              </Button>
+              <span className="min-w-12 text-center text-xs tabular-nums text-muted-foreground">
+                {Math.round(imageZoom * 100)}%
+              </span>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 w-8 px-0"
+                title="Zoom in"
+                aria-label="Zoom in"
+                onClick={() => zoomImageBy(0.25)}
+                disabled={imageZoom >= 6}
+              >
+                <ZoomIn className="h-4 w-4" />
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 w-8 px-0"
+                title="Reset view"
+                aria-label="Reset view"
+                onClick={resetImageViewport}
+                disabled={imageZoom === 1 && imagePan.x === 0 && imagePan.y === 0}
+              >
+                <RotateCcw className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  if (currentPreviewImage?.url && isHttpUrl(currentPreviewImage.url)) {
+                    void getAccomplish().openExternal(currentPreviewImage.url);
+                  }
+                }}
+                disabled={!currentPreviewImage?.url || !isHttpUrl(currentPreviewImage.url)}
+              >
+                Open externally
+              </Button>
+              <Button type="button" onClick={() => setImagePreview(null)}>
+                Close
+              </Button>
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
-}, (prev, next) => prev.message.id === next.message.id && prev.shouldStream === next.shouldStream && prev.isLastMessage === next.isLastMessage && prev.isRunning === next.isRunning && prev.showContinueButton === next.showContinueButton && prev.isLoading === next.isLoading && prev.debugMode === next.debugMode);
+}, (prev, next) => (
+  prev.message.id === next.message.id
+  && prev.shouldStream === next.shouldStream
+  && prev.isLastMessage === next.isLastMessage
+  && prev.isRunning === next.isRunning
+  && prev.showContinueButton === next.showContinueButton
+  && prev.isLoading === next.isLoading
+  && prev.debugMode === next.debugMode
+  && prev.onSaveAnswerAsProjectNote === next.onSaveAnswerAsProjectNote
+  && prev.onSaveAnswerAsRtf === next.onSaveAnswerAsRtf
+));

@@ -11,6 +11,10 @@ import { getModelEntry } from './model-registry';
 import { buildUserSkillsPromptBundle, ensureUserSkillsWatcher } from '../user-skills';
 import { computeCompactionThresholds } from './compaction-thresholds';
 import { detectTaskNeedsBrowser } from '../task-intent';
+import {
+  sanitizeHistoricalImagesFromSessionLines,
+  shouldStripHistoricalImagesForMiniMax,
+} from './image-history-policy';
 
 export type PrepareResult = ContextWindowPrepareResult;
 
@@ -111,7 +115,13 @@ export async function preparePayloadForSend(params: {
   const skillsPrompt = skillsBundle.prompt;
   const baseAppend = (params.baseSystemPromptAppend || '').trim();
 
-  const historyLines = params.sessionFilePath ? readSessionLines(params.sessionFilePath) : [];
+  const rawHistoryLines = params.sessionFilePath ? readSessionLines(params.sessionFilePath) : [];
+  const historyLines = shouldStripHistoricalImagesForMiniMax({
+    selectedModel,
+    userMessage: params.userMessage,
+  })
+    ? sanitizeHistoricalImagesFromSessionLines(rawHistoryLines)
+    : rawHistoryLines;
   let includedLines = [...historyLines];
   const dropped: Array<{ role: string; content: string; pinned?: boolean }> = [];
   let droppedMessages = 0;

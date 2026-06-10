@@ -52,7 +52,7 @@ function decideAgenticLoopStatus(taskId: string): AgenticLoopStatus {
   if (signal.lastStepFinishReason === 'stop' || signal.lastStepFinishReason === 'error') {
     return 'complete';
   }
-  if (signal.lastStepFinishReason === 'tool_use') {
+  if (signal.lastStepFinishReason === 'tool_use' || signal.lastStepFinishReason === 'tool-calls') {
     return 'continue';
   }
   if (signal.lastStepFinishReason === 'end_turn') {

@@ -14,6 +14,7 @@ import {
   updateTaskStatus,
   updateTaskMemoryFlush,
   updateTaskSessionFilePath,
+  markTaskMiniMaxHistoricalImageSessionReset,
 } from '../store/taskHistory';
 import { getDebugMode } from '../store/appSettings';
 import {
@@ -24,6 +25,7 @@ import { recordPermissionPolicyAuditEntry } from '../permissions/policy-store';
 import { composeAgentSystemPromptAppend, getAgentContext } from '../services/agent-context';
 import { buildMemoryFlushPrompt, initSessionLog } from '../services/memory';
 import { preparePayloadForSend } from '../services/context/prepare-payload';
+import { isMiniMaxHistoricalImageSessionResetReason } from '../services/context/image-history-policy';
 import { appendSessionLogMessage } from '../services/context/session-log';
 import { clearTaskFilePermissionPolicy } from '../permission-api';
 import { detectTaskNeedsBrowser, getRuntimeSpeedMode } from '../services/task-intent';
@@ -201,7 +203,14 @@ export async function dispatchTask(
   const requestSystemPromptAppend = joinPromptParts(config.systemPromptAppend, hookResult.systemPromptAppend);
   const sessionFilePath = initSessionLog(agentContext.agentId, taskId);
   const previousTask = getLatestTask(agentContext.agentId);
-  maybeReuseWarmSession({ config, taskId, previousTask, gatewaySessionKey });
+  maybeReuseWarmSession({
+    config,
+    taskId,
+    previousTask,
+    gatewaySessionKey,
+    agentId: agentContext.agentId,
+    prompt: effectivePrompt,
+  });
   schedulePreviousSessionMemorySnapshot({
     previousTask,
     nextTaskId: taskId,
@@ -267,6 +276,7 @@ export async function dispatchTask(
     activeTurnByTaskId,
     turnId,
     prepared,
+    usageProjectId: validatedConfig.usageProjectId,
   });
 
   // Ensure chronological order in the session snapshot (user prompt before assistant).
@@ -292,6 +302,7 @@ export async function dispatchTask(
     addTaskMessage: (nextTaskId, message) => addTaskMessage(nextTaskId, message),
     notifyTaskUpdate: (payload) => forwardToAllRenderers('task:update', payload),
     notifyTaskProgress: (payload) => forwardToAllRenderers('task:progress', payload),
+    notifyTaskActivity: (payload) => forwardToAllRenderers('task:activity', payload),
     notifyPermissionRequest: (request) => forwardToAllRenderers('permission:request', request),
     notifyDebugLog: (payload) => forwardToAllRenderers('debug:log', payload),
     notifyStatusChange: (payload) => forwardToAllRenderers('task:status-change', payload),
@@ -443,6 +454,7 @@ export async function resumeTaskSession(
     activeTurnByTaskId,
     turnId,
     prepared,
+    usageProjectId: validatedConfig.usageProjectId,
   });
 
   finalizeResumeMemoryFlush({
@@ -474,6 +486,7 @@ export async function resumeTaskSession(
     addTaskMessage: (nextTaskId, message) => addTaskMessage(nextTaskId, message),
     notifyTaskUpdate: (payload) => forwardToAllRenderers('task:update', payload),
     notifyTaskProgress: (payload) => forwardToAllRenderers('task:progress', payload),
+    notifyTaskActivity: (payload) => forwardToAllRenderers('task:activity', payload),
     notifyPermissionRequest: (request) => forwardToAllRenderers('permission:request', request),
     notifyDebugLog: (payload) => forwardToAllRenderers('debug:log', payload),
     notifyStatusChange: (payload) => forwardToAllRenderers('task:status-change', payload),
@@ -531,7 +544,11 @@ export async function resumeTaskSession(
     generateSummary: generateTaskSummary,
   });
   if (sessionResetReason) {
-    emitSystemTaskMessage(taskId, sessionResetReason);
+    if (isMiniMaxHistoricalImageSessionResetReason(sessionResetReason)) {
+      markTaskMiniMaxHistoricalImageSessionReset(taskId, new Date().toISOString());
+    } else {
+      emitSystemTaskMessage(taskId, sessionResetReason);
+    }
   }
 
   const completionWithLoop = wrapTaskCompletionWithLoop({

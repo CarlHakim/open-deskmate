@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Open Deskmate | Open-source desktop AI companion</title>
-  <meta name="description" content="Open Deskmate is an open-source desktop AI companion for practical everyday productivity, combining chat, build workflows, settings-driven control, and local-first operation.">
+  <title>Open Deskmate | Open-source AI work operating system</title>
+  <meta name="description" content="Open Deskmate is an open-source desktop AI work operating system that combines chat, build workflows, project budgets, workboards, Git review, screenshots, notes, and local-first control.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
@@ -66,6 +66,7 @@
           <nav class="site-nav" aria-label="Primary">
             <a href="#what-it-does">What it does</a>
             <a href="#why-different">Why it's different</a>
+            <a href="#work-os">Work OS</a>
             <a href="#features">Features</a>
             <a href="#screenshots">Screenshots</a>
             <a href="#faq">FAQ</a>
@@ -87,9 +88,9 @@
       <section class="hero section">
         <div class="container hero-grid">
           <div class="hero-copy">
-            <div class="eyebrow">Open-source desktop AI companion for Windows</div>
-            <h1>Desktop AI for practical work, with setup you can actually manage.</h1>
-            <p class="hero-lead">Open Deskmate is an open-source desktop AI companion designed for founders, consultants, solo professionals, knowledge workers, and early contributors who want real workflows, local control, and a simple UI instead of a CLI-heavy stack.</p>
+            <div class="eyebrow">Open-source AI work operating system for Windows</div>
+            <h1>Run AI work from prompt to deliverable, not just prompt to answer.</h1>
+            <p class="hero-lead">Open Deskmate brings OpenClaw-style capabilities, chat, build automation, multi-agent workflows, connector routing, project budgets, Workboard tracking, Git review, screenshots, notes, documents, and reusable workflows into one local-first desktop app that runs with your own provider keys for people doing real client, product, and project work.</p>
             <div class="hero-actions">
               <a class="button button-primary" href="https://github.com/CarlHakim/open-deskmate" target="_blank" rel="noreferrer">View on GitHub</a>
               <a class="button button-accent" href="https://github.com/CarlHakim/open-deskmate/releases/latest" target="_blank" rel="noreferrer">Download for Windows</a>
@@ -98,15 +99,16 @@
             <div class="hero-meta" aria-label="Audience and positioning">
               <span>Local-first</span>
               <span>Open source</span>
-              <span>Chat + Build workflows</span>
-              <span>Configurable from the UI</span>
+              <span>Chat + Build + Git</span>
+              <span>Project budgets</span>
+              <span>Workboard + notes</span>
             </div>
           </div>
 
           <div class="hero-visual card glass-card">
             <div class="hero-visual-header">
               <span class="pulse pulse-ready"></span>
-              <strong>Designed for practical productivity</strong>
+              <strong>Designed for accountable AI work</strong>
             </div>
             <div class="hero-workspace">
               <div class="hero-window">
@@ -125,24 +127,24 @@
                     <div class="hero-sidebar-stack">
                       <span class="hero-sidebar-pill active">Chat Mode</span>
                       <span class="hero-sidebar-pill">Build Mode</span>
-                      <span class="hero-sidebar-pill">Subagents</span>
-                      <span class="hero-sidebar-pill">Settings</span>
+                      <span class="hero-sidebar-pill">Projects</span>
+                      <span class="hero-sidebar-pill">Changes & Git</span>
                     </div>
                   </aside>
                   <div class="hero-main">
                     <div class="hero-main-card hero-main-card-primary">
-                      <span class="panel-label">Chat + Build</span>
-                      <h2>One app for quick prompts and longer-running project work.</h2>
-                      <p>Move between direct chat, workspace-aware build flows, tracked subagents, and settings-driven control without changing tools.</p>
+                      <span class="panel-label">Prompt to project</span>
+                      <h2>One app for the work around the agent.</h2>
+                      <p>Move from chat to build work, then track budgets, files, Git changes, notes, screenshots, documents, and follow-up tasks without changing tools.</p>
                     </div>
                     <div class="hero-main-grid">
                       <article class="hero-panel">
-                        <span class="panel-label">Everyday control</span>
-                        <p>Models, permissions, connectors, plugins, schedules, and pricing are configured in the UI.</p>
+                        <span class="panel-label">Cost visibility</span>
+                        <p>Track input hit, input miss, output tokens, and estimated spend by project.</p>
                       </article>
                       <article class="hero-panel">
-                        <span class="panel-label">Built for real files</span>
-                        <p>Use local workspaces, inspect diffs, review logs, and keep tasks grounded in the project you are actually working on.</p>
+                        <span class="panel-label">Built for delivery</span>
+                        <p>Review files, capture previews, save answers, manage work items, and push updates with guided Git flows.</p>
                       </article>
                     </div>
                   </div>
@@ -153,11 +155,11 @@
                 <img src="./chat-mode.png" alt="Chat Mode preview">
               </div>
               <div class="hero-float hero-float-subagents">
-                <div class="hero-float-label">Tracked subagents</div>
+                <div class="hero-float-label">Project tracking</div>
                 <div class="hero-float-metrics">
-                  <span>2 active</span>
-                  <span>1 session</span>
-                  <span>Visible in UI</span>
+                  <span>Budget</span>
+                  <span>Workboard</span>
+                  <span>Git review</span>
                 </div>
               </div>
             </div>
@@ -169,16 +171,24 @@
         <div class="container">
           <div class="trust-band card">
             <div class="trust-copy">
-              <div class="eyebrow">Local-first trust</div>
-              <h2>Built to keep day-to-day AI work understandable.</h2>
-              <p>Open Deskmate is designed to keep the assistant surface, the configuration surface, and the runtime surface in one place so local work does not become opaque or hard to control.</p>
+              <div class="eyebrow">From agent harness to work system</div>
+              <h2>Built to make AI work visible, reusable, and billable.</h2>
+              <p>Most agent tools focus on running the model. Open Deskmate focuses on the whole working loop around the model: project context, cost tracking, file changes, Git status, screenshots, notes, documents, and follow-up work.</p>
+              <p>It offers OpenClaw-style capabilities including multi-agent workflows, connector routing, automation loops, tool-driven execution, and tracked subagent orchestration, but with a full desktop settings UI instead of CLI-only setup. Run locally with your own provider keys, configure models, permissions, connectors, plugins, and automation from the app, and install directly on Windows with an installer or portable executable without depending on a hosted Open Deskmate cloud service.</p>
             </div>
             <div class="trust-points" aria-label="Trust points">
               <span>Open source (MIT)</span>
               <span>Runs from your desktop</span>
               <span>Bring your own providers</span>
-              <span>Permissions in the UI</span>
-              <span>Visible subagent activity</span>
+              <span>Multi-agent workflows</span>
+              <span>Connector routing</span>
+              <span>Automation loops</span>
+              <span>Tool-driven execution</span>
+              <span>Tracked subagents</span>
+              <span>No app cloud required</span>
+              <span>Per-project costs</span>
+              <span>Beginner-friendly Git</span>
+              <span>Project workboard</span>
             </div>
           </div>
         </div>
@@ -231,21 +241,21 @@
         <div class="container">
           <div class="section-heading">
             <div class="eyebrow">What it does</div>
-            <h2>An AI assistant that feels like a desktop tool, not a demo.</h2>
-            <p>Open Deskmate is built to bring AI into practical daily work. It combines conversational help, workspace-aware build flows, configurable agent behavior, and local-first operation in a single interface that stays understandable as your setup grows.</p>
+            <h2>An AI workspace for doing the work, tracking the work, and handing it off.</h2>
+            <p>Open Deskmate is built for practical AI work that has a project, a cost, files, decisions, notes, screenshots, and follow-up tasks. It combines conversational help, workspace-aware build flows, project management, Git review, and local-first operation in one interface.</p>
           </div>
           <div class="explain-grid">
             <article class="card explain-card">
-              <h3>Works on your machine</h3>
-              <p>Use your own provider keys, work with local files, and keep everyday operation close to your desktop instead of routing everything through a hosted product.</p>
+              <h3>Run AI against real work</h3>
+              <p>Use Chat Mode for research and task conversations, then switch to Build Mode when the job needs a workspace, runtime preview, terminal, logs, file tree, and Git review.</p>
             </article>
             <article class="card explain-card">
-              <h3>Fits real workflows</h3>
-              <p>Use Chat Mode for direct prompts or Build Mode when a task needs history, files, diff review, runtime logs, terminals, and longer-running execution.</p>
+              <h3>Track cost by project</h3>
+              <p>Attach Chat projects, tasks, Build presets, and sessions to a budget project so input hit, input miss, output tokens, and estimated costs stay visible.</p>
             </article>
             <article class="card explain-card">
-              <h3>Keeps you in control</h3>
-              <p>Configure agents, permissions, connectors, subagents, plugins, and automation from a simple UI designed to make advanced setups usable.</p>
+              <h3>Turn answers into assets</h3>
+              <p>Save answers as rich notes or RTF files, attach documents to work items, capture annotated runtime screenshots, and keep useful output tied to the project.</p>
             </article>
           </div>
         </div>
@@ -439,35 +449,77 @@
         <div class="container">
           <div class="section-heading narrow">
             <div class="eyebrow">Why it's different</div>
-            <h2>More usable than a CLI-heavy agent stack.</h2>
-            <p>Open Deskmate keeps the power of local agent workflows, but brings setup, oversight, and daily operation into a desktop interface that is easier to adopt and easier to keep under control.</p>
+            <h2>More than a model runner or agent harness.</h2>
+            <p>Open Deskmate keeps the power of local agent workflows, but adds the project, cost, review, and handoff layers that make AI work easier to trust, repeat, and use for real delivery.</p>
           </div>
           <div class="difference-grid">
             <article class="card difference-card">
-              <h3>UI-first setup</h3>
-              <p>Configure providers, permissions, connectors, plugins, schedules, and pricing from the app instead of relying on scattered configuration and hidden runtime state.</p>
+              <h3>Manages the work around the agent</h3>
+              <p>Most tools stop at the answer or file edit. Open Deskmate keeps project budgets, work items, notes, documents, screenshots, Git state, and exports connected to the task.</p>
             </article>
             <article class="card difference-card">
-              <h3>Acts across real workspaces</h3>
-              <p>Move beyond a single chat window with Build Mode, task history, diffs, runtime logs, embedded terminals, and project-aware execution.</p>
+              <h3>Built for client and project accountability</h3>
+              <p>Track usage by project, see input hit/miss/output costs, set budget windows, assign people, and understand which Chat projects or Build presets created the spend.</p>
             </article>
             <article class="card difference-card">
-              <h3>Visible delegated work</h3>
-              <p>Tracked subagents are surfaced as a first-class part of the app so child-agent execution can be monitored, revisited, and managed instead of staying hidden.</p>
+              <h3>Beginner-friendly Git review</h3>
+              <p>Changes & Git explains repository state, changed files, branch sync, remotes, commit, push, and mismatch recovery in a workflow built for people who do not live in Git all day.</p>
             </article>
             <article class="card difference-card">
-              <h3>Local-first by design</h3>
-              <p>Built for people who want practical desktop AI workflows without turning normal operation into a hosted service dependency or a developer-only setup process.</p>
+              <h3>Local-first with visible controls</h3>
+              <p>Use your own providers, local workspaces, UI-managed permissions, saved prompts, schedules, connectors, plugins, and Help docs without turning normal operation into hidden config.</p>
             </article>
           </div>
         </div>
       </section>
 
-      <section id="features" class="section section-tinted">
+      <section id="work-os" class="section section-tinted">
+        <div class="container">
+          <div class="section-heading">
+            <div class="eyebrow">AI work operating system</div>
+            <h2>The new pieces make Open Deskmate useful after the answer arrives.</h2>
+            <p>For freelancers, agencies, consultants, builders, and small teams, the hard part is not only getting an AI answer. It is keeping the cost, files, decisions, screenshots, notes, tasks, and client handoff organized.</p>
+          </div>
+          <div class="feature-grid">
+            <article class="card feature-card">
+              <div class="feature-kicker">Project costs</div>
+              <h3>Per-project budgets</h3>
+              <p>Create usage projects, attach Chat projects and Build presets, and track input hit, input miss, output tokens, estimated cost, budget windows, warning limits, and blocking limits.</p>
+            </article>
+            <article class="card feature-card">
+              <div class="feature-kicker">Work tracking</div>
+              <h3>Workboard built around AI output</h3>
+              <p>Turn work into Table, Kanban, Timeline, and Calendar views with states, checklists, assignees, due dates, rich notes, drawings, documents, and progress tracking.</p>
+            </article>
+            <article class="card feature-card">
+              <div class="feature-kicker">Git review</div>
+              <h3>Changes & Git for non-experts</h3>
+              <p>See edited files, total additions/deletions, branch status, remote/upstream state, commit and push guidance, remote setup, mismatch recovery, and conflict help.</p>
+            </article>
+            <article class="card feature-card">
+              <div class="feature-kicker">Visual feedback</div>
+              <h3>Runtime screenshots with annotation</h3>
+              <p>Capture a selected area or full runtime preview, mark it up with shapes, arrows, lines, text, colors, and thickness controls, then attach, export, or save it to project work.</p>
+            </article>
+            <article class="card feature-card">
+              <div class="feature-kicker">Knowledge capture</div>
+              <h3>Save answers where work happens</h3>
+              <p>Copy rich answers, pop them out for reading, save them as formatted project notes, export RTF files, and attach saved files to the right project work item.</p>
+            </article>
+            <article class="card feature-card">
+              <div class="feature-kicker">Repeatability</div>
+              <h3>Recipes, prompts, activity, and recovery</h3>
+              <p>Reuse prompt recipes, manage saved prompt categories, inspect activity timelines, separate reasoning from answers, and recover when an agent stops without a useful final answer.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="features" class="section">
         <div class="container">
           <div class="section-heading narrow">
             <div class="eyebrow">Key features</div>
-            <h2>Built for practical AI work, not just prompting.</h2>
+            <h2>Everything needed to move from idea to finished work.</h2>
           </div>
           <div class="feature-grid">
             <article class="card feature-card">
@@ -475,42 +527,42 @@
                 <svg viewBox="0 0 24 24"><path d="M5 6.5A2.5 2.5 0 0 1 7.5 4h9A2.5 2.5 0 0 1 19 6.5v6A2.5 2.5 0 0 1 16.5 15H11l-4 3v-3H7.5A2.5 2.5 0 0 1 5 12.5v-6Z"/></svg>
               </div>
               <h3>Chat Mode and Build Mode</h3>
-              <p>Switch from fast prompts to a full workspace surface with history, file tree, diff review, logs, and terminals.</p>
+              <p>Start with normal task conversations, then switch into a workspace-aware build surface with runtime preview, file tree, logs, terminals, screenshots, and task history.</p>
             </article>
             <article class="card feature-card">
               <div class="feature-icon feature-icon-subagents" aria-hidden="true">
                 <svg viewBox="0 0 24 24"><path d="M8 11a3 3 0 1 1 0-6 3 3 0 0 1 0 6Zm8 2a3 3 0 1 1 0-6 3 3 0 0 1 0 6ZM3.5 19c0-2.5 2.2-4 4.5-4s4.5 1.5 4.5 4v1h-9v-1Zm8 1c0-2.1 1.8-3.5 4.1-3.5 2.2 0 4.4 1.3 4.4 3.5v1h-8.5v-1Z"/></svg>
               </div>
-              <h3>Tracked subagents</h3>
-              <p>Run delegated child-agent work with visible status, session and run modes, and a dedicated global monitoring page.</p>
+              <h3>Project Management</h3>
+              <p>Create usage projects with client details, owners, assignees, notes, budget windows, analytics, work contents, and active project status.</p>
             </article>
             <article class="card feature-card">
               <div class="feature-icon feature-icon-settings" aria-hidden="true">
                 <svg viewBox="0 0 24 24"><path d="m19.4 13 .1-1-.1-1 2-1.6-2-3.4-2.4 1a8.5 8.5 0 0 0-1.7-1l-.4-2.6H9.1l-.4 2.6c-.6.2-1.2.6-1.7 1l-2.4-1-2 3.4L4.6 11a6.7 6.7 0 0 0 0 2l-2 1.6 2 3.4 2.4-1c.5.4 1.1.8 1.7 1l.4 2.6h5.8l.4-2.6c.6-.2 1.2-.6 1.7-1l2.4 1 2-3.4-2-1.6ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z"/></svg>
               </div>
-              <h3>UI-first configuration</h3>
-              <p>Configure models, permissions, connectors, schedules, pricing, and agent behavior from the app instead of scattered config files.</p>
+              <h3>Usage analytics and budgets</h3>
+              <p>Track spend over time, token mix, model usage, input hit/miss/output costs, and budget health by project instead of only globally.</p>
             </article>
             <article class="card feature-card">
               <div class="feature-icon feature-icon-connectors" aria-hidden="true">
                 <svg viewBox="0 0 24 24"><path d="M7 7h4V3h2v4h4v2h-4v6h4v2h-4v4h-2v-4H7v-2h4V9H7V7Zm-2 4a3 3 0 1 1 0 6 3 3 0 0 1 0-6Zm14-4a3 3 0 1 1 0 6 3 3 0 0 1 0-6Z"/></svg>
               </div>
-              <h3>Connector-ready workflows</h3>
-              <p>Built to route messaging and app connectors into the right agent/account binding when automation needs to touch outside systems.</p>
+              <h3>Build review and Git</h3>
+              <p>Review edited files, run checks, inspect Git status, commit with a message, push, create branches, add remotes, and resolve mismatch states from the UI.</p>
             </article>
             <article class="card feature-card">
               <div class="feature-icon feature-icon-plugins" aria-hidden="true">
                 <svg viewBox="0 0 24 24"><path d="M11 2h2v4h3a2 2 0 0 1 2 2v3h4v2h-4v3a2 2 0 0 1-2 2h-3v4h-2v-4H8a2 2 0 0 1-2-2v-3H2v-2h4V8a2 2 0 0 1 2-2h3V2Zm-3 6v8h8V8H8Z"/></svg>
               </div>
-              <h3>Skills, plugins, and help</h3>
-              <p>Extend the app with managed plugins, user skills, slash commands, and a markdown-driven help system.</p>
+              <h3>Reusable workflows</h3>
+              <p>Use saved prompts, bundled recipes, categorized prompt libraries, natural-language automation drafting, schedules, plugins, skills, and markdown Help docs.</p>
             </article>
             <article class="card feature-card">
               <div class="feature-icon feature-icon-productivity" aria-hidden="true">
                 <svg viewBox="0 0 24 24"><path d="M12 2 4 6v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V6l-8-4Zm-1 14-3-3 1.4-1.4 1.6 1.6 4.6-4.6L17 10l-6 6Z"/></svg>
               </div>
-              <h3>Local-first everyday productivity</h3>
-              <p>Designed to support practical desktop work for founders, consultants, solo professionals, and early technical teams.</p>
+              <h3>Local-first control</h3>
+              <p>Bring your own providers, manage models and permissions from Settings, work against local folders, and keep day-to-day AI work visible from the desktop.</p>
             </article>
           </div>
         </div>
@@ -520,24 +572,24 @@
         <div class="container">
           <div class="section-heading narrow">
             <div class="eyebrow">How it works</div>
-            <h2>Simple flow, advanced control.</h2>
-            <p>The product is designed to stay approachable even when you need more than basic prompting.</p>
+            <h2>A simple loop for accountable AI work.</h2>
+            <p>The product is designed around the whole job: start the task, do the work, review what changed, then save the useful output back into the project.</p>
           </div>
           <div class="workflow-grid">
             <article class="card workflow-card">
               <div class="workflow-step">Step 1</div>
-              <h3>Install or clone the project</h3>
-              <p>Start from the GitHub repository, install dependencies, and run the desktop app locally on Windows.</p>
+              <h3>Choose the task and project</h3>
+              <p>Start in Chat Mode or Build Mode, choose the agent and model, and attach the work to a project budget when cost or client tracking matters.</p>
             </article>
             <article class="card workflow-card">
               <div class="workflow-step">Step 2</div>
-              <h3>Configure the app in the UI</h3>
-              <p>Add provider keys, choose agent defaults, adjust permissions, and connect the tools or connectors you want to use.</p>
+              <h3>Run, inspect, and guide the agent</h3>
+              <p>Watch activity, review tool use, capture screenshots, inspect logs, use saved prompts, and keep the task grounded in the selected files or workspace.</p>
             </article>
             <article class="card workflow-card">
               <div class="workflow-step">Step 3</div>
-              <h3>Work in Chat, Build, or Subagents</h3>
-              <p>Use the surface that fits the task: quick prompts, workspace execution, or delegated child-agent work with visible tracking.</p>
+              <h3>Review, save, and hand off</h3>
+              <p>Use Changes & Git for files, save answers as notes or RTF files, attach documents to work items, and track follow-up work on the Workboard.</p>
             </article>
           </div>
         </div>
@@ -555,28 +607,28 @@
               <img src="./chat-mode.png" alt="Open Deskmate Chat Mode screenshot">
               <figcaption>
                 <strong>Chat Mode</strong>
-                <span>Fast prompting, follow-ups, slash commands, saved prompts, and file-aware task entry.</span>
+                <span>Task conversations with saved prompts, project budget selection, image previews, answer export, and project-work capture.</span>
               </figcaption>
             </figure>
             <figure class="card screenshot-card">
               <img src="./build-mode.png" alt="Open Deskmate Build Mode screenshot">
               <figcaption>
                 <strong>Build Mode</strong>
-                <span>Workspace-aware execution with diffs, logs, terminals, and project context.</span>
+                <span>Workspace-aware execution with runtime preview, screenshots, file tree, logs, terminals, Changes & Git, and project context.</span>
               </figcaption>
             </figure>
             <figure class="card screenshot-card">
               <img src="./settings.png" alt="Open Deskmate Settings screenshot">
               <figcaption>
                 <strong>Settings</strong>
-                <span>Simple UI for models, permissions, connectors, plugins, voice, and pricing.</span>
+                <span>Simple UI for models, permissions, agents, connectors, plugins, voice, pricing, automations, and Help docs.</span>
               </figcaption>
             </figure>
             <figure class="card screenshot-card screenshot-card-wide">
               <img src="./subagents.png" alt="Open Deskmate Subagents screenshot">
               <figcaption>
                 <strong>Subagents</strong>
-                <span>A global control surface for tracked child-agent runs across the app.</span>
+                <span>A global control surface for tracked child-agent runs, visible activity, reusable sessions, and delegated work.</span>
               </figcaption>
             </figure>
           </div>
@@ -587,33 +639,33 @@
         <div class="container">
           <div class="section-heading">
             <div class="eyebrow">Use cases</div>
-            <h2>Built for practical day-to-day work.</h2>
-            <p>Open Deskmate is designed to support everyday productivity for people who need help turning intent into actual work across files, tasks, and structured workflows.</p>
+            <h2>Built for people who need AI work to become organized project work.</h2>
+            <p>Open Deskmate is strongest when AI work has a client, budget, repository, task list, due date, screenshot, note, or deliverable attached to it.</p>
           </div>
           <div class="use-case-grid">
             <article class="card use-case-card">
-              <h3>Founders</h3>
-              <p>Draft briefs, clean up notes, organize project folders, and keep operational tasks moving without context-switching across tools.</p>
+              <h3>Freelancers and agencies</h3>
+              <p>Track client AI costs, save outputs to project work items, manage deliverables, and keep notes, files, screenshots, and Git updates tied to the right budget.</p>
             </article>
             <article class="card use-case-card">
               <h3>Consultants</h3>
-              <p>Prepare deliverables, summarize documents, structure client workspaces, and run more repeatable workflows from one desktop surface.</p>
+              <p>Prepare reports, research, client notes, RTF exports, reusable prompt recipes, and project-specific usage summaries from one desktop surface.</p>
             </article>
             <article class="card use-case-card">
-              <h3>Solo professionals</h3>
-              <p>Use one assistant for writing, planning, file management, and longer-running task execution without needing a complex team setup.</p>
+              <h3>Solo builders</h3>
+              <p>Use Build Mode for real repositories, preview screenshots, beginner-friendly Git actions, runtime logs, terminals, and AI-generated code changes.</p>
             </article>
             <article class="card use-case-card">
               <h3>Knowledge workers</h3>
-              <p>Turn notes, drafts, reports, folders, and follow-up actions into more manageable workflows with a local-first AI companion.</p>
-            </article>
-            <article class="card use-case-card">
-              <h3>Early contributors</h3>
-              <p>Explore the codebase, test workflows, and help shape a UI-driven open-source desktop agent product while it is still evolving.</p>
+              <p>Turn research, notes, drafts, images, documents, and follow-up actions into saved project knowledge instead of leaving them buried in chat history.</p>
             </article>
             <article class="card use-case-card">
               <h3>Small technical teams</h3>
-              <p>Use Build Mode and tracked subagents to support implementation, review diffs, and keep longer-running work grounded in the workspace.</p>
+              <p>Assign people to budgets, track Chat projects and Build presets, review work item progress, and understand project usage across sessions and tasks.</p>
+            </article>
+            <article class="card use-case-card">
+              <h3>Open-source contributors</h3>
+              <p>Explore the codebase, test workflows, improve Help docs, and shape a desktop AI tool focused on practical work rather than hidden agent plumbing.</p>
             </article>
           </div>
         </div>
@@ -657,28 +709,28 @@ pnpm dev</code></pre>
           </div>
           <div class="faq-grid">
             <article class="card faq-card">
-              <h3>Is Open Deskmate open source?</h3>
-              <p>Yes. The project is open source and positioned as a contributor-friendly desktop AI companion built in public.</p>
+              <h3>What makes Open Deskmate different from other agent harnesses?</h3>
+              <p>It manages the work around the agent: project budgets, Workboard items, notes, documents, screenshots, Git review, saved prompts, activity timelines, and exports.</p>
+            </article>
+            <article class="card faq-card">
+              <h3>Who is it for?</h3>
+              <p>It is built for freelancers, agencies, consultants, solo builders, knowledge workers, and small teams who want AI work tied to real projects and deliverables.</p>
+            </article>
+            <article class="card faq-card">
+              <h3>Can it track AI costs by project?</h3>
+              <p>Yes. Project budgets can track input hit, input miss, output tokens, estimated costs, budget windows, warn-only limits, and optional blocking limits.</p>
+            </article>
+            <article class="card faq-card">
+              <h3>Does it help with Git?</h3>
+              <p>Yes. Changes & Git shows repository status, changed files, additions/deletions, branches, remotes, commit/push actions, and mismatch or conflict guidance.</p>
             </article>
             <article class="card faq-card">
               <h3>Does it run locally?</h3>
               <p>It is designed as a local-first desktop app. You configure your own providers and operate against local workspaces from the desktop UI.</p>
             </article>
             <article class="card faq-card">
-              <h3>Do I need to use a CLI to configure it?</h3>
-              <p>No. A core part of the product direction is making advanced setup manageable from a straightforward settings interface.</p>
-            </article>
-            <article class="card faq-card">
-              <h3>What makes it different from Openwork or OpenClaw?</h3>
-              <p>Open Deskmate focuses on ease of use, desktop operation, and keeping configuration, oversight, and execution visible in the UI.</p>
-            </article>
-            <article class="card faq-card">
-              <h3>What kinds of workflows is it built for?</h3>
-              <p>It is built for practical productivity: quick chat tasks, workspace-aware build flows, delegated subagent work, and configurable connector-backed workflows.</p>
-            </article>
-            <article class="card faq-card">
-              <h3>Can I contribute?</h3>
-              <p>Yes. Early contributors are welcome, and the repository includes a <code>CONTRIBUTING.md</code> file with the current contribution path.</p>
+              <h3>Is Open Deskmate open source?</h3>
+              <p>Yes. The project is open source and contributor-friendly, with the product direction focused on practical desktop AI work.</p>
             </article>
           </div>
         </div>
@@ -690,7 +742,7 @@ pnpm dev</code></pre>
             <div class="section-heading align-left compact">
               <div class="eyebrow">Open source</div>
               <h2>Built in public and open to contributors.</h2>
-              <p>Open Deskmate is an MIT-licensed project. Contributions are welcome, especially from early users who care about making desktop AI more usable, configurable, and grounded in practical work.</p>
+              <p>Open Deskmate is an MIT-licensed project. Contributions are welcome, especially from early users who care about making desktop AI more usable, project-aware, cost-aware, and grounded in practical work.</p>
             </div>
           </div>
           <div class="open-source-cards">
@@ -701,7 +753,7 @@ pnpm dev</code></pre>
             </article>
             <article class="card action-card">
               <h3>Follow development</h3>
-              <p>Explore the codebase, screenshots, and evolving desktop workflows directly in the repository.</p>
+              <p>Explore the codebase, screenshots, Help docs, project-management workflows, Git review surface, and evolving desktop AI work system directly in the repository.</p>
               <a href="https://github.com/CarlHakim/open-deskmate" target="_blank" rel="noreferrer">View repository</a>
             </article>
           </div>
@@ -713,8 +765,8 @@ pnpm dev</code></pre>
           <div class="final-cta card glass-card">
             <div>
               <div class="eyebrow">Get involved</div>
-              <h2>Explore the repo, try the desktop app, and help shape what comes next.</h2>
-              <p>Open Deskmate is early enough to be shaped by contributors and practical users, but already focused enough to show a clear product direction.</p>
+              <h2>Explore the repo, try the desktop app, and help shape the AI work operating system.</h2>
+              <p>Open Deskmate is early enough to be shaped by contributors and practical users, but already focused on a clear gap: managing real work before, during, and after the AI runs.</p>
             </div>
             <div class="final-cta-actions">
               <a class="button button-primary" href="https://github.com/CarlHakim/open-deskmate" target="_blank" rel="noreferrer">View on GitHub</a>
@@ -729,7 +781,7 @@ pnpm dev</code></pre>
           <div>
             <div class="eyebrow">Contact</div>
             <h2>Questions, collaborations, or early contribution interest?</h2>
-            <p>Reach out directly if you want to talk about the product, contributing, or how Open Deskmate is evolving as a practical desktop AI companion.</p>
+            <p>Reach out directly if you want to talk about the product, contributing, or how Open Deskmate is evolving into a practical desktop AI work operating system.</p>
           </div>
           <div class="contact-actions">
             <a class="button button-primary" href="mailto:opendeskmate@renewai.nl">opendeskmate@renewai.nl</a>
@@ -743,7 +795,7 @@ pnpm dev</code></pre>
       <div class="container footer-inner">
         <div class="footer-brand">
           <strong>Open Deskmate</strong>
-          <p>Open-source desktop AI companion for practical everyday productivity.</p>
+          <p>Open-source desktop AI work operating system for practical project delivery.</p>
           <div class="footer-legal">© <span id="footer-year">2026</span> RenewAI B.V. Open source under the MIT License.</div>
         </div>
         <div class="footer-links">

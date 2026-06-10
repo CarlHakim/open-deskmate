@@ -24,6 +24,9 @@ export interface BuildRuntimeCommands {
   startEntries?: BuildStartEntry[];
   buildCommand: string | null;
   runCommand: string | null;
+  testCommand?: string | null;
+  lintCommand?: string | null;
+  typecheckCommand?: string | null;
 }
 
 export interface BuildProjectDetection {
@@ -151,6 +154,310 @@ export interface BuildWorkspaceDiffFile {
   afterTruncated?: boolean;
 }
 
+export type BuildGitChangedFileStatus =
+  | 'added'
+  | 'modified'
+  | 'deleted'
+  | 'renamed'
+  | 'copied'
+  | 'untracked'
+  | 'conflicted'
+  | 'unknown';
+
+export interface BuildGitChangedFile {
+  relativePath: string;
+  status: BuildGitChangedFileStatus;
+  indexStatus: string;
+  workingTreeStatus: string;
+  staged: boolean;
+  unstaged: boolean;
+  untracked: boolean;
+  addedLines: number;
+  deletedLines: number;
+}
+
+export interface BuildGitToolStatus {
+  available: boolean;
+  version?: string;
+  authenticated?: boolean;
+  detail?: string;
+  error?: string;
+}
+
+export interface BuildGitBranch {
+  name: string;
+  current: boolean;
+  upstream?: string;
+  remote?: boolean;
+}
+
+export interface BuildGitMismatchCommit {
+  hash: string;
+  shortHash: string;
+  subject: string;
+  author?: string;
+  date?: string;
+}
+
+export type BuildGitInProgressOperation = 'none' | 'merge' | 'rebase';
+
+export interface BuildGitConflictHunk {
+  id: string;
+  startLine: number;
+  endLine: number;
+  localLabel: string;
+  remoteLabel: string;
+  localContent: string;
+  remoteContent: string;
+}
+
+export interface BuildGitConflictFile {
+  relativePath: string;
+  status: BuildGitChangedFileStatus;
+  hunks: BuildGitConflictHunk[];
+  contentPreview?: string;
+}
+
+export interface BuildGitStageInput {
+  paths: string[];
+}
+
+export interface BuildGitStashEntry {
+  ref: string;
+  hash?: string;
+  message: string;
+  date?: string;
+}
+
+export interface BuildGitRemoteRepositoryCreateInput {
+  provider: BuildGitRemoteProvider;
+  remoteName?: string;
+  repositoryName?: string;
+  visibility?: 'private' | 'public';
+}
+
+export interface BuildGitRemoteRepositoryCreateResult {
+  ok: boolean;
+  provider: BuildGitRemoteProvider;
+  message: string;
+  remoteUrl?: string;
+  manualSteps?: string[];
+  stdout?: string;
+  stderr?: string;
+  summary?: BuildGitSummary;
+}
+
+export interface BuildGitPullRequestCreateInput {
+  provider?: BuildGitRemoteProvider;
+  title: string;
+  body?: string;
+  baseBranch?: string;
+  headBranch?: string;
+  draft?: boolean;
+}
+
+export interface BuildGitPullRequestCreateResult {
+  ok: boolean;
+  provider: BuildGitRemoteProvider;
+  message: string;
+  url?: string;
+  manualSteps?: string[];
+  stdout?: string;
+  stderr?: string;
+}
+
+export interface BuildGitBackupBranch {
+  name: string;
+  shortCommit?: string;
+  subject?: string;
+  createdAt?: string;
+}
+
+export interface BuildGitReflogEntry {
+  hash: string;
+  shortHash: string;
+  selector?: string;
+  author?: string;
+  date?: string;
+  message: string;
+}
+
+export interface BuildGitMismatchSummary {
+  generatedAt: string;
+  workspaceRoot: string;
+  workspaceRelativePath: string;
+  available: boolean;
+  isRepository: boolean;
+  branch?: string;
+  upstream?: string;
+  ahead: number;
+  behind: number;
+  syncStatus: BuildGitSyncStatus;
+  syncDetail: string;
+  hasLocalChanges: boolean;
+  conflictedCount: number;
+  inProgressOperation: BuildGitInProgressOperation;
+  localCommits: BuildGitMismatchCommit[];
+  remoteCommits: BuildGitMismatchCommit[];
+  mergeBase?: string;
+  mergeBaseShort?: string;
+  conflictFiles: BuildGitConflictFile[];
+  backupBranches: BuildGitBackupBranch[];
+  reflog: BuildGitReflogEntry[];
+  backupBranchName?: string;
+  canMerge: boolean;
+  canRebase: boolean;
+  canResetToRemote: boolean;
+  canForcePush: boolean;
+  guidance: string[];
+  summary: BuildGitSummary;
+}
+
+export type BuildGitResolveMismatchAction =
+  | 'backup'
+  | 'merge'
+  | 'rebase'
+  | 'reset-to-remote'
+  | 'force-push'
+  | 'abort-merge'
+  | 'abort-rebase'
+  | 'continue-rebase';
+
+export interface BuildGitResolveMismatchInput {
+  action: BuildGitResolveMismatchAction;
+  createBackup?: boolean;
+  backupBranchName?: string;
+}
+
+export type BuildGitNextActionKind =
+  | 'none'
+  | 'install-git'
+  | 'init'
+  | 'review'
+  | 'commit'
+  | 'push'
+  | 'fetch'
+  | 'pull'
+  | 'set-upstream'
+  | 'add-remote';
+
+export interface BuildGitNextAction {
+  kind: BuildGitNextActionKind;
+  label: string;
+  detail: string;
+  disabled?: boolean;
+  warnings?: string[];
+}
+
+export type BuildGitSyncStatus =
+  | 'not-configured'
+  | 'up-to-date'
+  | 'ahead'
+  | 'behind'
+  | 'diverged'
+  | 'remote-changed'
+  | 'unknown';
+
+export type BuildGitAuthStatus =
+  | 'not-required'
+  | 'configured'
+  | 'unknown'
+  | 'missing'
+  | 'failed';
+
+export type BuildGitAuthMethod =
+  | 'ssh'
+  | 'credential-helper'
+  | 'github-cli'
+  | 'environment'
+  | 'none'
+  | 'unknown';
+
+export type BuildGitActionErrorKind =
+  | 'auth'
+  | 'remote'
+  | 'network'
+  | 'branch'
+  | 'unknown';
+
+export interface BuildGitSummary {
+  generatedAt: string;
+  workspaceRoot: string;
+  workspaceRelativePath: string;
+  available: boolean;
+  isRepository: boolean;
+  git: BuildGitToolStatus;
+  githubCli: BuildGitToolStatus;
+  branch?: string;
+  commit?: string;
+  shortCommit?: string;
+  remoteName?: string;
+  remoteUrl?: string;
+  remoteProvider?: BuildGitRemoteProvider;
+  repositoryHost?: string;
+  repositoryOwner?: string;
+  repositoryName?: string;
+  repositoryWebUrl?: string;
+  upstream?: string;
+  ahead: number;
+  behind: number;
+  syncStatus: BuildGitSyncStatus;
+  syncDetail: string;
+  authStatus: BuildGitAuthStatus;
+  authMethod?: BuildGitAuthMethod;
+  authDetail: string;
+  authSetupHints: string[];
+  branches: BuildGitBranch[];
+  conflictedCount: number;
+  dirty: boolean;
+  hasChanges: boolean;
+  changedFileCount: number;
+  stagedCount: number;
+  unstagedCount: number;
+  untrackedCount: number;
+  totalAddedLines: number;
+  totalDeletedLines: number;
+  files: BuildGitChangedFile[];
+  nextAction: BuildGitNextAction;
+}
+
+export interface BuildGitActionResult {
+  ok: boolean;
+  action:
+    | 'init'
+    | 'commit'
+    | 'push'
+    | 'add-remote'
+    | 'update-remote'
+    | 'fetch'
+    | 'pull'
+    | 'switch-branch'
+    | 'create-branch'
+    | 'discard'
+    | 'resolve-mismatch'
+    | 'stage-files'
+    | 'finish-merge'
+    | 'stash-create'
+    | 'stash-apply'
+    | 'stash-drop'
+    | 'checkout-remote'
+    | 'restore-backup';
+  message: string;
+  stdout?: string;
+  stderr?: string;
+  errorKind?: BuildGitActionErrorKind;
+  hints?: string[];
+  summary?: BuildGitSummary;
+}
+
+export type BuildGitRemoteProvider = 'github' | 'gitlab' | 'bitbucket' | 'custom';
+
+export interface BuildGitRemoteInput {
+  provider?: BuildGitRemoteProvider;
+  remoteName: string;
+  remoteUrl: string;
+}
+
 export interface BuildWorkspaceBaselineCaptureResult {
   baselineId: string;
   capturedAt: string;
@@ -200,11 +507,20 @@ export interface BuildProjectPreset {
   agentId: string;
   name: string;
   workspaceRelativePath: string;
+  usageProjectId?: string | null;
+  /**
+   * People assigned to this Build preset.
+   * null/undefined inherits from the assigned budget; [] explicitly means no assignees.
+   */
+  assigneeIds?: string[] | null;
   commands: {
     startCommand?: string;
     startEntries?: BuildStartEntry[];
     buildCommand?: string;
     runCommand?: string;
+    testCommand?: string;
+    lintCommand?: string;
+    typecheckCommand?: string;
   };
   envProfiles: BuildEnvProfile[];
   activeEnvProfileId?: string;
@@ -217,11 +533,16 @@ export interface BuildProjectPresetInput {
   agentId: string;
   name: string;
   workspaceRelativePath: string;
+  usageProjectId?: string | null;
+  assigneeIds?: string[] | null;
   commands?: {
     startCommand?: string;
     startEntries?: BuildStartEntry[];
     buildCommand?: string;
     runCommand?: string;
+    testCommand?: string;
+    lintCommand?: string;
+    typecheckCommand?: string;
   };
   envProfiles?: BuildEnvProfile[];
   activeEnvProfileId?: string;
@@ -230,6 +551,55 @@ export interface BuildProjectPresetInput {
 export interface BuildProjectPresetListResult {
   presets: BuildProjectPreset[];
   activePresetId?: string;
+}
+
+export type BuildQualityCheckKind =
+  | 'typecheck'
+  | 'lint'
+  | 'test'
+  | 'build'
+  | 'runtime-health'
+  | 'preview';
+
+export type BuildQualityCheckStatus = 'queued' | 'running' | 'success' | 'failed' | 'skipped';
+
+export interface BuildQualityCheckResult {
+  kind: BuildQualityCheckKind;
+  label: string;
+  status: BuildQualityCheckStatus;
+  command?: string;
+  exitCode?: number | null;
+  startedAt?: string;
+  completedAt?: string;
+  durationMs?: number;
+  summary: string;
+  output?: string;
+  artifactPath?: string;
+  artifactLabel?: string;
+}
+
+export interface BuildQualityCheckRun {
+  id: string;
+  agentId: string;
+  workspaceRoot: string;
+  workspaceRelativePath: string;
+  status: 'running' | 'success' | 'failed' | 'skipped';
+  checks: BuildQualityCheckResult[];
+  startedAt: string;
+  completedAt?: string;
+  diffSignature?: string;
+  changedFileCount?: number;
+  trigger?: 'manual' | 'suggested';
+}
+
+export interface BuildQualityCheckRunRequest {
+  agentId: string;
+  workspaceRelativePath?: string;
+  kinds?: BuildQualityCheckKind[];
+  commandOverrides?: Partial<Record<BuildQualityCheckKind, string>>;
+  diffSignature?: string;
+  changedFileCount?: number;
+  trigger?: 'manual' | 'suggested';
 }
 
 export type BuildTerminalEntryKind = 'output' | 'system' | 'example';

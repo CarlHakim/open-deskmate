@@ -71,7 +71,9 @@ function statusRank(status: BuildTaskSession['lifecycleStatus']): number {
 }
 
 function toListItem(session: BuildTaskSession): BuildTaskSessionListItem {
-  const tokenTotal = (session.runs || []).reduce((sum, run) => {
+  const runs = session.runs || [];
+  const latestRun = runs[runs.length - 1];
+  const tokenTotal = runs.reduce((sum, run) => {
     const usage = run.tokenUsage;
     if (!usage) return sum;
     if (typeof usage.totalTokens === 'number' && Number.isFinite(usage.totalTokens)) {
@@ -89,6 +91,11 @@ function toListItem(session: BuildTaskSession): BuildTaskSessionListItem {
     lifecycleStatus: session.lifecycleStatus,
     pinned: session.pinned === true,
     tokenTotal: tokenTotal > 0 ? tokenTotal : undefined,
+    workspaceRelativePath: session.execution.workspaceRelativePath,
+    selectedPresetId: session.execution.selectedPresetId ?? null,
+    usageProjectId: session.execution.usageProjectId ?? null,
+    runCount: runs.length,
+    latestRunStatus: latestRun?.status,
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
     lastActivityAt: session.lastActivityAt,
@@ -215,6 +222,7 @@ export function createBuildTaskSession(input: BuildTaskSessionCreateInput): Buil
       goalPrompt,
       workspaceRelativePath: normalizeText(input.workspaceRelativePath, '.') || '.',
       selectedPresetId: input.selectedPresetId ?? null,
+      usageProjectId: input.usageProjectId ?? null,
       runtimeLogs: [],
     },
     renamedByUser: false,
@@ -252,22 +260,32 @@ export function updateBuildTaskSession(input: BuildTaskSessionUpdateInput): Buil
 
   const now = new Date().toISOString();
   const settings = getSettings();
+  const incomingMessages = Array.isArray(input.messages)
+    ? input.messages.slice(-settings.maxMessagesPerSession)
+    : undefined;
+  const shouldPreserveExistingMessages = Boolean(
+    incomingMessages
+    && incomingMessages.length === 0
+    && (existing.messages?.length || 0) > 0
+  );
   const updated: BuildTaskSession = {
     ...existing,
     lifecycleStatus: input.lifecycleStatus ?? existing.lifecycleStatus,
     updatedAt: now,
     lastActivityAt: now,
-    messages: input.messages
-      ? input.messages.slice(-settings.maxMessagesPerSession)
+    messages: incomingMessages
+      ? (shouldPreserveExistingMessages ? existing.messages : incomingMessages)
       : existing.messages,
     execution: {
       ...existing.execution,
       goalPrompt: input.goalPrompt ?? existing.execution.goalPrompt,
       workspaceRelativePath: input.workspaceRelativePath ?? existing.execution.workspaceRelativePath,
       selectedPresetId: input.selectedPresetId !== undefined ? input.selectedPresetId : existing.execution.selectedPresetId,
+      usageProjectId: input.usageProjectId !== undefined ? input.usageProjectId : existing.execution.usageProjectId,
       latestSnapshot: input.latestSnapshot ?? existing.execution.latestSnapshot,
       latestDiff: input.latestDiff !== undefined ? input.latestDiff : existing.execution.latestDiff,
       latestFingerprint: input.latestFingerprint !== undefined ? input.latestFingerprint : existing.execution.latestFingerprint,
+      latestQualityCheckRun: input.latestQualityCheckRun !== undefined ? input.latestQualityCheckRun : existing.execution.latestQualityCheckRun,
       runtimeLogs: input.runtimeLogs
         ? input.runtimeLogs.slice(-settings.maxLogsPerSession)
         : existing.execution.runtimeLogs,

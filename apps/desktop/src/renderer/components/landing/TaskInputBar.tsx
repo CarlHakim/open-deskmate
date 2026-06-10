@@ -3,21 +3,34 @@
 import { useRef, useEffect, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react';
 import { getAccomplish } from '../../lib/accomplish';
 import { analytics } from '../../lib/analytics';
-import { CornerDownLeft, Loader2, Folder, X, FileText, Settings, Mic, Plus, Image, Sparkles, Shield } from 'lucide-react';
+import { CornerDownLeft, Loader2, Folder, FolderOpen, X, FileText, Settings, Mic, Plus, Image, Sparkles, Shield } from 'lucide-react';
 import SavedPromptsDialog from '../layout/SavedPromptsDialog';
+import BuildProjectWorkPopup from '../build/BuildProjectWorkPopup';
 import { useSavedPromptsStore } from '../../stores/savedPromptsStore';
 import { useAttachmentStore } from '../../stores/attachmentStore';
 import { useVoiceWakeTalkMode } from '../../hooks/useVoiceWakeTalkMode';
 import ContextWindowIndicator from '../chat/ContextWindowIndicator';
+import ContextInspector from '../chat/ContextInspector';
+import { UsageProjectSelector } from '../usage/UsageProjectSelector';
+import { UsageBudgetPill } from '../usage/UsageBudgetPill';
 import type { ContextWindowEstimateResponse } from '@accomplish/shared';
 import InlineSlashCommandMenu from '../commands/InlineSlashCommandMenu';
 import { filterSlashCommands, type SlashCommandDefinition } from '../../lib/slash-commands';
+import {
+  addPromptHistoryEntry,
+  CHAT_PROMPT_HISTORY_STORAGE_KEY,
+  readPromptHistory,
+  shouldHandlePromptHistoryRecall,
+} from '../../lib/prompt-history';
+import { BUILD_RECIPES } from '../../lib/build-recipes';
+import { writeChatProjectWorkPopupSession } from '../../lib/project-work-popup-session';
 import {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
 } from '@/components/ui/dropdown-menu';
+import { useUsageProjectStore } from '@/stores/usageProjectStore';
 
 
 export interface TaskInputBarHandle {
@@ -35,7 +48,8 @@ interface TaskInputBarProps {
     prompt: string,
     workingFolder?: string,
     attachedFiles?: string[],
-    privacyMode?: 'normal' | 'incognito'
+    privacyMode?: 'normal' | 'incognito',
+    usageProjectId?: string | null
   ) => void | boolean | Promise<void | boolean>;
   placeholder?: string;
   isLoading?: boolean;
@@ -76,10 +90,21 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
   const [selectedSlashIndex, setSelectedSlashIndex] = useState(0);
   const textRef = useRef(text);
   textRef.current = text;
+  const promptHistoryEntriesRef = useRef<string[]>([]);
+  const promptHistoryCursorRef = useRef<number | null>(null);
+  const promptHistoryDraftRef = useRef('');
   const [contextStats, setContextStats] = useState<ContextWindowEstimateResponse | null>(null);
+  const [draftUsageProjectId, setDraftUsageProjectId] = useState<string | null>(null);
+  const usageProjects = useUsageProjectStore((state) => state.projects);
+  const usageAssignees = useUsageProjectStore((state) => state.assignees);
+  const loadUsageProjects = useUsageProjectStore((state) => state.loadProjects);
 
   useImperativeHandle(ref, () => ({
-    setValue: (t: string) => setText(t),
+    setValue: (t: string) => {
+      promptHistoryCursorRef.current = null;
+      promptHistoryDraftRef.current = '';
+      setText(t);
+    },
     getValue: () => textRef.current,
     focus: () => textareaRef.current?.focus(),
   }));
@@ -87,25 +112,111 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
   const previousDefaultRef = useRef<string | null>(defaultWorkingFolder);
   const [showSavedPromptsDialog, setShowSavedPromptsDialog] = useState(false);
   const [savedPromptsMode, setSavedPromptsMode] = useState<'select' | 'manage'>('select');
+  const [projectWorkPopupOpen, setProjectWorkPopupOpen] = useState(false);
   const attachedFiles = useAttachmentStore((state) => state.files);
   const addAttachedFiles = useAttachmentStore((state) => state.addFiles);
   const removeAttachedFile = useAttachmentStore((state) => state.removeFile);
   const clearAttachedFiles = useAttachmentStore((state) => state.clearFiles);
   const { prompts, loadPrompts } = useSavedPromptsStore();
+  const promptPickerCount = prompts.length + BUILD_RECIPES.length;
+
+  useEffect(() => {
+    void loadUsageProjects(true);
+  }, [loadUsageProjects]);
+
+  useEffect(() => {
+    const handleNewChatTask = () => {
+      setDraftUsageProjectId(null);
+      setProjectWorkPopupOpen(false);
+      writeChatProjectWorkPopupSession(false);
+    };
+    window.addEventListener('opendeskmate:new-chat-task', handleNewChatTask);
+    return () => window.removeEventListener('opendeskmate:new-chat-task', handleNewChatTask);
+  }, []);
+
+  useEffect(() => {
+    if (!projectWorkPopupOpen) return;
+    writeChatProjectWorkPopupSession(true, draftUsageProjectId);
+  }, [projectWorkPopupOpen, draftUsageProjectId]);
+
+  useEffect(() => {
+    promptHistoryEntriesRef.current = readPromptHistory(CHAT_PROMPT_HISTORY_STORAGE_KEY);
+  }, []);
+
+  const resetPromptHistoryNavigation = useCallback(() => {
+    promptHistoryCursorRef.current = null;
+    promptHistoryDraftRef.current = '';
+  }, []);
+
+  const setTextFromHistory = useCallback((value: string) => {
+    setText(value);
+    requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+      textarea.focus();
+      const cursor = textarea.value.length;
+      textarea.setSelectionRange(cursor, cursor);
+    });
+  }, []);
+
+  const recallPromptHistory = useCallback((direction: 'older' | 'newer') => {
+    const entries = promptHistoryEntriesRef.current;
+    if (entries.length === 0) return;
+
+    const currentCursor = promptHistoryCursorRef.current;
+    if (direction === 'older') {
+      if (currentCursor === null) {
+        promptHistoryDraftRef.current = textareaRef.current?.value ?? textRef.current;
+        promptHistoryCursorRef.current = entries.length - 1;
+      } else {
+        promptHistoryCursorRef.current = Math.max(0, currentCursor - 1);
+      }
+    } else if (currentCursor !== null) {
+      if (currentCursor >= entries.length - 1) {
+        promptHistoryCursorRef.current = null;
+        setTextFromHistory(promptHistoryDraftRef.current);
+        return;
+      }
+      promptHistoryCursorRef.current = currentCursor + 1;
+    }
+
+    const nextCursor = promptHistoryCursorRef.current;
+    if (nextCursor !== null) {
+      setTextFromHistory(entries[nextCursor] ?? '');
+    }
+  }, [setTextFromHistory]);
+
+  const handleTextChange = useCallback((value: string) => {
+    resetPromptHistoryNavigation();
+    setText(value);
+  }, [resetPromptHistoryNavigation]);
+
+  const addChatPromptToHistory = useCallback((value: string) => {
+    if (privacyMode === 'incognito') return;
+    promptHistoryEntriesRef.current = addPromptHistoryEntry(
+      CHAT_PROMPT_HISTORY_STORAGE_KEY,
+      value,
+      promptHistoryEntriesRef.current
+    );
+  }, [privacyMode]);
+
   const handleVoiceAutoSubmit = useCallback(() => {
     const currentText = textRef.current;
     if (!currentText.trim()) return;
     const files = attachedFiles.length > 0 ? [...attachedFiles] : undefined;
-    Promise.resolve(onSubmit(currentText.trim(), workingFolder || undefined, files, privacyMode))
+    Promise.resolve(onSubmit(currentText.trim(), workingFolder || undefined, files, privacyMode, draftUsageProjectId))
       .then((accepted) => {
         if (accepted === false) return;
+        addChatPromptToHistory(currentText.trim());
+        resetPromptHistoryNavigation();
         setText('');
+        setDraftUsageProjectId(null);
         clearAttachedFiles();
       })
       .catch(() => {
         // If submission fails, keep user input so they can retry.
       });
-  }, [onSubmit, workingFolder, attachedFiles, clearAttachedFiles]);
+  }, [onSubmit, workingFolder, attachedFiles, privacyMode, draftUsageProjectId, clearAttachedFiles, addChatPromptToHistory, resetPromptHistoryNavigation]);
   const {
     voiceEnabled,
     voiceAccessKeySet,
@@ -118,7 +229,7 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
     voiceMeterLevel,
   } = useVoiceWakeTalkMode({
     value: text,
-    onChange: setText,
+    onChange: handleTextChange,
     onSubmit: handleVoiceAutoSubmit,
     focusRef: textareaRef,
     disabled: isActionDisabled,
@@ -181,7 +292,7 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
   }, [defaultWorkingFolder, workingFolder]);
 
   const handleSelectSavedPrompt = (content: string) => {
-    setText(content);
+    handleTextChange(content);
     textareaRef.current?.focus();
   };
 
@@ -268,6 +379,7 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
         const selected = filteredSlashCommands[selectedSlashIndex] || filteredSlashCommands[0];
         if (selected) {
           Promise.resolve(selected.execute()).then(() => {
+            resetPromptHistoryNavigation();
             setText('');
             setSelectedSlashIndex(0);
           });
@@ -276,8 +388,41 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
       }
       if (e.key === 'Escape') {
         e.preventDefault();
+        resetPromptHistoryNavigation();
         setText('');
         setSelectedSlashIndex(0);
+        return;
+      }
+    }
+    if (e.key === 'ArrowUp') {
+      const shouldRecall = shouldHandlePromptHistoryRecall({
+        key: e.key,
+        altKey: e.altKey,
+        ctrlKey: e.ctrlKey,
+        metaKey: e.metaKey,
+        shiftKey: e.shiftKey,
+        isComposing: e.nativeEvent.isComposing,
+        currentTarget: e.currentTarget as HTMLTextAreaElement,
+      }, 'older', promptHistoryCursorRef.current !== null);
+      if (shouldRecall) {
+        e.preventDefault();
+        recallPromptHistory('older');
+        return;
+      }
+    }
+    if (e.key === 'ArrowDown') {
+      const shouldRecall = shouldHandlePromptHistoryRecall({
+        key: e.key,
+        altKey: e.altKey,
+        ctrlKey: e.ctrlKey,
+        metaKey: e.metaKey,
+        shiftKey: e.shiftKey,
+        isComposing: e.nativeEvent.isComposing,
+        currentTarget: e.currentTarget as HTMLTextAreaElement,
+      }, 'newer', promptHistoryCursorRef.current !== null);
+      if (shouldRecall) {
+        e.preventDefault();
+        recallPromptHistory('newer');
         return;
       }
     }
@@ -285,10 +430,13 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
       e.preventDefault();
       if (!text.trim()) return;
       const files = attachedFiles.length > 0 ? [...attachedFiles] : undefined;
-      Promise.resolve(onSubmit(text.trim(), workingFolder || undefined, files, privacyMode))
+      Promise.resolve(onSubmit(text.trim(), workingFolder || undefined, files, privacyMode, draftUsageProjectId))
         .then((accepted) => {
           if (accepted === false) return;
+          addChatPromptToHistory(text.trim());
+          resetPromptHistoryNavigation();
           setText('');
+          setDraftUsageProjectId(null);
           clearAttachedFiles();
         })
         .catch(() => {
@@ -302,7 +450,25 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
       {/* Main input area */}
       <div className="relative flex flex-col rounded-2xl border-2 border-border/60 bg-background px-4 py-3 shadow-soft transition-[border-color,box-shadow] duration-200 ease-out focus-within:border-primary/50 focus-within:shadow-glow">
         <div className="mb-2 flex items-center justify-between gap-2">
-          <ContextWindowIndicator stats={contextStats} className="mb-0" />
+          <div className="flex min-w-0 items-center gap-2">
+            <ContextWindowIndicator stats={contextStats} className="mb-0" />
+            <ContextInspector
+              stats={contextStats}
+              agentId={agentId}
+              workspace={workingFolder || defaultWorkingFolder}
+              attachedFiles={attachedFiles}
+              privacyMode={privacyMode}
+              usageProjectId={draftUsageProjectId}
+            />
+            <UsageProjectSelector
+              mode="chat"
+              value={draftUsageProjectId}
+              onChange={setDraftUsageProjectId}
+              compact
+              disabled={isActionDisabled}
+              persistSelection={false}
+            />
+          </div>
           {privacyMode === 'incognito' && (
             <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/40 bg-amber-400/10 px-2 py-0.5 text-[10px] font-medium text-amber-700">
               <Shield className="h-3 w-3" />
@@ -343,7 +509,7 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
               data-testid="task-input-textarea"
               ref={textareaRef}
               value={text}
-              onChange={(e) => setText(e.target.value)}
+              onChange={(e) => handleTextChange(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder={placeholder}
               disabled={isInputDisabled}
@@ -356,6 +522,7 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
               onSelect={(command, index) => {
                 setSelectedSlashIndex(index);
                 Promise.resolve(command.execute()).then(() => {
+                  resetPromptHistoryNavigation();
                   setText('');
                   setSelectedSlashIndex(0);
                 });
@@ -392,10 +559,13 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
                 context: { prompt: text, workingFolder },
               });
               const files = attachedFiles.length > 0 ? [...attachedFiles] : undefined;
-              Promise.resolve(onSubmit(text.trim(), workingFolder || undefined, files, privacyMode))
+              Promise.resolve(onSubmit(text.trim(), workingFolder || undefined, files, privacyMode, draftUsageProjectId))
                 .then((accepted) => {
                   if (accepted === false) return;
+                  addChatPromptToHistory(text.trim());
+                  resetPromptHistoryNavigation();
                   setText('');
+                  setDraftUsageProjectId(null);
                   clearAttachedFiles();
                 })
                 .catch(() => {
@@ -437,6 +607,7 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
 
         {/* Action buttons row */}
         <div className="mt-2 pt-2 border-t border-border/30 flex items-center gap-2">
+          <UsageBudgetPill usageProjectId={draftUsageProjectId} label="Task budget" className="max-w-[220px]" />
           {onPrivacyModeChange && (
             <button
               type="button"
@@ -469,14 +640,14 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
               setSavedPromptsMode('select');
               setShowSavedPromptsDialog(true);
             }}
-            disabled={isActionDisabled || prompts.length === 0}
+            disabled={isActionDisabled || promptPickerCount === 0}
             className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50 border border-border/50 hover:border-border"
-            title={prompts.length === 0 ? 'No saved prompts' : 'Use a saved prompt'}
+            title={promptPickerCount === 0 ? 'No saved prompts or recipes' : 'Use a saved prompt or recipe'}
           >
             <FileText className="h-3.5 w-3.5" />
-            {prompts.length > 0 && (
+            {promptPickerCount > 0 && (
               <span className="px-1.5 py-0.5 rounded-full bg-primary/10 text-primary text-[10px]">
-                {prompts.length}
+                {promptPickerCount}
               </span>
             )}
           </button>
@@ -491,6 +662,18 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
             title="Manage saved prompts"
           >
             <Settings className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setProjectWorkPopupOpen(true);
+              writeChatProjectWorkPopupSession(true, draftUsageProjectId);
+            }}
+            disabled={isActionDisabled}
+            className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50 border border-border/50 hover:border-border"
+            title="Open project work linked to this Chat prompt."
+          >
+            <FolderOpen className="h-3.5 w-3.5" />
           </button>
           <button
             type="button"
@@ -580,6 +763,21 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
         onOpenChange={setShowSavedPromptsDialog}
         onSelectPrompt={handleSelectSavedPrompt}
         mode={savedPromptsMode}
+      />
+      <BuildProjectWorkPopup
+        open={projectWorkPopupOpen}
+        projects={usageProjects}
+        assignees={usageAssignees}
+        linkedProjectId={draftUsageProjectId}
+        initialProjectId={draftUsageProjectId}
+        sourceLabel={draftUsageProjectId ? 'Selected Chat budget project' : 'Chat project work'}
+        fallbackLabel="Chat project work"
+        storageScope="chat"
+        onSelectedProjectChange={(projectId) => writeChatProjectWorkPopupSession(true, projectId)}
+        onClose={() => {
+          setProjectWorkPopupOpen(false);
+          writeChatProjectWorkPopupSession(false);
+        }}
       />
 
       {/* Working folder display - below the input box */}

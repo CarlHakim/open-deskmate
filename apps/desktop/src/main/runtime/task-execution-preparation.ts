@@ -4,6 +4,8 @@ import { saveSessionMemorySnapshot } from '../services/memory';
 import { buildAttachmentsPrefix } from '../utils/file-attachments';
 import { computeCompactionThresholds } from '../services/context/compaction-thresholds';
 import { getActiveAgentEngineTaskId } from './agent-engine';
+import { resolveSelectedModelForAgent } from '../services/agent-context';
+import { getMiniMaxHistoricalImageSessionResetReason } from '../services/context/image-history-policy';
 
 const WARM_SESSION_WINDOW_MS = Number(process.env.OPENDESKMATE_WARM_SESSION_WINDOW_MS || 5 * 60 * 1000);
 const AGENTIC_LOOP_DEFAULT_MAX_ITERATIONS = 4;
@@ -79,6 +81,7 @@ type PersistedTaskSnapshot = Task & {
   completedAt?: string;
   createdAt?: string;
   sessionMemorySavedAt?: string;
+  sessionFilePath?: string;
 };
 
 export function maybeReuseWarmSession(params: {
@@ -86,6 +89,8 @@ export function maybeReuseWarmSession(params: {
   taskId: string;
   previousTask?: PersistedTaskSnapshot | null;
   gatewaySessionKey?: string;
+  agentId?: string;
+  prompt?: string;
 }): void {
   const { config, taskId, previousTask, gatewaySessionKey } = params;
   if (gatewaySessionKey || config.sessionId || !previousTask || previousTask.id === taskId || !previousTask.sessionId) {
@@ -97,6 +102,23 @@ export function maybeReuseWarmSession(params: {
   }
   const completedAtMs = Date.parse(previousTask.completedAt || previousTask.createdAt || '');
   if (!Number.isFinite(completedAtMs) || (Date.now() - completedAtMs) > WARM_SESSION_WINDOW_MS) {
+    return;
+  }
+  const agentId = params.agentId || config.agentId || previousTask.agentId;
+  const resetReason = getMiniMaxHistoricalImageSessionResetReason({
+    selectedModel: resolveSelectedModelForAgent(agentId),
+    prompt: params.prompt || config.prompt,
+    currentAttachedFiles: config.attachedFiles,
+    sessionId: previousTask.sessionId,
+    sessionFilePath: previousTask.sessionFilePath,
+    task: previousTask,
+  });
+  if (resetReason) {
+    console.log('[TaskDispatch] Skipping warm MiniMax session reuse:', {
+      fromTaskId: previousTask.id,
+      sessionId: previousTask.sessionId,
+      reason: resetReason,
+    });
     return;
   }
   config.sessionId = previousTask.sessionId;

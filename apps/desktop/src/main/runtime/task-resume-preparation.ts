@@ -1,9 +1,10 @@
 import type { TaskConfig } from '@accomplish/shared';
-import { composeAgentSystemPromptAppend, type AgentContext } from '../services/agent-context';
+import { composeAgentSystemPromptAppend, resolveSelectedModelForAgent, type AgentContext } from '../services/agent-context';
 import { buildMemoryFlushPrompt } from '../services/memory';
 import { preparePayloadForSend } from '../services/context/prepare-payload';
 import { detectTaskNeedsBrowser, getRuntimeSpeedMode } from '../services/task-intent';
 import { buildOpenCodeSessionResetMessage, inspectOpenCodeSessionIntegrity } from '../opencode/session-integrity';
+import { getMiniMaxHistoricalImageSessionResetReason } from '../services/context/image-history-policy';
 import {
   appendAgenticLoopProtocol,
   applyTaskHookInputPatch,
@@ -14,8 +15,15 @@ import {
 } from './task-execution-preparation';
 
 type ExistingTaskSnapshot = {
+  agentId?: string;
+  sessionId?: string;
+  sessionFilePath?: string;
+  messages?: import('@accomplish/shared').TaskMessage[];
+  attachedFiles?: string[];
   privacyMode?: 'normal' | 'incognito';
   memoryFlushCount?: number;
+  usageProjectId?: string | null;
+  miniMaxHistoricalImageSessionResetAt?: string;
 };
 
 export async function prepareResumeTaskExecution(params: {
@@ -114,7 +122,14 @@ export async function prepareResumeTaskExecution(params: {
   });
   const sessionIntegrity = inspectOpenCodeSessionIntegrity(params.validatedSessionId);
   const sessionResetReason = sessionIntegrity.healthy
-    ? undefined
+    ? getMiniMaxHistoricalImageSessionResetReason({
+        selectedModel: resolveSelectedModelForAgent(params.agentContext.agentId),
+        prompt: params.effectivePrompt,
+        currentAttachedFiles: resumeAttachedFiles,
+        sessionId: params.validatedSessionId,
+        sessionFilePath: params.sessionFilePath,
+        task: params.existingTask,
+      })
     : buildOpenCodeSessionResetMessage(sessionIntegrity.issues);
 
   const validatedConfig: TaskConfig = {
@@ -125,6 +140,7 @@ export async function prepareResumeTaskExecution(params: {
     workingDirectory,
     attachedFiles: resumeAttachedFiles.length > 0 ? resumeAttachedFiles : undefined,
     privacyMode: effectivePrivacyMode,
+    usageProjectId: params.existingTask?.usageProjectId ?? null,
     systemPromptAppend: prepared.systemPromptAppend,
     requiresBrowser: detectTaskNeedsBrowser({
       prompt: params.effectivePrompt,

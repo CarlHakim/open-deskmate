@@ -36,10 +36,14 @@ export function UsageDetailsDialog(props: {
           ) : (
             <>
               <div className="rounded-lg border border-border bg-card p-4">
-                <div className="grid grid-cols-3 gap-3">
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                   <div>
-                    <div className="text-xs text-muted-foreground">Input</div>
-                    <div className="text-sm font-medium">{formatInt(summary.inputTokens)}</div>
+                    <div className="text-xs text-muted-foreground">Input hit</div>
+                    <div className="text-sm font-medium">{formatInt(summary.inputHitTokens ?? 0)}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground">Input miss</div>
+                    <div className="text-sm font-medium">{formatInt(summary.inputMissTokens ?? summary.inputTokens)}</div>
                   </div>
                   <div>
                     <div className="text-xs text-muted-foreground">Output</div>
@@ -90,7 +94,7 @@ export function UsageDetailsDialog(props: {
                           <div className="min-w-0">
                             <div className="text-sm font-medium">{r.provider}</div>
                             <div className="text-xs text-muted-foreground">
-                              {formatInt(r.totalTokens)} tokens
+                              {formatInt(r.inputHitTokens ?? 0)} hit input • {formatInt(r.inputMissTokens ?? r.inputTokens)} miss input • {formatInt(r.outputTokens)} output
                               {r.unpricedEvents > 0 ? ` • ${r.unpricedEvents} unpriced` : ''}
                             </div>
                           </div>
@@ -118,4 +122,3 @@ export function UsageDetailsDialog(props: {
     </Dialog>
   );
 }
-

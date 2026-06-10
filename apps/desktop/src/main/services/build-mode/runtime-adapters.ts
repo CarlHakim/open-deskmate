@@ -64,7 +64,7 @@ const ADAPTERS: RuntimeAdapter[] = [
       return Math.min(score, 1);
     },
     buildEvidence: (i) => collectEvidence(i, ['next'], ['next.config.js', 'next.config.mjs', 'next.config.ts'], [['dev', 'next']]),
-    resolveCommands: (i) => ({
+    resolveCommands: (i) => withQualityCommands(i, {
       startCommand: scriptOr(i, 'dev', `${i.packageManager} exec next dev`),
       buildCommand: scriptOr(i, 'build', `${i.packageManager} exec next build`),
       runCommand: scriptOr(i, 'start', `${i.packageManager} exec next start`),
@@ -87,7 +87,7 @@ const ADAPTERS: RuntimeAdapter[] = [
       return Math.min(score, 1);
     },
     buildEvidence: (i) => collectEvidence(i, ['vite'], ['vite.config.ts', 'vite.config.js', 'vite.config.mjs'], [['dev', 'vite']]),
-    resolveCommands: (i) => ({
+    resolveCommands: (i) => withQualityCommands(i, {
       startCommand: scriptOr(i, 'dev', `${i.packageManager} exec vite`),
       buildCommand: scriptOr(i, 'build', `${i.packageManager} exec vite build`),
       runCommand: scriptOr(i, 'preview', `${i.packageManager} exec vite preview`),
@@ -111,7 +111,7 @@ const ADAPTERS: RuntimeAdapter[] = [
       return Math.min(score, 0.95);
     },
     buildEvidence: (i) => collectEvidence(i, ['react', 'react-dom', 'react-scripts'], [], [['start', 'react-scripts']]),
-    resolveCommands: (i) => ({
+    resolveCommands: (i) => withQualityCommands(i, {
       startCommand: scriptOr(i, 'dev', scriptOr(i, 'start', `${i.packageManager} start`)),
       buildCommand: scriptOr(i, 'build', null),
       runCommand: scriptOr(i, 'start', null),
@@ -133,7 +133,7 @@ const ADAPTERS: RuntimeAdapter[] = [
       return Math.min(score, 0.95);
     },
     buildEvidence: (i) => collectEvidence(i, ['express'], [], [['dev', 'nodemon'], ['dev', 'tsx'], ['start', 'node']]),
-    resolveCommands: (i) => ({
+    resolveCommands: (i) => withQualityCommands(i, {
       startCommand: scriptOr(i, 'dev', scriptOr(i, 'start', fallbackNodeEntry(i))),
       buildCommand: scriptOr(i, 'build', null),
       runCommand: scriptOr(i, 'start', fallbackNodeEntry(i)),
@@ -155,7 +155,7 @@ const ADAPTERS: RuntimeAdapter[] = [
       return Math.min(score, 0.95);
     },
     buildEvidence: (i) => collectEvidence(i, ['fastify'], [], [['dev', 'fastify']]),
-    resolveCommands: (i) => ({
+    resolveCommands: (i) => withQualityCommands(i, {
       startCommand: scriptOr(i, 'dev', scriptOr(i, 'start', fallbackNodeEntry(i))),
       buildCommand: scriptOr(i, 'build', null),
       runCommand: scriptOr(i, 'start', fallbackNodeEntry(i)),
@@ -176,7 +176,7 @@ const ADAPTERS: RuntimeAdapter[] = [
       return Math.min(score, 1);
     },
     buildEvidence: (i) => collectEvidence(i, ['electron'], ['electron-builder.json', 'electron.vite.config.ts'], [['dev', 'electron'], ['start', 'electron']]),
-    resolveCommands: (i) => ({
+    resolveCommands: (i) => withQualityCommands(i, {
       startCommand: scriptOr(i, 'dev', scriptOr(i, 'start', null)),
       buildCommand: scriptOr(i, 'build', null),
       runCommand: scriptOr(i, 'start', null),
@@ -197,7 +197,7 @@ const ADAPTERS: RuntimeAdapter[] = [
       return Math.min(score, 0.6);
     },
     buildEvidence: (i) => collectEvidence(i, [], ['index.js', 'server.js'], [['dev', ''], ['start', ''], ['build', '']]),
-    resolveCommands: (i) => ({
+    resolveCommands: (i) => withQualityCommands(i, {
       startCommand: scriptOr(i, 'dev', scriptOr(i, 'start', fallbackNodeEntry(i))),
       buildCommand: scriptOr(i, 'build', null),
       runCommand: scriptOr(i, 'start', fallbackNodeEntry(i)),
@@ -318,6 +318,23 @@ function scriptOr(inspection: ProjectInspection, scriptName: string, fallback: s
     return `${inspection.packageManager} run ${scriptName}`;
   }
   return fallback;
+}
+
+function firstScriptOr(inspection: ProjectInspection, scriptNames: string[], fallback: string | null): string | null {
+  for (const scriptName of scriptNames) {
+    const command = scriptOr(inspection, scriptName, null);
+    if (command) return command;
+  }
+  return fallback;
+}
+
+function withQualityCommands(inspection: ProjectInspection, commands: Omit<BuildRuntimeCommands, 'testCommand' | 'lintCommand' | 'typecheckCommand'>): BuildRuntimeCommands {
+  return {
+    ...commands,
+    testCommand: firstScriptOr(inspection, ['test', 'test:unit', 'vitest'], null),
+    lintCommand: firstScriptOr(inspection, ['lint', 'eslint'], null),
+    typecheckCommand: firstScriptOr(inspection, ['typecheck', 'type-check', 'check-types', 'tsc'], null),
+  };
 }
 
 function fallbackNodeEntry(inspection: ProjectInspection): string | null {

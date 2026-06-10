@@ -1,16 +1,17 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { Task, Folder } from '@accomplish/shared';
 import { cn } from '@/lib/utils';
 import { useFolderStore } from '@/stores/folderStore';
 import { useTaskStore } from '@/stores/taskStore';
+import { useUsageProjectStore } from '@/stores/usageProjectStore';
 import {
   ChevronRight,
-  GripVertical,
   MoreHorizontal,
   Pencil,
+  WalletCards,
   Trash2,
 } from 'lucide-react';
 import ConversationListItem from './ConversationListItem';
@@ -33,6 +34,12 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -40,28 +47,28 @@ import { Label } from '@/components/ui/label';
 interface FolderItemProps {
   folder: Folder;
   tasks: Task[];
-  onDragStart?: (e: React.DragEvent, folderId: string) => void;
-  onDragOver?: (e: React.DragEvent, folderId: string) => void;
-  onDragEnd?: () => void;
-  isDragTarget?: boolean;
+  onOpenBudgetProject?: (projectId: string) => void;
 }
 
 export default function FolderItem({
   folder,
   tasks,
-  onDragStart,
-  onDragOver,
-  onDragEnd,
-  isDragTarget = false,
+  onOpenBudgetProject,
 }: FolderItemProps) {
   const { toggleFolderExpanded, updateFolder, deleteFolder } = useFolderStore();
   const { setTaskFolder } = useTaskStore();
+  const { projects: usageProjects, archivedProjects: archivedUsageProjects, loadProjects: loadUsageProjects } = useUsageProjectStore();
   const [isRenaming, setIsRenaming] = useState(false);
   const [newName, setNewName] = useState(folder.name);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showBudgetDialog, setShowBudgetDialog] = useState(false);
+  const [budgetProjectId, setBudgetProjectId] = useState(folder.usageProjectId || '');
   const [showIconPicker, setShowIconPicker] = useState(false);
+  const [showBudgetPopover, setShowBudgetPopover] = useState(false);
   const [editIcon, setEditIcon] = useState(folder.icon || 'Folder');
   const [editColor, setEditColor] = useState(folder.color);
+  const budgetProject = [...usageProjects, ...archivedUsageProjects].find((project) => project.id === folder.usageProjectId);
+  const budgetColor = budgetProject?.color || '#2dd4bf';
 
   const handleToggle = () => {
     toggleFolderExpanded(folder.id);
@@ -73,6 +80,18 @@ export default function FolderItem({
     }
     setIsRenaming(false);
   };
+
+  useEffect(() => {
+    if (!showBudgetDialog) return;
+    setBudgetProjectId(folder.usageProjectId || '');
+    void loadUsageProjects(true);
+  }, [folder.usageProjectId, loadUsageProjects, showBudgetDialog]);
+
+  useEffect(() => {
+    if (folder.usageProjectId) {
+      void loadUsageProjects(true);
+    }
+  }, [folder.usageProjectId, loadUsageProjects]);
 
   const handleDelete = () => {
     // Move all tasks to unfiled before deleting folder
@@ -95,6 +114,11 @@ export default function FolderItem({
     setShowIconPicker(false);
   };
 
+  const handleSaveBudgetProject = async () => {
+    await updateFolder(folder.id, { usageProjectId: budgetProjectId || null });
+    setShowBudgetDialog(false);
+  };
+
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     e.currentTarget.classList.add('bg-primary/10', 'border-primary/30');
@@ -111,20 +135,6 @@ export default function FolderItem({
     // Only handle task drops, not folder reordering
     if (taskId && !taskId.startsWith('folder_')) {
       setTaskFolder(taskId, folder.id);
-    }
-  };
-
-  const handleFolderDragStart = (e: React.DragEvent) => {
-    e.dataTransfer.setData('text/plain', folder.id);
-    e.dataTransfer.effectAllowed = 'move';
-    onDragStart?.(e, folder.id);
-  };
-
-  const handleFolderDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    const draggedId = e.dataTransfer.types.includes('text/plain');
-    if (draggedId) {
-      onDragOver?.(e, folder.id);
     }
   };
 
@@ -145,31 +155,16 @@ export default function FolderItem({
               handleToggle();
             }
           }}
-          draggable
-          onDragStart={handleFolderDragStart}
-          onDragOver={(e) => {
-            handleDragOver(e);
-            handleFolderDragOver(e);
-          }}
+          onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
-          onDragEnd={onDragEnd}
           className={cn(
             'w-full text-left px-3 py-2 rounded-xl text-sm transition-all duration-200',
             'text-foreground/80 hover:bg-accent/60 hover:text-foreground',
             'flex items-center gap-2 group cursor-pointer',
-            'border border-transparent hover:border-border/50',
-            isDragTarget && 'border-primary/50 bg-primary/5'
+            'border border-transparent hover:border-border/50'
           )}
         >
-          {/* Drag Handle */}
-          <div
-            className="opacity-0 group-hover:opacity-100 transition-opacity duration-200 cursor-grab active:cursor-grabbing shrink-0"
-            onMouseDown={(e) => e.stopPropagation()}
-          >
-            <GripVertical className="h-3.5 w-3.5 text-muted-foreground" />
-          </div>
-
           <motion.div
             animate={{ rotate: folder.isExpanded ? 90 : 0 }}
             transition={{ duration: 0.15 }}
@@ -185,18 +180,24 @@ export default function FolderItem({
                 type="button"
                 onClick={handleIconClick}
                 className={cn(
-                  'flex items-center justify-center w-6 h-6 rounded-lg shrink-0',
+                  'relative flex items-center justify-center w-6 h-6 rounded-lg shrink-0',
                   'transition-all duration-200 hover:scale-110 hover:ring-2 hover:ring-primary/30'
                 )}
                 style={{
                   backgroundColor: folder.color ? `${folder.color}20` : 'hsl(var(--muted) / 0.5)',
                 }}
-                title="Click to change icon & color"
+                title={folder.usageProjectId ? `Budget: ${budgetProject?.name || 'Selected budget'}` : 'Click to change icon & color'}
               >
                 <IconComponent
                   className="h-3.5 w-3.5"
                   style={{ color: folder.color || 'hsl(var(--muted-foreground))' }}
                 />
+                {folder.usageProjectId && (
+                  <span
+                    className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border border-background"
+                    style={{ backgroundColor: budgetColor }}
+                  />
+                )}
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-80 p-4" align="start" onClick={(e) => e.stopPropagation()}>
@@ -224,9 +225,67 @@ export default function FolderItem({
             </PopoverContent>
           </Popover>
 
-          <span className="flex-1 truncate font-medium">
-            {folder.name}
-          </span>
+          <TooltipProvider delayDuration={350}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                <span className="flex-1 truncate font-medium">
+                  {folder.name}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="right" align="center" className="max-w-[260px] text-xs">
+                <span className="break-words">{folder.name}</span>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+          {folder.usageProjectId && (
+            <Popover open={showBudgetPopover} onOpenChange={setShowBudgetPopover}>
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (folder.usageProjectId) {
+                      onOpenBudgetProject?.(folder.usageProjectId);
+                    }
+                  }}
+                  onMouseEnter={() => setShowBudgetPopover(true)}
+                  className="relative flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-teal-400/40 bg-teal-400/10 text-teal-600 hover:bg-teal-400/20"
+                  title={`Budget: ${budgetProject?.name || 'Selected budget'}`}
+                >
+                  <WalletCards className="h-3 w-3" />
+                  <span
+                    className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full ring-2 ring-background"
+                    style={{ backgroundColor: budgetColor }}
+                  />
+                </button>
+              </PopoverTrigger>
+              <PopoverContent
+                className="w-56 p-3"
+                side="right"
+                align="center"
+                onClick={(e) => e.stopPropagation()}
+                onMouseEnter={() => setShowBudgetPopover(true)}
+                onMouseLeave={() => setShowBudgetPopover(false)}
+              >
+                <div className="space-y-2">
+                  <div className="text-[11px] font-medium uppercase text-muted-foreground">Budget project</div>
+                  <div className="truncate text-sm font-semibold text-foreground">{budgetProject?.name || 'Selected budget'}</div>
+                  <button
+                    type="button"
+                    className="text-xs font-medium text-primary hover:underline"
+                    onClick={() => {
+                      setShowBudgetPopover(false);
+                      if (folder.usageProjectId) {
+                        onOpenBudgetProject?.(folder.usageProjectId);
+                      }
+                    }}
+                  >
+                    Open in Project Management
+                  </button>
+                </div>
+              </PopoverContent>
+            </Popover>
+          )}
           <span className="text-xs text-muted-foreground/70 mr-1">
             {tasks.length}
           </span>
@@ -246,6 +305,10 @@ export default function FolderItem({
               <DropdownMenuItem onClick={() => setIsRenaming(true)}>
                 <Pencil className="h-3.5 w-3.5 mr-2" />
                 Rename
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setShowBudgetDialog(true)}>
+                <WalletCards className="h-3.5 w-3.5 mr-2" />
+                Assign budget
               </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={() => setShowDeleteConfirm(true)}
@@ -304,6 +367,41 @@ export default function FolderItem({
               Cancel
             </Button>
             <Button onClick={handleRename} disabled={!newName.trim()}>
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showBudgetDialog} onOpenChange={setShowBudgetDialog}>
+        <DialogContent className="sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle>Assign Budget Project</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-4">
+            <p className="text-sm text-muted-foreground">
+              Tasks in "{folder.name}" will inherit this budget project. Existing tasks in this project are re-tagged for usage reports.
+            </p>
+            <Label htmlFor={`budget-project-${folder.id}`}>Budget project</Label>
+            <select
+              id={`budget-project-${folder.id}`}
+              value={budgetProjectId}
+              onChange={(event) => setBudgetProjectId(event.target.value)}
+              className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+            >
+              <option value="">No budget project</option>
+              {usageProjects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowBudgetDialog(false)}>
+              Cancel
+            </Button>
+            <Button onClick={() => void handleSaveBudgetProject()}>
               Save
             </Button>
           </DialogFooter>
