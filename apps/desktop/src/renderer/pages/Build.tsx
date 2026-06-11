@@ -14669,14 +14669,14 @@ export default function BuildPage() {
                     </Button>
                   </div>
                 </div>
-                <div className="my-1.5 rounded-md border border-border/60 bg-muted/20 px-2 py-0.5">
-                  <div className="flex items-start justify-between">
-                    <div className="text-xs font-medium text-muted-foreground">Build Fingerprint</div>
-                    <div className="mt-0.5 flex items-center gap-2">
+                <div className="my-1 rounded-md border border-border/60 bg-muted/20 px-2 py-1">
+                  <div className="flex min-w-0 items-center justify-between gap-2">
+                    <div className="shrink-0 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Build Fingerprint</div>
+                    <div className="flex shrink-0 items-center gap-1">
                       <Button
                         size="sm"
                         variant="outline"
-                        className="h-7 px-2 text-[11px]"
+                        className="h-6 px-1.5 text-[10px]"
                         onClick={() => setBuildFingerprintCollapsed((current) => !current)}
                         title={buildFingerprintCollapsed ? 'Expand build fingerprint details.' : 'Collapse build fingerprint details.'}
                       >
@@ -14685,42 +14685,50 @@ export default function BuildPage() {
                       <Button
                         size="sm"
                         variant="outline"
-                        className="h-7 px-2 text-[11px]"
+                        className="h-6 w-6 px-0"
                         onClick={() => void refreshFingerprint(true)}
                         disabled={fingerprintBusy}
                         title="Recalculate and refresh project fingerprint details."
                       >
-                        {fingerprintBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                        {fingerprintBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
                       </Button>
                     </div>
                   </div>
                   {!buildFingerprintCollapsed ? (
-                    <div className="grid grid-cols-1 gap-0.5 text-[11px] leading-relaxed text-muted-foreground sm:grid-cols-2">
-                      <div className="truncate" title={workspaceFingerprint?.workspaceRoot || snapshot?.workspaceRoot || ''}>
-                        Workspace: {workspaceFingerprint?.workspaceRoot || snapshot?.workspaceRoot || 'N/A'}
+                    <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] leading-tight text-muted-foreground">
+                      <div className="min-w-0 max-w-[48%] truncate" title={workspaceFingerprint?.workspaceRoot || snapshot?.workspaceRoot || ''}>
+                        <span className="font-medium text-foreground/70">Workspace:</span> {workspaceFingerprint?.workspaceRoot || snapshot?.workspaceRoot || 'N/A'}
                       </div>
-                      <div>
-                        Package: {workspaceFingerprint?.packageName
+                      <div className="min-w-0 max-w-[28%] truncate" title={workspaceFingerprint?.packageName
+                        ? `${workspaceFingerprint.packageName}${workspaceFingerprint.packageVersion ? `@${workspaceFingerprint.packageVersion}` : ''}`
+                        : 'N/A'}>
+                        <span className="font-medium text-foreground/70">Package:</span> {workspaceFingerprint?.packageName
                           ? `${workspaceFingerprint.packageName}${workspaceFingerprint.packageVersion ? `@${workspaceFingerprint.packageVersion}` : ''}`
                           : 'N/A'}
                       </div>
-                      <div>
-                        Git: {workspaceFingerprint?.git.available
+                      <div className="min-w-0 max-w-[28%] truncate" title={workspaceFingerprint?.git.available
+                        ? `${workspaceFingerprint.git.branch || 'detached'} · ${workspaceFingerprint.git.shortCommit || workspaceFingerprint.git.commit || 'unknown'}${workspaceFingerprint.git.dirty ? ' · dirty' : ' · clean'}`
+                        : 'Not detected'}>
+                        <span className="font-medium text-foreground/70">Git:</span> {workspaceFingerprint?.git.available
                           ? `${workspaceFingerprint.git.branch || 'detached'} · ${workspaceFingerprint.git.shortCommit || workspaceFingerprint.git.commit || 'unknown'}${workspaceFingerprint.git.dirty ? ' · dirty' : ' · clean'}`
                           : 'Not detected'}
                       </div>
-                      <div>
-                        Next build: {workspaceFingerprint?.next.buildId
+                      <div className="min-w-0 max-w-[28%] truncate" title={workspaceFingerprint?.next.buildId
+                        ? workspaceFingerprint.next.buildId
+                        : workspaceFingerprint?.next.isNextProject
+                          ? 'No .next/BUILD_ID yet'
+                          : 'Not a Next project'}>
+                        <span className="font-medium text-foreground/70">Next build:</span> {workspaceFingerprint?.next.buildId
                           ? workspaceFingerprint.next.buildId
                           : workspaceFingerprint?.next.isNextProject
                             ? 'No .next/BUILD_ID yet'
                             : 'Not a Next project'}
                       </div>
-                      <div className="sm:col-span-2">
-                        Runtime command: {snapshot?.runtime.activeCommand || 'N/A'}
+                      <div className="min-w-0 max-w-[40%] truncate" title={snapshot?.runtime.activeCommand || 'N/A'}>
+                        <span className="font-medium text-foreground/70">Runtime command:</span> {snapshot?.runtime.activeCommand || 'N/A'}
                       </div>
-                      <div className="sm:col-span-2">
-                        Refreshed: {formatTimestamp(workspaceFingerprint?.generatedAt)}
+                      <div className="min-w-0 max-w-[24%] truncate" title={formatTimestamp(workspaceFingerprint?.generatedAt)}>
+                        <span className="font-medium text-foreground/70">Refreshed:</span> {formatTimestamp(workspaceFingerprint?.generatedAt)}
                       </div>
                     </div>
                   ) : null}
