@@ -1304,6 +1304,16 @@ code {
   grid-column: span 2;
 }
 
+.screenshot-card a {
+  display: block;
+  cursor: zoom-in;
+}
+
+.screenshot-card a:focus-visible {
+  outline: 3px solid rgba(20, 184, 166, 0.7);
+  outline-offset: -3px;
+}
+
 .screenshot-card img {
   width: 100%;
   aspect-ratio: 16 / 10;
@@ -1320,6 +1330,134 @@ code {
 .screenshot-card strong {
   font-family: Manrope, Inter, sans-serif;
   font-size: 1.05rem;
+}
+
+body.lightbox-open {
+  overflow: hidden;
+}
+
+.screenshot-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+  background: rgba(10, 15, 27, 0.82);
+  backdrop-filter: blur(8px);
+}
+
+.screenshot-lightbox.is-open {
+  display: flex;
+}
+
+.screenshot-lightbox-panel {
+  position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  width: min(1180px, 96vw);
+  max-height: 92vh;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 24px;
+  background: rgba(12, 18, 32, 0.94);
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.42);
+}
+
+.screenshot-lightbox-stage {
+  min-height: 0;
+  overflow: auto;
+  background: #0a0f1b;
+}
+
+.screenshot-lightbox-stage img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-width: none;
+  margin: 0 auto;
+  background: #0a0f1b;
+}
+
+.screenshot-lightbox-toolbar {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  padding: 5px;
+  background: rgba(10, 15, 27, 0.82);
+  color: #f8fafc;
+}
+
+.screenshot-lightbox-toolbar button,
+.screenshot-lightbox-toolbar span {
+  min-width: 38px;
+  border: 0;
+  border-radius: 999px;
+  padding: 7px 10px;
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 800;
+  text-align: center;
+}
+
+.screenshot-lightbox-toolbar button {
+  cursor: pointer;
+}
+
+.screenshot-lightbox-toolbar button:hover,
+.screenshot-lightbox-toolbar button:focus-visible {
+  background: rgba(20, 184, 166, 0.95);
+  color: #062321;
+  outline: none;
+}
+
+.screenshot-lightbox-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 2;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  padding: 9px 14px;
+  background: rgba(10, 15, 27, 0.82);
+  color: #f8fafc;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.screenshot-lightbox-close:hover,
+.screenshot-lightbox-close:focus-visible {
+  background: rgba(20, 184, 166, 0.95);
+  color: #062321;
+  outline: none;
+}
+
+.screenshot-lightbox-caption {
+  display: grid;
+  gap: 6px;
+  padding: 18px 22px;
+  color: #e2e8f0;
+}
+
+.screenshot-lightbox-caption strong {
+  font-family: Manrope, Inter, sans-serif;
+  font-size: 1rem;
+}
+
+.screenshot-lightbox-caption p {
+  margin: 0;
+  color: #aebdd1;
 }
 
 .get-started-grid,

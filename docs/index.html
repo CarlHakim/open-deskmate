@@ -25,25 +25,108 @@
       const header = document.querySelector('.site-header');
       const toggle = document.querySelector('.menu-toggle');
       const menu = document.getElementById('site-menu');
-      if (!header || !toggle || !menu) return;
+      if (header && toggle && menu) {
+        const closeMenu = () => {
+          header.classList.remove('menu-open');
+          toggle.setAttribute('aria-expanded', 'false');
+        };
 
-      const closeMenu = () => {
-        header.classList.remove('menu-open');
-        toggle.setAttribute('aria-expanded', 'false');
+        toggle.addEventListener('click', () => {
+          const open = header.classList.toggle('menu-open');
+          toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        });
+
+        menu.querySelectorAll('a').forEach((link) => {
+          link.addEventListener('click', closeMenu);
+        });
+
+        window.addEventListener('resize', () => {
+          if (window.innerWidth > 980) {
+            closeMenu();
+          }
+        });
+      }
+
+      const lightbox = document.getElementById('screenshot-lightbox');
+      const lightboxImage = document.getElementById('screenshot-lightbox-image');
+      const lightboxStage = document.querySelector('.screenshot-lightbox-stage');
+      const lightboxTitle = document.getElementById('screenshot-lightbox-title');
+      const lightboxText = document.getElementById('screenshot-lightbox-text');
+      const lightboxClose = document.querySelector('[data-lightbox-close]');
+      const lightboxZoomValue = document.getElementById('screenshot-lightbox-zoom-value');
+      const lightboxZoomButtons = document.querySelectorAll('[data-lightbox-zoom]');
+      const screenshotLinks = document.querySelectorAll('.screenshot-card a[href$=".png"]');
+      let lightboxZoom = 1;
+
+      const applyLightboxZoom = () => {
+        if (!lightboxImage || !lightboxZoomValue) return;
+        lightboxImage.style.width = `${Math.round(lightboxZoom * 100)}%`;
+        lightboxZoomValue.textContent = `${Math.round(lightboxZoom * 100)}%`;
       };
 
-      toggle.addEventListener('click', () => {
-        const open = header.classList.toggle('menu-open');
-        toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      const setLightboxZoom = (nextZoom) => {
+        lightboxZoom = Math.max(0.5, Math.min(3, nextZoom));
+        applyLightboxZoom();
+      };
+
+      const closeLightbox = () => {
+        if (!lightbox) return;
+        lightbox.classList.remove('is-open');
+        lightbox.setAttribute('aria-hidden', 'true');
+        document.body.classList.remove('lightbox-open');
+      };
+
+      screenshotLinks.forEach((link) => {
+        link.addEventListener('click', (event) => {
+          if (!lightbox || !lightboxImage || !lightboxTitle || !lightboxText) return;
+          event.preventDefault();
+          const figure = link.closest('figure');
+          const title = figure?.querySelector('figcaption strong')?.textContent || 'Screenshot';
+          const text = figure?.querySelector('figcaption span')?.textContent || '';
+          const image = link.querySelector('img');
+          lightboxImage.setAttribute('src', link.getAttribute('href') || '');
+          lightboxImage.setAttribute('alt', image?.getAttribute('alt') || title);
+          lightboxTitle.textContent = title;
+          lightboxText.textContent = text;
+          lightboxZoom = 1;
+          applyLightboxZoom();
+          if (lightboxStage) {
+            lightboxStage.scrollLeft = 0;
+            lightboxStage.scrollTop = 0;
+          }
+          lightbox.classList.add('is-open');
+          lightbox.setAttribute('aria-hidden', 'false');
+          document.body.classList.add('lightbox-open');
+          if (lightboxClose instanceof HTMLElement) {
+            lightboxClose.focus();
+          }
+        });
       });
 
-      menu.querySelectorAll('a').forEach((link) => {
-        link.addEventListener('click', closeMenu);
+      lightboxZoomButtons.forEach((button) => {
+        button.addEventListener('click', () => {
+          const action = button.getAttribute('data-lightbox-zoom');
+          if (action === 'in') setLightboxZoom(lightboxZoom + 0.25);
+          if (action === 'out') setLightboxZoom(lightboxZoom - 0.25);
+          if (action === 'reset') {
+            setLightboxZoom(1);
+            if (lightboxStage) {
+              lightboxStage.scrollLeft = 0;
+              lightboxStage.scrollTop = 0;
+            }
+          }
+        });
       });
 
-      window.addEventListener('resize', () => {
-        if (window.innerWidth > 980) {
-          closeMenu();
+      lightbox?.addEventListener('click', (event) => {
+        if (event.target === lightbox || event.target instanceof HTMLElement && event.target.dataset.lightboxClose !== undefined) {
+          closeLightbox();
+        }
+      });
+
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+          closeLightbox();
         }
       });
     });
@@ -604,28 +687,54 @@
           </div>
           <div class="screenshot-grid">
             <figure class="card screenshot-card screenshot-card-wide">
-              <img src="./chat-mode.png" alt="Open Deskmate Chat Mode screenshot">
+              <a href="./chat-mode.png" target="_blank" rel="noopener" aria-label="Open Chat Mode screenshot full size">
+                <img src="./chat-mode.png" alt="Open Deskmate Chat Mode screenshot">
+              </a>
               <figcaption>
                 <strong>Chat Mode</strong>
                 <span>Task conversations with saved prompts, project budget selection, image previews, answer export, and project-work capture.</span>
               </figcaption>
             </figure>
             <figure class="card screenshot-card">
-              <img src="./build-mode.png" alt="Open Deskmate Build Mode screenshot">
+              <a href="./build-mode.png" target="_blank" rel="noopener" aria-label="Open Build Mode screenshot full size">
+                <img src="./build-mode.png" alt="Open Deskmate Build Mode screenshot">
+              </a>
               <figcaption>
                 <strong>Build Mode</strong>
                 <span>Workspace-aware execution with runtime preview, screenshots, file tree, logs, terminals, Changes & Git, and project context.</span>
               </figcaption>
             </figure>
             <figure class="card screenshot-card">
-              <img src="./settings.png" alt="Open Deskmate Settings screenshot">
+              <a href="./project-work.png" target="_blank" rel="noopener" aria-label="Open Project Work Popup screenshot full size">
+                <img src="./project-work.png" alt="Open Deskmate Project Work popup screenshot">
+              </a>
+              <figcaption>
+                <strong>Project Work Popup</strong>
+                <span>Floating project work access for lists, notes, drawings, documents, and work item updates while staying inside Chat or Build Mode.</span>
+              </figcaption>
+            </figure>
+            <figure class="card screenshot-card screenshot-card-wide">
+              <a href="./project-management-page.png" target="_blank" rel="noopener" aria-label="Open Project Management screenshot full size">
+                <img src="./project-management-page.png" alt="Open Deskmate Project Management screenshot">
+              </a>
+              <figcaption>
+                <strong>Project Management</strong>
+                <span>Budget projects, client details, assignees, analytics, Workboard tracking, usage windows, notes, documents, and assigned Chat or Build work in one place.</span>
+              </figcaption>
+            </figure>
+            <figure class="card screenshot-card">
+              <a href="./settings.png" target="_blank" rel="noopener" aria-label="Open Settings screenshot full size">
+                <img src="./settings.png" alt="Open Deskmate Settings screenshot">
+              </a>
               <figcaption>
                 <strong>Settings</strong>
                 <span>Simple UI for models, permissions, agents, connectors, plugins, voice, pricing, automations, and Help docs.</span>
               </figcaption>
             </figure>
-            <figure class="card screenshot-card screenshot-card-wide">
-              <img src="./subagents.png" alt="Open Deskmate Subagents screenshot">
+            <figure class="card screenshot-card">
+              <a href="./subagents.png" target="_blank" rel="noopener" aria-label="Open Subagents screenshot full size">
+                <img src="./subagents.png" alt="Open Deskmate Subagents screenshot">
+              </a>
               <figcaption>
                 <strong>Subagents</strong>
                 <span>A global control surface for tracked child-agent runs, visible activity, reusable sessions, and delegated work.</span>
@@ -809,6 +918,24 @@ pnpm dev</code></pre>
         </div>
       </div>
     </footer>
+  </div>
+  <div class="screenshot-lightbox" id="screenshot-lightbox" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="screenshot-lightbox-title">
+    <div class="screenshot-lightbox-panel">
+      <div class="screenshot-lightbox-toolbar" aria-label="Screenshot zoom controls">
+        <button type="button" data-lightbox-zoom="out" aria-label="Zoom out">-</button>
+        <span id="screenshot-lightbox-zoom-value">100%</span>
+        <button type="button" data-lightbox-zoom="in" aria-label="Zoom in">+</button>
+        <button type="button" data-lightbox-zoom="reset">Reset</button>
+      </div>
+      <button class="screenshot-lightbox-close" type="button" data-lightbox-close aria-label="Close screenshot preview">Close</button>
+      <div class="screenshot-lightbox-stage">
+        <img id="screenshot-lightbox-image" src="" alt="">
+      </div>
+      <div class="screenshot-lightbox-caption">
+        <strong id="screenshot-lightbox-title">Screenshot</strong>
+        <p id="screenshot-lightbox-text"></p>
+      </div>
+    </div>
   </div>
 </body>
 </html>

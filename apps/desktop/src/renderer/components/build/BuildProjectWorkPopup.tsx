@@ -19,6 +19,8 @@ import {
   CheckCircle2,
   ChevronDown,
   Circle,
+  Eye,
+  EyeOff,
   FileText,
   FolderOpen,
   GripVertical,
@@ -29,6 +31,7 @@ import {
   Plus,
   RefreshCw,
   Trash2,
+  Users,
   X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -281,6 +284,7 @@ export default function BuildProjectWorkPopup({
   const [newWorkItemTitle, setNewWorkItemTitle] = useState('');
   const [newListNameByItemId, setNewListNameByItemId] = useState<Record<string, string>>({});
   const [newChecklistTextByKey, setNewChecklistTextByKey] = useState<Record<string, string>>({});
+  const [expandedChecklistMeta, setExpandedChecklistMeta] = useState<Record<string, boolean>>({});
   const [newNoteTitleByItemId, setNewNoteTitleByItemId] = useState<Record<string, string>>({});
   const [newNoteTextByItemId, setNewNoteTextByItemId] = useState<Record<string, string>>({});
   const [newDocumentLabelByItemId, setNewDocumentLabelByItemId] = useState<Record<string, string>>({});
@@ -377,6 +381,7 @@ export default function BuildProjectWorkPopup({
     const stored = readStoredStateFilter(selectedProjectId, sortedColumns);
     setStateFilterIds(stored.ids);
     setStateFilterLocks(stored.locks);
+    setExpandedChecklistMeta({});
   }, [selectedProjectId, sortedColumns]);
 
   const updateSaveState = (itemId: string, state: SaveState) => {
@@ -521,6 +526,29 @@ export default function BuildProjectWorkPopup({
 
   const deleteChecklistList = (item: UsageProjectWorkItem, listId: string) => {
     patchChecklistLists(item, getChecklistListsFromItem(item).filter((list) => list.id !== listId));
+  };
+
+  const checklistMetaKey = (itemId: string, listId: string, checklistItemId: string) => `${itemId}:${listId}:${checklistItemId}`;
+
+  const toggleChecklistItemMeta = (itemId: string, listId: string, checklistItemId: string) => {
+    const key = checklistMetaKey(itemId, listId, checklistItemId);
+    setExpandedChecklistMeta((current) => ({ ...current, [key]: !current[key] }));
+  };
+
+  const setChecklistListMetaOpen = (
+    itemId: string,
+    list: UsageProjectWorkItemChecklistList,
+    open: boolean
+  ) => {
+    setExpandedChecklistMeta((current) => {
+      const next = { ...current };
+      for (const checklistItem of list.items) {
+        const key = checklistMetaKey(itemId, list.id, checklistItem.id);
+        if (open) next[key] = true;
+        else delete next[key];
+      }
+      return next;
+    });
   };
 
   const addNote = (item: UsageProjectWorkItem) => {
@@ -808,7 +836,11 @@ export default function BuildProjectWorkPopup({
               <span>{progress.percent}%</span>
             </div>
             <div className="mt-3 space-y-3">
-              {lists.map((list) => (
+              {lists.map((list) => {
+                const listMetaOpen = list.items.length > 0 && list.items.every((checkItem) => (
+                  expandedChecklistMeta[checklistMetaKey(item.id, list.id, checkItem.id)]
+                ));
+                return (
                 <div key={list.id} className="rounded-md border border-border/60 bg-card/60 p-2">
                   <div className="flex items-center gap-1.5">
                     <Input
@@ -820,12 +852,29 @@ export default function BuildProjectWorkPopup({
                         patchChecklistLists(item, nextLists);
                       }}
                     />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      disabled={list.items.length === 0}
+                      title={listMetaOpen ? 'Hide assignee and due date fields for this list' : 'Show assignee and due date fields for this list'}
+                      onClick={() => setChecklistListMetaOpen(item.id, list, !listMetaOpen)}
+                    >
+                      {listMetaOpen ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                    </Button>
                     <Button type="button" variant="ghost" size="icon" className="h-7 w-7" onClick={() => deleteChecklistList(item, list.id)}>
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
                   </div>
                   <div className="mt-2 space-y-2">
-                    {list.items.map((checkItem) => (
+                    {list.items.map((checkItem) => {
+                      const metaOpen = expandedChecklistMeta[checklistMetaKey(item.id, list.id, checkItem.id)] === true;
+                      const assigneeName = checkItem.assigneeIds?.[0]
+                        ? assignees.find((assignee) => assignee.id === checkItem.assigneeIds?.[0])?.name || 'Unknown assignee'
+                        : 'No assignee';
+                      const dueDateLabel = checkItem.dueDate ? formatDate(checkItem.dueDate) : 'No due date';
+                      return (
                       <div key={checkItem.id} className="rounded border border-border/40 bg-background/60 p-2">
                         <div className="flex items-center gap-2">
                           <input
@@ -833,43 +882,73 @@ export default function BuildProjectWorkPopup({
                             checked={checkItem.completed}
                             onChange={(event) => updateChecklistItem(item, list.id, checkItem.id, { completed: event.target.checked })}
                           />
-                          <Input
-                            defaultValue={checkItem.text}
-                            className={cn('h-7 flex-1 text-xs', checkItem.completed && 'text-muted-foreground line-through')}
-                            onBlur={(event) => updateChecklistItem(item, list.id, checkItem.id, { text: event.target.value.trim() || checkItem.text })}
-                          />
-                          <Button type="button" variant="ghost" size="icon" className="h-7 w-7" onClick={() => deleteChecklistItem(item, list.id, checkItem.id)}>
-                            <X className="h-3.5 w-3.5" />
-                          </Button>
-                        </div>
-                        <div className="mt-2 grid grid-cols-[1fr_1fr] gap-2 text-[11px]">
-                          <label className="min-w-0">
-                            <span className="mb-1 flex items-center gap-1 text-muted-foreground"><GripVertical className="h-3 w-3" />Assignee</span>
-                            <select
-                              value={checkItem.assigneeIds?.[0] || ''}
-                              onChange={(event) => updateChecklistItem(item, list.id, checkItem.id, { assigneeIds: event.target.value ? [event.target.value] : [] })}
-                              className="h-7 w-full rounded border border-input bg-background px-1 text-xs"
-                            >
-                              <option value="">None</option>
-                              {assignees.map((assignee) => (
-                                <option key={assignee.id} value={assignee.id}>{assignee.name}</option>
-                              ))}
-                            </select>
-                          </label>
-                          <label className="min-w-0">
-                            <span className="mb-1 flex items-center gap-1 text-muted-foreground"><CalendarDays className="h-3 w-3" />Due date</span>
-                            <Input
-                              type="date"
-                              value={checkItem.dueDate ? checkItem.dueDate.slice(0, 10) : ''}
-                              onChange={(event) => updateChecklistItem(item, list.id, checkItem.id, {
-                                dueDate: event.target.value ? new Date(`${event.target.value}T00:00:00.000Z`).toISOString() : null,
-                              })}
-                              className="h-7 text-xs"
+                          <div className="flex min-w-0 flex-1 items-center rounded-md border border-input bg-background">
+                            <input
+                              defaultValue={checkItem.text}
+                              className={cn('h-7 min-w-0 flex-1 bg-transparent px-2 text-xs outline-none', checkItem.completed && 'text-muted-foreground line-through')}
+                              onBlur={(event) => updateChecklistItem(item, list.id, checkItem.id, { text: event.target.value.trim() || checkItem.text })}
+                              placeholder="List item"
                             />
-                          </label>
+                            <button
+                              type="button"
+                              className={cn('flex h-7 w-7 items-center justify-center border-l border-border/60 text-muted-foreground hover:text-foreground', checkItem.assigneeIds?.length && 'text-primary')}
+                              title={`Assignee: ${assigneeName}`}
+                              aria-label={`Assignee: ${assigneeName}`}
+                              onClick={() => toggleChecklistItemMeta(item.id, list.id, checkItem.id)}
+                            >
+                              <Users className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              className={cn('flex h-7 w-7 items-center justify-center border-l border-border/60 text-muted-foreground hover:text-foreground', checkItem.dueDate && 'text-primary')}
+                              title={`Due date: ${dueDateLabel}`}
+                              aria-label={`Due date: ${dueDateLabel}`}
+                              onClick={() => toggleChecklistItemMeta(item.id, list.id, checkItem.id)}
+                            >
+                              <CalendarDays className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              className="flex h-7 w-7 items-center justify-center border-l border-border/60 text-muted-foreground hover:text-destructive"
+                              title="Delete list item"
+                              aria-label="Delete list item"
+                              onClick={() => deleteChecklistItem(item, list.id, checkItem.id)}
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
                         </div>
+                        {metaOpen ? (
+                          <div className="mt-2 grid grid-cols-[1fr_1fr] gap-2 pl-6 text-[11px]">
+                            <label className="min-w-0">
+                              <span className="mb-1 block text-muted-foreground">Assignee</span>
+                              <select
+                                value={checkItem.assigneeIds?.[0] || ''}
+                                onChange={(event) => updateChecklistItem(item, list.id, checkItem.id, { assigneeIds: event.target.value ? [event.target.value] : [] })}
+                                className="h-7 w-full rounded border border-input bg-background px-1 text-xs"
+                              >
+                                <option value="">None</option>
+                                {assignees.map((assignee) => (
+                                  <option key={assignee.id} value={assignee.id}>{assignee.name}</option>
+                                ))}
+                              </select>
+                            </label>
+                            <label className="min-w-0">
+                              <span className="mb-1 block text-muted-foreground">Due date</span>
+                              <Input
+                                type="date"
+                                value={checkItem.dueDate ? checkItem.dueDate.slice(0, 10) : ''}
+                                onChange={(event) => updateChecklistItem(item, list.id, checkItem.id, {
+                                  dueDate: event.target.value ? new Date(`${event.target.value}T00:00:00.000Z`).toISOString() : null,
+                                })}
+                                className="h-7 text-xs"
+                              />
+                            </label>
+                          </div>
+                        ) : null}
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                   <div className="mt-2 flex items-center gap-1.5">
                     <Input
@@ -889,7 +968,8 @@ export default function BuildProjectWorkPopup({
                     </Button>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
             <div className="mt-3 flex items-center gap-1.5">
               <Input
@@ -1149,13 +1229,13 @@ export default function BuildProjectWorkPopup({
             : 'border-teal-200 bg-teal-50/90'
         )}
       >
-        <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+        <div className="grid grid-cols-[minmax(0,1fr)_minmax(116px,128px)] items-end gap-2">
           <label className="grid min-w-0 gap-1 text-[11px] font-medium text-muted-foreground">
             Project
             <select
               value={selectedProjectId}
               onChange={(event) => handleSelectedProjectChange(event.target.value)}
-              className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground"
+              className="h-8 min-w-0 max-w-full rounded-md border border-input bg-background px-2 text-xs text-foreground"
               disabled={activeProjects.length === 0}
             >
               {activeProjects.length === 0 ? (
@@ -1170,7 +1250,7 @@ export default function BuildProjectWorkPopup({
               )}
             </select>
           </label>
-          <div className="grid gap-1 text-[11px] font-medium text-muted-foreground">
+          <div className="grid min-w-0 gap-1 text-[11px] font-medium text-muted-foreground">
             States
             <Popover open={stateFilterOpen} onOpenChange={setStateFilterOpen}>
               <PopoverTrigger asChild>
@@ -1179,7 +1259,7 @@ export default function BuildProjectWorkPopup({
                   variant="outline"
                   size="sm"
                   className={cn(
-                    'h-8 w-[128px] justify-between gap-1 px-2 text-xs',
+                    'h-8 w-full min-w-0 justify-between gap-1 px-2 text-xs',
                     stateFilterIds.length > 0
                       ? 'border-amber-400/60 bg-amber-500/10 text-amber-700 dark:text-amber-300'
                       : ''

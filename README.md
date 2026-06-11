@@ -123,13 +123,31 @@ OpenDeskmate has moved beyond a basic chat/build harness into a project-aware AI
 
 OpenDeskmate includes a project-management layer for the work around the agent.
 
-- **Usage projects** group Chat projects, direct Chat tasks, Build presets, and Build sessions into a project budget.
-- **Budget windows** can track money limits, total-token limits, warning mode, or blocking mode.
-- **Usage reports** break down input hit, input miss, output tokens, token costs, total tokens, and total estimated cost.
-- **Analytics** show spend over time, token mix over time, model usage, budget health, and project workload.
-- **Workboard** gives each project Table, Kanban, Timeline, and Calendar views for work items.
-- **Work items** can include state, assignees, due dates, color badges, checklist lists, rich notes, drawings, documents, and progress bars.
-- **Assignees** can be managed as real people, assigned as budget defaults, or overridden on Chat projects and Build presets.
+<table>
+  <tr>
+    <td valign="top">
+      <p><strong>Project Management and Budgets</strong> group Chat projects, direct Chat tasks, Build presets, and Build sessions into usage projects with client details, owners, assignees, project codes, links, notes, and archive-safe history.</p>
+      <p><strong>Budget windows</strong> can track money limits, total-token limits, warning mode, or blocking mode. Usage reports break down input hit, input miss, output tokens, token costs, total tokens, and total estimated cost.</p>
+      <p><strong>Analytics</strong> show spend over time, token mix over time, model usage, budget health, and project workload so project cost and activity stay visible.</p>
+    </td>
+    <td valign="top" width="420">
+      <img src="./project-management-page.png" alt="OpenDeskmate Project Management and Budgets screenshot" width="420" />
+    </td>
+  </tr>
+</table>
+
+<table>
+  <tr>
+    <td valign="top">
+      <p><strong>Workboard</strong> gives each project Table, Kanban, Timeline, and Calendar views for work items, so useful AI output can become tracked project work instead of disappearing into chat history.</p>
+      <p><strong>Work items</strong> can include state, assignees, due dates, color badges, checklist lists, rich notes, drawings, documents, progress bars, and linked local or cloud files.</p>
+      <p>The floating <strong>Project Work</strong> popup brings those lists, notes, drawings, and documents into Chat Mode or Build Mode while the user is still working with the agent.</p>
+    </td>
+    <td valign="top" width="420">
+      <img src="./project-work.png" alt="OpenDeskmate Workboard and Project Work popup screenshot" width="420" />
+    </td>
+  </tr>
+</table>
 
 This is the main difference from a normal agent harness: useful AI output can become tracked project work instead of disappearing into chat history.
 
