@@ -35,6 +35,7 @@ import {
 } from './telegram-connector';
 import { getConnectorBridgeRuntimeBaseUrl } from './connector-bridge-runtime';
 import { resolveQuickPermissionReply } from './webhook-permissions';
+import { stripReasoningForExternalReply } from '../runtime/task-message-reasoning';
 
 type NativeManagedConnectorId =
   | 'discord'
@@ -367,8 +368,14 @@ function pickTaskResponseText(resultStatus: string, taskId: string, agentId: str
     ?.slice()
     .reverse()
     .find((msg) => msg.type === 'assistant');
-  if (lastAssistant?.content) return lastAssistant.content;
-  if (stored?.summary) return stored.summary;
+  if (lastAssistant?.content) {
+    const publicContent = stripReasoningForExternalReply(lastAssistant.content);
+    if (publicContent) return publicContent;
+  }
+  if (stored?.summary) {
+    const publicSummary = stripReasoningForExternalReply(stored.summary);
+    if (publicSummary) return publicSummary;
+  }
   if (resultStatus === 'error') return 'I hit an error while running that task. Check Open Deskmate for details.';
   return 'Task completed.';
 }

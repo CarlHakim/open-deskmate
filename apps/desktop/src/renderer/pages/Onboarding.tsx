@@ -218,6 +218,7 @@ export default function OnboardingPage({ onComplete }: OnboardingPageProps) {
         baseUrl: ollamaUrl,
         enabled: true,
         models: ollamaModels,
+        toolMode: 'off',
       });
       const selected: SelectedModel = {
         provider: 'ollama',

@@ -24,6 +24,7 @@ import {
 import { recordPermissionPolicyAuditEntry } from '../permissions/policy-store';
 import { composeAgentSystemPromptAppend, getAgentContext } from '../services/agent-context';
 import { buildMemoryFlushPrompt, initSessionLog } from '../services/memory';
+import { assertOllamaReadyForAgent } from '../services/ollama-runtime';
 import { preparePayloadForSend } from '../services/context/prepare-payload';
 import { isMiniMaxHistoricalImageSessionResetReason } from '../services/context/image-history-policy';
 import { appendSessionLogMessage } from '../services/context/session-log';
@@ -180,6 +181,7 @@ export async function dispatchTask(
   const taskId = config.taskId || createTaskId(options?.source || 'task');
   const validatedPrompt = sanitizeString(config.prompt, 'prompt');
   const agentContext = getAgentContext(config.agentId);
+  await assertOllamaReadyForAgent(agentContext.agentId);
   const hookResult = await runRuntimeHooks({
     event: 'before_task_dispatch',
     agentId: agentContext.agentId,
@@ -388,6 +390,7 @@ export async function resumeTaskSession(
   const hiddenPrompt = options?.internal?.hiddenPrompt === true;
   const existingTask = existingTaskId ? getTask(existingTaskId) : undefined;
   const agentContext = getAgentContext(agentIdOverride ?? existingTask?.agentId);
+  await assertOllamaReadyForAgent(agentContext.agentId);
   const hookResult = await runRuntimeHooks({
     event: 'before_task_resume',
     agentId: agentContext.agentId,

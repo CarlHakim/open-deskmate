@@ -1,8 +1,15 @@
-import { resolveSelectedModelForAgent } from '../agent-context';
+import { getAgentContext, resolveSelectedModelForAgent } from '../agent-context';
+import { getOllamaConfig } from '../../store/appSettings';
 import { getApiKey } from '../../store/secureStorage';
 import type { ContextTokenEstimate, ContextWindowPrepareResult, ProviderType, SelectedModel } from '@accomplish/shared';
 import { buildMemoryPrompt } from '../memory';
-import { buildOpenCodeSystemPrompt, getSkillsPath } from '../../opencode/config-generator';
+import {
+  buildCompactLocalOllamaPrompt,
+  buildOpenCodeSystemPrompt,
+  getSkillsPath,
+  normalizeOllamaToolMode,
+  usesCompactOllamaPrompt,
+} from '../../opencode/config-generator';
 import { getCustomMcpRegistryPath } from '../../opencode/custom-mcp-registry';
 import { estimateTokens } from './token-estimator';
 import { computeContextStats } from './context-math';
@@ -103,6 +110,9 @@ export async function preparePayloadForSend(params: {
   }
 
   const provider = providerFromSelectedModel(selectedModel);
+  const agentContext = getAgentContext(params.agentId);
+  const ollamaToolMode = normalizeOllamaToolMode(getOllamaConfig()?.toolMode);
+  const useCompactLocalOllamaPrompt = provider === 'ollama' && usesCompactOllamaPrompt(ollamaToolMode);
   const maxOutputTokens = params.maxOutputTokensOverride ?? modelEntry.defaultMaxOutputTokens;
 
   const memoryPrompt = buildMemoryPrompt(params.agentId);
@@ -153,27 +163,31 @@ export async function preparePayloadForSend(params: {
   };
 
   const estimateFor = (systemPromptAppendNoHistory: string, historyBlock: string): ContextTokenEstimate => {
-    const includeBrowserSkill = detectTaskNeedsBrowser({
-      prompt: params.userMessage,
-      systemPromptAppend: systemPromptAppendNoHistory,
-    });
-    const systemText = buildOpenCodeSystemPrompt({
-      skillsPath: getSkillsPath(),
-      customMcpRegistryPath: getCustomMcpRegistryPath(),
-      systemPromptAppend: systemPromptAppendNoHistory,
-      includeBrowserSkill,
-    });
-
     const historyText = historyBlock
       ? (systemPromptAppendNoHistory.trim() ? `\n\n${historyBlock}` : historyBlock)
       : '';
+    const systemPromptAppend = [systemPromptAppendNoHistory, historyBlock].filter(Boolean).join('\n\n');
+    const systemText = useCompactLocalOllamaPrompt
+      ? buildCompactLocalOllamaPrompt(agentContext, {
+          toolMode: ollamaToolMode,
+          systemPromptAppend,
+        })
+      : buildOpenCodeSystemPrompt({
+          skillsPath: getSkillsPath(),
+          customMcpRegistryPath: getCustomMcpRegistryPath(),
+          systemPromptAppend: systemPromptAppendNoHistory,
+          includeBrowserSkill: detectTaskNeedsBrowser({
+            prompt: params.userMessage,
+            systemPromptAppend: systemPromptAppendNoHistory,
+          }),
+        });
 
     return estimateTokens({
       provider,
       systemText,
       toolsText,
       retrievedText,
-      historyText,
+      historyText: useCompactLocalOllamaPrompt ? '' : historyText,
       newMessageText: params.userMessage,
     });
   };

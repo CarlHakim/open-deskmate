@@ -46,7 +46,6 @@ import ModeSwitch from '../components/layout/ModeSwitch';
 import BuildRuntimeIndicator from '../components/layout/BuildRuntimeIndicator';
 import ContextWindowIndicator from '../components/chat/ContextWindowIndicator';
 import ContextInspector from '../components/chat/ContextInspector';
-import TaskActivityTimeline from '../components/chat/TaskActivityTimeline';
 import { UsageBudgetPill } from '../components/usage/UsageBudgetPill';
 import { UsageProjectSelector } from '../components/usage/UsageProjectSelector';
 import BuildProjectWorkPopup from '../components/build/BuildProjectWorkPopup';
@@ -68,6 +67,10 @@ import {
   readChatProjectWorkPopupSession,
   writeChatProjectWorkPopupSession,
 } from '../lib/project-work-popup-session';
+import {
+  normalizeSelectedModel,
+  SELECTED_MODEL_CHANGED_EVENT,
+} from '../lib/selected-model-events';
 import { useUsageProjectStore } from '../stores/usageProjectStore';
 import { useFolderStore } from '../stores/folderStore';
 // Debug log entry type
@@ -1939,6 +1942,17 @@ export default function ExecutionPage() {
     };
   }, [accomplish]);
 
+  useEffect(() => {
+    const handleSelectedModelChanged = (event: Event) => {
+      const detail = event instanceof CustomEvent ? event.detail : null;
+      setGlobalSelectedModel(normalizeSelectedModel(detail));
+    };
+    window.addEventListener(SELECTED_MODEL_CHANGED_EVENT, handleSelectedModelChanged);
+    return () => {
+      window.removeEventListener(SELECTED_MODEL_CHANGED_EVENT, handleSelectedModelChanged);
+    };
+  }, []);
+
   // Load task and subscribe to events
   useEffect(() => {
     if (id) {
@@ -2350,18 +2364,6 @@ export default function ExecutionPage() {
     // Send a simple "continue" message to resume the task
     await sendFollowUp('continue');
   };
-
-  const handleRecoveryContinue = useCallback(async () => {
-    await sendFollowUp(
-      'Continue from the tool results already in this session. Do not repeat the tool calls unless needed. Provide the final answer now.'
-    );
-  }, [sendFollowUp]);
-
-  const handleRecoveryRetry = useCallback(async () => {
-    await sendFollowUp(
-      'Retry the final response. Use the existing tool results where possible, and only rerun a tool if the result is missing or clearly stale.'
-    );
-  }, [sendFollowUp]);
 
   const { savePrompt, prompts, loadPrompts } = useSavedPromptsStore();
   const promptPickerCount = prompts.length + BUILD_RECIPES.length;
@@ -2949,21 +2951,6 @@ export default function ExecutionPage() {
               stoppingSubagentRunId={stoppingSubagentRunId}
               onOpen={(run) => void loadSubagentDetail(run)}
               onStop={(runId) => void stopSubagentRun(runId)}
-            />
-          </div>
-        </div>
-      ) : null}
-
-      {currentTask.activity && currentTask.activity.length > 0 ? (
-        <div className="px-6">
-          <div className="mx-auto max-w-5xl">
-            <TaskActivityTimeline
-              activity={currentTask.activity}
-              onContinue={hasSession ? () => void handleRecoveryContinue() : undefined}
-              onRetry={hasSession ? () => void handleRecoveryRetry() : undefined}
-              onViewRawLog={() => setDebugPanelOpen(true)}
-              busy={isLoading || currentTask.status === 'running' || currentTask.status === 'queued'}
-              className="my-3"
             />
           </div>
         </div>

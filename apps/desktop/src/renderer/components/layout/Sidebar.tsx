@@ -47,6 +47,10 @@ import {
 import { getIconByName } from './ProjectIconPicker';
 import { AgentAvatarIcon } from './AgentAvatarPicker';
 import { useTheme } from '@/contexts/ThemeContext';
+import {
+  normalizeSelectedModel,
+  SELECTED_MODEL_CHANGED_EVENT,
+} from '@/lib/selected-model-events';
 import logoImage from '/assets/open-deskmate-logo.png';
 import appFavicon from '../../../../resources/icon.png';
 
@@ -290,6 +294,17 @@ export default function Sidebar() {
       cancelled = true;
     };
   }, [accomplish, agentMenuOpen]);
+
+  useEffect(() => {
+    const handleSelectedModelChanged = (event: Event) => {
+      const detail = event instanceof CustomEvent ? event.detail : null;
+      setGlobalSelectedModel(normalizeSelectedModel(detail));
+    };
+    window.addEventListener(SELECTED_MODEL_CHANGED_EVENT, handleSelectedModelChanged);
+    return () => {
+      window.removeEventListener(SELECTED_MODEL_CHANGED_EVENT, handleSelectedModelChanged);
+    };
+  }, []);
 
   const quickSwitchProviders = useMemo(
     () => providerCatalog.filter((provider) => {

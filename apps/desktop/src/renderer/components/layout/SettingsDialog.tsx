@@ -10,6 +10,7 @@ import {
   Fragment,
   isValidElement,
   cloneElement,
+  memo,
   type ReactNode,
   type ReactElement,
   type RefObject,
@@ -82,6 +83,7 @@ import type {
   PluginDiagnosticsRecord,
   PluginRecord,
   PluginRegistryState,
+  OllamaToolMode,
   ProviderConfig,
   ProviderType,
   SelectedModel,
@@ -116,6 +118,7 @@ import type {
   UsageBudgetSettings,
   UsageBudgetStatus,
   UserSkillAssistantAskResponse,
+  AgentConfig,
 } from '@accomplish/shared';
 import { DEFAULT_PROVIDERS } from '@accomplish/shared';
 import { Button } from '@/components/ui/button';
@@ -125,6 +128,7 @@ import { notifyPluginCommandsChanged } from '@/hooks/usePluginSlashCommands';
 import appIcon from '../../../../resources/icon.png';
 import { useAgentStore } from '@/stores/agentStore';
 import { useAttachmentStore } from '@/stores/attachmentStore';
+import { emitSelectedModelChanged } from '@/lib/selected-model-events';
 import AgentAvatarPicker, { AgentAvatarIcon } from './AgentAvatarPicker';
 import PromptLibrarySettingsPanel from './PromptLibrarySettingsPanel';
 import {
@@ -183,6 +187,104 @@ const AGENT_HEARTBEAT_DEFAULT_PROMPT = [
   '- If there is actionable follow-up work, do it.',
   '- If nothing is needed, briefly report that systems are stable.',
 ].join('\n');
+
+const OLLAMA_TOOL_MODE_OPTIONS: Array<{
+  value: OllamaToolMode;
+  label: string;
+  context: string;
+  description: string;
+  useWhen: string;
+}> = [
+  {
+    value: 'off',
+    label: 'Chat only',
+    context: 'Lowest context use',
+    description: 'No tools. Best for small local models and normal question-answer chat.',
+    useWhen: 'Use this when the model is small, replies are getting cut off, or you only need plain conversation.',
+  },
+  {
+    value: 'internet',
+    label: 'Internet lookup',
+    context: 'Low context use',
+    description: 'Adds web fetch/search tools for current information without loading workspace or desktop tools.',
+    useWhen: 'Use this for research, URLs, documentation lookups, and current facts.',
+  },
+  {
+    value: 'workspace-read',
+    label: 'Workspace read',
+    context: 'Moderate context use',
+    description: 'Lets the local model read, list, and search files, plus use internet lookup.',
+    useWhen: 'Use this when you want it to explain or inspect a project without changing files.',
+  },
+  {
+    value: 'workspace-edit',
+    label: 'Workspace edit',
+    context: 'Higher context use',
+    description: 'Adds file creation and editing tools, but keeps shell, desktop automation, and MCP servers off.',
+    useWhen: 'Use this for local model code edits when the model can handle tool calls reliably.',
+  },
+  {
+    value: 'desktop',
+    label: 'Desktop tools',
+    context: 'Large context use',
+    description: 'Loads the full OpenDeskmate desktop prompt, built-in tools, and built-in desktop MCP servers.',
+    useWhen: 'Use this for larger local models that need browser/app/runtime style desktop tools.',
+  },
+  {
+    value: 'full',
+    label: 'Full MCP stack',
+    context: 'Largest context use',
+    description: 'Uses the same full desktop/tool/MCP stack as cloud models, including custom MCP servers.',
+    useWhen: 'Use this only for larger local models with enough context and strong tool-calling behavior.',
+  },
+];
+
+const normalizeOllamaToolModeForUi = (value: unknown): OllamaToolMode => {
+  switch (value) {
+    case 'basic':
+    case 'internet':
+      return 'internet';
+    case 'workspace-read':
+    case 'workspace-edit':
+    case 'desktop':
+    case 'full':
+      return value;
+    default:
+      return 'off';
+  }
+};
+
+const mergeOllamaProviderIntoCatalog = (
+  providers: ProviderConfig[],
+  baseUrl: string,
+  models: Array<{ id: string; displayName: string; size: number }>
+): ProviderConfig[] => {
+  if (models.length === 0) return providers;
+  const ollamaProvider: ProviderConfig = {
+    id: 'ollama',
+    name: 'Ollama',
+    requiresApiKey: false,
+    baseUrl,
+    models: models.map((model) => ({
+      id: model.id,
+      displayName: model.displayName || model.id,
+      provider: 'ollama',
+      fullId: model.id.startsWith('ollama/') ? model.id : `ollama/${model.id}`,
+      contextWindow: 8192,
+      maxOutputTokens: 2048,
+    })),
+  };
+  const withoutOllama = providers.filter((provider) => provider.id !== 'ollama');
+  const insertAfterDefaults = withoutOllama.findIndex((provider) => !DEFAULT_PROVIDERS.some((entry) => entry.id === provider.id));
+  if (insertAfterDefaults < 0) {
+    return [...withoutOllama, ollamaProvider];
+  }
+  return [
+    ...withoutOllama.slice(0, insertAfterDefaults),
+    ollamaProvider,
+    ...withoutOllama.slice(insertAfterDefaults),
+  ];
+};
 
 type ListedToolDecision = 'default' | PermissionPolicyAction;
 
@@ -409,6 +511,79 @@ function createModelLimitsSnapshot(
 
   return JSON.stringify(snapshot);
 }
+
+const ModelContextLimitRow = memo(function ModelContextLimitRow(props: {
+  fullId: string;
+  displayName: string;
+  defaultLimit: number;
+  effective: number;
+  overridden: boolean;
+  saving: boolean;
+  initialValue: string;
+  registerInput: (fullId: string, element: HTMLInputElement | null) => void;
+  onCommitDraft: (fullId: string, value: string) => void;
+  onSave: (fullId: string, value: string) => void;
+  onReset: (fullId: string) => void;
+}) {
+  const {
+    fullId,
+    displayName,
+    defaultLimit,
+    effective,
+    overridden,
+    saving,
+    initialValue,
+    registerInput,
+    onCommitDraft,
+    onSave,
+    onReset,
+  } = props;
+  const [draft, setDraft] = useState(initialValue);
+
+  useEffect(() => {
+    setDraft(initialValue);
+  }, [fullId, initialValue]);
+
+  return (
+    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between rounded-md border border-border/60 p-3">
+      <div className="min-w-0">
+        <div className="text-sm font-medium text-foreground">{displayName}</div>
+        <div className="mt-1 text-xs text-muted-foreground">
+          Default: <code className="rounded bg-muted px-1 py-0.5">{defaultLimit.toLocaleString()}</code>
+          {' '}• Effective: <code className="rounded bg-muted px-1 py-0.5">{effective.toLocaleString()}</code>
+          {overridden ? ' • Overridden' : ''}
+        </div>
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        <input
+          inputMode="numeric"
+          ref={(element) => registerInput(fullId, element)}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={() => onCommitDraft(fullId, draft)}
+          placeholder="Override (tokens)"
+          className="w-40 rounded-md border border-input bg-background px-3 py-2 text-sm"
+        />
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={saving}
+          onClick={() => onSave(fullId, draft)}
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={saving}
+          onClick={() => onReset(fullId)}
+        >
+          Reset
+        </Button>
+      </div>
+    </div>
+  );
+});
 
 function compareSemverLike(left: string, right: string): number {
   const parse = (value: string): number[] => value
@@ -669,6 +844,32 @@ function renderAppConnectorIcon(connectorId: string): ReactNode {
   }
 }
 
+function createAgentModelUpdate(agent: AgentProfile, selectedModel: SelectedModel | null): AgentConfig {
+  return {
+    id: agent.id,
+    name: agent.name,
+    roleName: agent.roleName,
+    description: agent.description,
+    avatar: agent.avatar,
+    avatarColor: agent.avatarColor,
+    workspaceRoot: agent.workspaceRoot,
+    systemPromptAppend: agent.systemPromptAppend,
+    selectedModel,
+  };
+}
+
+function isOllamaSelectedModel(model: SelectedModel | null | undefined): boolean {
+  if (!model) return false;
+  const provider = typeof model.provider === 'string' ? model.provider.trim().toLowerCase() : '';
+  const modelId = typeof model.model === 'string' ? model.model.trim().toLowerCase() : '';
+  return provider === 'ollama' || modelId.startsWith('ollama/');
+}
+
+function stripOllamaModelPrefix(modelId: string): string {
+  const trimmed = modelId.trim();
+  return trimmed.toLowerCase().startsWith('ollama/') ? trimmed.slice('ollama/'.length) : trimmed;
+}
+
 export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, initialSectionQuery = '' }: SettingsDialogProps) {
   const {
     agents,
@@ -733,6 +934,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const [ollamaError, setOllamaError] = useState<string | null>(null);
   const [testingOllama, setTestingOllama] = useState(false);
   const [selectedOllamaModel, setSelectedOllamaModel] = useState<string>('');
+  const [ollamaToolMode, setOllamaToolMode] = useState<OllamaToolMode>('off');
   const [savingOllama, setSavingOllama] = useState(false);
   const [keyToDelete, setKeyToDelete] = useState<string | null>(null);
   const [skillsStatus, setSkillsStatus] = useState<SkillStatus[]>([]);
@@ -1713,7 +1915,11 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     const fetchSelectedModel = async () => {
       try {
         const model = await accomplish.getSelectedModel();
-        setSelectedModel(model as SelectedModel | null);
+        const selected = (model as SelectedModel | null) ?? null;
+        setSelectedModel(selected);
+        if (isOllamaSelectedModel(selected)) {
+          setSelectedOllamaModel(stripOllamaModelPrefix(selected?.model ?? ''));
+        }
       } catch (err) {
         console.error('Failed to fetch selected model:', err);
       } finally {
@@ -2270,12 +2476,14 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         const config = await accomplish.getOllamaConfig();
         if (config) {
           setOllamaUrl(config.baseUrl);
+          setOllamaToolMode(normalizeOllamaToolModeForUi(config.toolMode));
           // Auto-test connection if previously configured
           if (config.enabled) {
             const result = await accomplish.testOllamaConnection(config.baseUrl);
             if (result.success && result.models) {
               setOllamaConnected(true);
               setOllamaModels(result.models);
+              setModelProviders((prev) => mergeOllamaProviderIntoCatalog(prev, config.baseUrl, result.models ?? []));
             }
           }
         }
@@ -3205,10 +3413,12 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       setModelStatusMessage(null);
       try {
         await accomplish.setSelectedModel(newSelection);
+        emitSelectedModelChanged(newSelection);
         setModelStatusMessage(`Model updated to ${model.displayName}`);
       } catch (err) {
         console.error('Failed to save model selection:', err);
         setSelectedModel(previousSelection);
+        emitSelectedModelChanged(previousSelection);
         setModelStatusMessage('Unable to save model selection.');
       }
     }
@@ -3244,7 +3454,6 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const openModelLimits = () => {
     const edits: Record<string, string> = {};
     for (const provider of modelProviders) {
-      if (provider.id === 'ollama') continue;
       for (const model of provider.models) {
         const override = modelLimitOverrides[model.fullId]?.contextWindowTokens;
         edits[model.fullId] = typeof override === 'number' ? String(override) : '';
@@ -3261,13 +3470,24 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setModelLimitsOpen(true);
   };
 
-  const saveModelLimit = async (fullId: string) => {
+  const commitModelLimitDraft = (fullId: string, value: string) => {
+    setModelLimitsEdits((prev) => {
+      if (prev[fullId] === value) return prev;
+      return { ...prev, [fullId]: value };
+    });
+  };
+
+  const registerModelLimitInput = (fullId: string, element: HTMLInputElement | null) => {
+    modelLimitsEditInputRefs.current[fullId] = element;
+  };
+
+  const saveModelLimit = async (fullId: string, draftValue?: string) => {
     const accomplish = getAccomplish();
     setModelLimitsSaving((prev) => ({ ...prev, [fullId]: true }));
     setModelLimitsError(null);
     setModelLimitsStatus(null);
     try {
-      const raw = (modelLimitsEditInputRefs.current[fullId]?.value ?? modelLimitsEdits[fullId] ?? '').trim();
+      const raw = (draftValue ?? modelLimitsEdits[fullId] ?? modelLimitsEditInputRefs.current[fullId]?.value ?? '').trim();
       setModelLimitsEdits((prev) => ({ ...prev, [fullId]: raw }));
       const contextWindowTokens = raw ? Number(raw) : null;
       await accomplish.setModelContextLimitOverride({ fullId, contextWindowTokens: raw ? contextWindowTokens : null });
@@ -3314,7 +3534,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
 
   const revertModelLimitChanges = () => {
     const edits: Record<string, string> = {};
-    for (const provider of remoteModelProviders) {
+    for (const provider of modelProviders) {
       for (const model of provider.models) {
         const override = modelLimitOverrides[model.fullId]?.contextWindowTokens;
         edits[model.fullId] = typeof override === 'number' ? String(override) : '';
@@ -3662,8 +3882,15 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       if (result.success && result.models) {
         setOllamaConnected(true);
         setOllamaModels(result.models);
+        setModelProviders((prev) => mergeOllamaProviderIntoCatalog(prev, ollamaUrl, result.models ?? []));
         if (result.models.length > 0) {
-          setSelectedOllamaModel(result.models[0].id);
+          const preferredModelId = stripOllamaModelPrefix(
+            isOllamaSelectedModel(selectedModel) ? (selectedModel?.model ?? '') : selectedOllamaModel
+          );
+          const preferredModel = result.models.find((model) => (
+            stripOllamaModelPrefix(model.id).toLowerCase() === preferredModelId.toLowerCase()
+          ));
+          setSelectedOllamaModel(preferredModel?.id ?? result.models[0].id);
         }
       } else {
         setOllamaError(result.error || 'Connection failed');
@@ -3675,33 +3902,74 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     }
   };
 
+  const handleOllamaToolModeChange = async (mode: OllamaToolMode) => {
+    const accomplish = getAccomplish();
+    setOllamaToolMode(mode);
+    setOllamaError(null);
+    try {
+      const existing = await accomplish.getOllamaConfig();
+      const baseUrl = (existing?.baseUrl || ollamaUrl || 'http://localhost:11434').trim();
+      const models = ollamaModels.length > 0 ? ollamaModels : (existing?.models ?? []);
+      await accomplish.setOllamaConfig({
+        baseUrl,
+        enabled: existing?.enabled ?? ollamaConnected ?? models.length > 0,
+        lastValidated: existing?.lastValidated,
+        models,
+        toolMode: mode,
+      });
+      setModelStatusMessage(`Local model capabilities updated to ${OLLAMA_TOOL_MODE_OPTIONS.find((option) => option.value === mode)?.label ?? mode}.`);
+    } catch (err) {
+      setOllamaError(err instanceof Error ? err.message : 'Failed to save local model capabilities.');
+      try {
+        const existing = await accomplish.getOllamaConfig();
+        setOllamaToolMode(normalizeOllamaToolModeForUi(existing?.toolMode));
+      } catch {
+        setOllamaToolMode('off');
+      }
+    }
+  };
+
   const handleSaveOllama = async () => {
     const accomplish = getAccomplish();
     setSavingOllama(true);
 
     try {
+      const selectedOllamaModelId = stripOllamaModelPrefix(selectedOllamaModel);
+      const newSelection: SelectedModel = {
+        provider: 'ollama',
+        model: `ollama/${selectedOllamaModelId}`,
+        baseUrl: ollamaUrl,
+      };
+
       // Save the Ollama config
       await accomplish.setOllamaConfig({
         baseUrl: ollamaUrl,
         enabled: true,
         lastValidated: Date.now(),
         models: ollamaModels,  // Include discovered models
+        toolMode: ollamaToolMode,
       });
 
       // Set as selected model
-      await accomplish.setSelectedModel({
-        provider: 'ollama',
-        model: `ollama/${selectedOllamaModel}`,
-        baseUrl: ollamaUrl,
-      });
+      await accomplish.setSelectedModel(newSelection);
 
-      setSelectedModel({
-        provider: 'ollama',
-        model: `ollama/${selectedOllamaModel}`,
-        baseUrl: ollamaUrl,
-      });
+      setSelectedModel(newSelection);
 
-      setModelStatusMessage(`Model updated to ${selectedOllamaModel}`);
+      await loadAgents();
+      const currentAgents = useAgentStore.getState().agents;
+      const ollamaPinnedAgents = currentAgents.filter((agent) => isOllamaSelectedModel(agent.selectedModel));
+      for (const agent of ollamaPinnedAgents) {
+        await upsertAgent(createAgentModelUpdate(agent, newSelection));
+      }
+      emitSelectedModelChanged(newSelection);
+
+      const providers = await accomplish.listModelProviders();
+      setModelProviders(Array.isArray(providers) && providers.length > 0 ? providers : DEFAULT_PROVIDERS);
+      setModelStatusMessage(
+        ollamaPinnedAgents.length > 0
+          ? `Model updated to ${selectedOllamaModelId} and synced ${ollamaPinnedAgents.length} Ollama agent${ollamaPinnedAgents.length === 1 ? '' : 's'}.`
+          : `Model updated to ${selectedOllamaModelId}`
+      );
     } catch (err) {
       setOllamaError(err instanceof Error ? err.message : 'Failed to save');
     } finally {
@@ -6157,7 +6425,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       setDiscordGuildAllowlist(guildAllowlistInput);
       setDiscordDmAllowlist(dmAllowlistInput);
       await refreshDiscordStatus();
-      await refreshGatewayConnectorExtensions();
+      await refreshGatewayConnectorExtensions({ silent: true });
     } catch (err) {
       setDiscordError(err instanceof Error ? err.message : 'Unable to save Discord config.');
     } finally {
@@ -6182,7 +6450,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         discordTokenInputRef.current.value = '';
       }
       await refreshDiscordStatus();
-      await refreshGatewayConnectorExtensions();
+      await refreshGatewayConnectorExtensions({ silent: true });
     } catch (err) {
       setDiscordError(err instanceof Error ? err.message : 'Unable to save Discord token.');
     } finally {
@@ -6201,7 +6469,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         discordTokenInputRef.current.value = '';
       }
       await refreshDiscordStatus();
-      await refreshGatewayConnectorExtensions();
+      await refreshGatewayConnectorExtensions({ silent: true });
     } catch (err) {
       setDiscordError(err instanceof Error ? err.message : 'Unable to clear Discord token.');
     } finally {
@@ -6298,7 +6566,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       setTelegramGroupAllowlist(groupAllowlistInput);
       setTelegramDmAllowlist(dmAllowlistInput);
       await refreshTelegramStatus();
-      await refreshGatewayConnectorExtensions();
+      await refreshGatewayConnectorExtensions({ silent: true });
     } catch (err) {
       setTelegramError(err instanceof Error ? err.message : 'Unable to save Telegram config.');
     } finally {
@@ -6335,7 +6603,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       setGatewayConnectorEnabled(payload.enabled);
       await Promise.all([
         refreshTelegramStatus(),
-        refreshGatewayConnectorExtensions(),
+        refreshGatewayConnectorExtensions({ silent: true }),
         refreshGatewayBindings(),
       ]);
     } catch (err) {
@@ -6362,7 +6630,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         telegramTokenInputRef.current.value = '';
       }
       await refreshTelegramStatus();
-      await refreshGatewayConnectorExtensions();
+      await refreshGatewayConnectorExtensions({ silent: true });
     } catch (err) {
       setTelegramError(err instanceof Error ? err.message : 'Unable to save Telegram token.');
     } finally {
@@ -6381,7 +6649,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         telegramTokenInputRef.current.value = '';
       }
       await refreshTelegramStatus();
-      await refreshGatewayConnectorExtensions();
+      await refreshGatewayConnectorExtensions({ silent: true });
     } catch (err) {
       setTelegramError(err instanceof Error ? err.message : 'Unable to clear Telegram token.');
     } finally {
@@ -7661,9 +7929,12 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     }
   };
 
-  const refreshGatewayConnectorExtensions = async () => {
+  const refreshGatewayConnectorExtensions = async (options?: { silent?: boolean }) => {
     const accomplish = getAccomplish();
-    setGatewayConnectorLoading(true);
+    const silent = options?.silent === true;
+    if (!silent) {
+      setGatewayConnectorLoading(true);
+    }
     setGatewayConnectorError(null);
     try {
       const [states, discovery, runtimes] = await Promise.all([
@@ -7688,7 +7959,9 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       console.error('Failed to refresh gateway connector extensions:', err);
       setGatewayConnectorError('Unable to refresh messaging connector extensions.');
     } finally {
-      setGatewayConnectorLoading(false);
+      if (!silent) {
+        setGatewayConnectorLoading(false);
+      }
     }
   };
 
@@ -7800,7 +8073,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       } else if (selectedGatewayConnector.definition.id === 'telegram') {
         await refreshTelegramStatus();
       }
-      await Promise.all([refreshGatewayConnectorExtensions(), refreshGatewayBindings()]);
+      await Promise.all([refreshGatewayConnectorExtensions({ silent: true }), refreshGatewayBindings()]);
     } catch (err) {
       setGatewayConnectorError(err instanceof Error ? err.message : 'Unable to save connector settings.');
     } finally {
@@ -7827,7 +8100,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       );
       syncGatewayConnectorTextFields({ secret: '' });
       setGatewayConnectorStatus(`Secret saved for ${selectedGatewayConnector.definition.name}.`);
-      await refreshGatewayConnectorExtensions();
+      await refreshGatewayConnectorExtensions({ silent: true });
     } catch (err) {
       setGatewayConnectorError(err instanceof Error ? err.message : 'Unable to save connector secret.');
     } finally {
@@ -7851,7 +8124,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         await navigator.clipboard.writeText(result.secret);
       }
       setGatewayConnectorStatus(`Secret generated for ${selectedGatewayConnector.definition.name} and copied.`);
-      await refreshGatewayConnectorExtensions();
+      await refreshGatewayConnectorExtensions({ silent: true });
     } catch (err) {
       setGatewayConnectorError(err instanceof Error ? err.message : 'Unable to generate connector secret.');
     } finally {
@@ -7872,7 +8145,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       );
       syncGatewayConnectorTextFields({ secret: '' });
       setGatewayConnectorStatus(`Secret cleared for ${selectedGatewayConnector.definition.name}.`);
-      await refreshGatewayConnectorExtensions();
+      await refreshGatewayConnectorExtensions({ silent: true });
     } catch (err) {
       setGatewayConnectorError(err instanceof Error ? err.message : 'Unable to clear connector secret.');
     } finally {
@@ -7890,7 +8163,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       const connectorInstanceId = scope === 'selected' ? selectedGatewayConnector?.config.instanceId : undefined;
       if (scope === 'selected' && !connectorId) return;
       await accomplish.clearGatewayConnectorDiscovery(connectorId, connectorInstanceId);
-      await refreshGatewayConnectorExtensions();
+      await refreshGatewayConnectorExtensions({ silent: true });
       setGatewayConnectorStatus(
         scope === 'selected'
           ? `Cleared observed IDs for ${selectedGatewayConnector?.definition.name ?? 'connector'}.`
@@ -7914,7 +8187,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         selectedGatewayConnector.definition.id,
         selectedGatewayConnector.config.instanceId
       );
-      await refreshGatewayConnectorExtensions();
+      await refreshGatewayConnectorExtensions({ silent: true });
       setGatewayConnectorStatus(`Restarted ${selectedGatewayConnector.definition.name} runtime.`);
     } catch (err) {
       setGatewayConnectorError(err instanceof Error ? err.message : 'Unable to restart connector runtime.');
@@ -7939,7 +8212,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       if (!result.ok) {
         setGatewayConnectorError(result.detail);
       }
-      await refreshGatewayConnectorExtensions();
+      await refreshGatewayConnectorExtensions({ silent: true });
     } catch (err) {
       setGatewayConnectorError(err instanceof Error ? err.message : 'Unable to test connector runtime.');
     } finally {
@@ -7982,7 +8255,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         createName || undefined
       );
       const runtimeKey = result?.state?.runtimeKey || '';
-      await refreshGatewayConnectorExtensions();
+      await refreshGatewayConnectorExtensions({ silent: true });
       if (runtimeKey) {
         setGatewayConnectorSelectedId(runtimeKey);
       }
@@ -8007,7 +8280,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         selectedGatewayConnector.config.instanceId
       );
       const removedRuntimeKey = selectedGatewayConnector.runtimeKey;
-      await refreshGatewayConnectorExtensions();
+      await refreshGatewayConnectorExtensions({ silent: true });
       setGatewayConnectorSelectedId((prev) => (prev === removedRuntimeKey ? '' : prev));
       setGatewayConnectorStatus(`Deleted instance for ${selectedGatewayConnector.definition.name}.`);
     } catch (err) {
@@ -9537,6 +9810,28 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                     </div>
                   )}
 
+                  <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/30 px-3 py-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-medium text-foreground">Context limits</p>
+                        <InfoTip text="This sets the token limit OpenDeskmate uses for Ollama context counting and preflight checks. Set it to the real context size your local model/Ollama setup supports." />
+                      </div>
+                      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                        Test Ollama first so local models appear here, then raise or lower the token limit per model.
+                      </p>
+                    </div>
+                    <ButtonTip text={ollamaConnected || modelProviders.some((entry) => entry.id === 'ollama') ? 'Edit context limits for local and cloud models.' : 'Test Ollama first so local models can be listed.'}>
+                      <button
+                        type="button"
+                        onClick={openModelLimits}
+                        disabled={!ollamaConnected && !modelProviders.some((entry) => entry.id === 'ollama')}
+                        className="rounded-md border border-border bg-background px-3 py-2 text-xs font-medium text-primary hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Edit context limits
+                      </button>
+                    </ButtonTip>
+                  </div>
+
                   {ollamaConnected && ollamaModels.length > 0 && (
                     <div className="mb-4">
                     <label className="mb-2 block text-sm font-medium text-foreground">
@@ -9554,6 +9849,66 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                           </option>
                         ))}
                       </select>
+                    </div>
+                  )}
+
+                  {ollamaConnected && ollamaModels.length > 0 && (
+                    <div className="mb-4 rounded-lg border border-border bg-muted/30 p-3">
+                      <div className="mb-3">
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-semibold text-foreground">Local model capabilities</p>
+                          <InfoTip text="Higher levels give Ollama more tools, but also add more prompt and tool context. Smaller local models usually work best with tools off or internet lookup only." />
+                        </div>
+                        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                          Start with Chat only for small local models. Move up one level only when the model needs that capability and can still answer reliably. Full MCP stack is intended for larger tool-capable local models with enough context to handle the full desktop prompt and external tools.
+                        </p>
+                      </div>
+                      <div className="grid gap-2">
+                        {OLLAMA_TOOL_MODE_OPTIONS.map((option) => {
+                          const selected = ollamaToolMode === option.value;
+                          return (
+                            <label
+                              key={option.value}
+                              className={`flex cursor-pointer gap-3 rounded-md border p-3 transition-colors ${
+                                selected
+                                  ? 'border-primary/70 bg-primary/10 text-foreground'
+                                  : 'border-border bg-background/70 text-muted-foreground hover:border-primary/40 hover:bg-muted/40'
+                              }`}
+                            >
+                              <input
+                                type="radio"
+                                name="ollama-tool-mode"
+                                value={option.value}
+                                checked={selected}
+                                onChange={() => void handleOllamaToolModeChange(option.value)}
+                                className="mt-1 h-4 w-4 accent-primary"
+                              />
+                              <span className="min-w-0 flex-1">
+                                <span className="flex flex-wrap items-center gap-2">
+                                  <span className="text-sm font-semibold text-foreground">{option.label}</span>
+                                  <span className="rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                                    {option.context}
+                                  </span>
+                                </span>
+                                <span className="mt-1 block text-xs leading-relaxed">{option.description}</span>
+                                <span className="mt-1 block text-[11px] leading-relaxed text-muted-foreground">{option.useWhen}</span>
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-background/70 px-3 py-2">
+                        <p className="text-xs text-muted-foreground">
+                          Larger local models can use larger context windows when their Ollama build supports it.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={openModelLimits}
+                          className="text-xs font-medium text-primary hover:underline"
+                        >
+                          Edit context limits
+                        </button>
+                      </div>
                     </div>
                   )}
 
@@ -9638,7 +9993,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                   </div>
                 ) : (
                   <div className="space-y-4">
-                    {modelProviders.filter((provider) => provider.id !== 'ollama').map((provider) => (
+                    {modelProviders.map((provider) => (
                       <div key={provider.id} className="rounded-lg border border-border bg-card p-4">
                         <div className="font-medium text-foreground">Provider: {provider.name}</div>
                         <div className="mt-3 space-y-3">
@@ -9648,44 +10003,20 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                             const override = modelLimitOverrides[model.fullId]?.contextWindowTokens;
                             const saving = Boolean(modelLimitsSaving[model.fullId]);
                             return (
-                              <div key={model.fullId} className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between rounded-md border border-border/60 p-3">
-                                <div className="min-w-0">
-                                  <div className="text-sm font-medium text-foreground">{model.displayName}</div>
-                                  <div className="mt-1 text-xs text-muted-foreground">
-                                    Default: <code className="rounded bg-muted px-1 py-0.5">{defaultLimit.toLocaleString()}</code>
-                                    {' '}• Effective: <code className="rounded bg-muted px-1 py-0.5">{effective.toLocaleString()}</code>
-                                    {typeof override === 'number' ? ' • Overridden' : ''}
-                                  </div>
-                                </div>
-                                <div className="flex items-center gap-2 shrink-0">
-                                  <input
-                                    inputMode="numeric"
-                                    ref={(element) => {
-                                      modelLimitsEditInputRefs.current[model.fullId] = element;
-                                    }}
-                                    defaultValue={modelLimitsEdits[model.fullId] ?? ''}
-                                    onBlur={(e) => setModelLimitsEdits((prev) => ({ ...prev, [model.fullId]: e.target.value }))}
-                                    placeholder="Override (tokens)"
-                                    className="w-40 rounded-md border border-input bg-background px-3 py-2 text-sm"
-                                  />
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    disabled={saving}
-                                    onClick={() => void saveModelLimit(model.fullId)}
-                                  >
-                                    {saving ? 'Saving…' : 'Save'}
-                                  </Button>
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    disabled={saving}
-                                    onClick={() => void resetModelLimit(model.fullId)}
-                                  >
-                                    Reset
-                                  </Button>
-                                </div>
-                              </div>
+                              <ModelContextLimitRow
+                                key={model.fullId}
+                                fullId={model.fullId}
+                                displayName={model.displayName}
+                                defaultLimit={defaultLimit}
+                                effective={effective}
+                                overridden={typeof override === 'number'}
+                                saving={saving}
+                                initialValue={modelLimitsEdits[model.fullId] ?? ''}
+                                registerInput={registerModelLimitInput}
+                                onCommitDraft={commitModelLimitDraft}
+                                onSave={(fullId, value) => void saveModelLimit(fullId, value)}
+                                onReset={(fullId) => void resetModelLimit(fullId)}
+                              />
                             );
                           })}
                         </div>

@@ -2458,6 +2458,21 @@ export function registerIPCHandlers(): void {
       if (config.lastValidated !== undefined && typeof config.lastValidated !== 'number') {
         throw new Error('Invalid Ollama configuration');
       }
+      if (config.toolMode !== undefined) {
+        const requestedToolMode = String(config.toolMode);
+        const normalizedToolMode = requestedToolMode === 'basic' ? 'internet' : requestedToolMode;
+        if (
+          normalizedToolMode !== 'off'
+          && normalizedToolMode !== 'internet'
+          && normalizedToolMode !== 'workspace-read'
+          && normalizedToolMode !== 'workspace-edit'
+          && normalizedToolMode !== 'desktop'
+          && normalizedToolMode !== 'full'
+        ) {
+          throw new Error('Invalid Ollama configuration: invalid tool mode');
+        }
+        config.toolMode = normalizedToolMode as OllamaConfig['toolMode'];
+      }
       // Validate optional models array if present
       if (config.models !== undefined) {
         if (!Array.isArray(config.models)) {

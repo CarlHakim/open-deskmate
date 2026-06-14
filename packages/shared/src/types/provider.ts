@@ -39,6 +39,8 @@ export interface OllamaModelInfo {
   size: number;
 }
 
+export type OllamaToolMode = 'off' | 'internet' | 'workspace-read' | 'workspace-edit' | 'desktop' | 'full';
+
 /**
  * Ollama server configuration
  */
@@ -47,6 +49,16 @@ export interface OllamaConfig {
   enabled: boolean;
   lastValidated?: number;
   models?: OllamaModelInfo[];  // Discovered models from Ollama API
+  /**
+   * Local models default to no tools so smaller context models can answer reliably.
+   * - off: compact prompt, no tools.
+   * - internet: compact prompt, web lookup/fetch tools only.
+   * - workspace-read: compact prompt, read/search workspace and web lookup tools.
+   * - workspace-edit: compact prompt, read/search/edit workspace and web lookup tools.
+   * - desktop: full OpenDeskmate prompt, built-in tools, and built-in desktop MCP servers.
+   * - full: full OpenDeskmate prompt, built-in tools, built-in MCP servers, and custom MCP servers.
+   */
+  toolMode?: OllamaToolMode;
 }
 
 /**

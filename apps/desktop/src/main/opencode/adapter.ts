@@ -856,6 +856,13 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
       ? selectedId
       : fallbackModelByMode[speedMode];
     args.push('--model', modelForCli);
+    if (selectedModel?.provider === 'ollama' && !config.sessionId) {
+      const title = config.prompt
+        .trim()
+        .replace(/\s+/g, ' ')
+        .slice(0, 80) || 'Local Ollama task';
+      args.push('--title', title);
+    }
     console.log(
       '[OpenCode CLI] Using OpenCode model for CLI:',
       modelForCli,

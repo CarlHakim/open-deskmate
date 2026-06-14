@@ -49,7 +49,6 @@ import type {
   SubagentRunRecord,
   SubagentRunTreeNode,
   Task,
-  TaskActivityEvent,
   TaskStatus,
   TaskMessage,
   UsageProject,
@@ -132,7 +131,6 @@ import ModeSwitch from '@/components/layout/ModeSwitch';
 import SavedPromptsDialog from '@/components/layout/SavedPromptsDialog';
 import ContextWindowIndicator from '@/components/chat/ContextWindowIndicator';
 import ContextInspector from '@/components/chat/ContextInspector';
-import TaskActivityTimeline from '@/components/chat/TaskActivityTimeline';
 import { UsageProjectSelector } from '@/components/usage/UsageProjectSelector';
 import BuildProjectWorkPopup from '@/components/build/BuildProjectWorkPopup';
 import { useSavedPromptsStore } from '@/stores/savedPromptsStore';
@@ -155,6 +153,10 @@ import {
   type BuildRecipeCategory,
 } from '@/lib/build-recipes';
 import { mergePromptCategories } from '@/lib/prompt-categories';
+import {
+  normalizeSelectedModel,
+  SELECTED_MODEL_CHANGED_EVENT,
+} from '@/lib/selected-model-events';
 
 const TERMINAL_TASK_STATES = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
 
@@ -883,8 +885,9 @@ function BuildTooltip({
   sideOffset = 10,
   className,
 }: BuildTooltipProps): ReactElement {
+  const tooltipKey = typeof content === 'string' ? content : undefined;
   return (
-    <Tooltip>
+    <Tooltip key={tooltipKey}>
       <TooltipTrigger asChild>{children}</TooltipTrigger>
       <TooltipContent
         side={side}
@@ -4282,7 +4285,6 @@ const BuildPromptComposer = memo(function BuildPromptComposer({
             variant="outline"
             size="icon-sm"
             onClick={onOpenProjectWork}
-            disabled={aiBusy}
             aria-label="Open project work linked to this preset"
           >
             <FolderOpen className="h-4 w-4" />
@@ -4647,7 +4649,6 @@ export default function BuildPage() {
   const [buildHistorySessionStateReady, setBuildHistorySessionStateReady] = useState(false);
   const [aiTaskId, setAiTaskId] = useState<string | null>(null);
   const [aiMessages, setAiMessages] = useState<TaskMessage[]>([]);
-  const [aiActivity, setAiActivity] = useState<TaskActivityEvent[]>([]);
   const [qualityCheckRun, setQualityCheckRun] = useState<BuildQualityCheckRun | null>(null);
   const [qualityChecksBusy, setQualityChecksBusy] = useState(false);
   const [dismissedQualityCheckSuggestionKey, setDismissedQualityCheckSuggestionKey] = useState<string | null>(null);
@@ -6448,7 +6449,6 @@ export default function BuildPage() {
       const latestRun = runs[0];
       let latestRunTask: Task | null = null;
       let restoredMessages = session.messages || [];
-      let restoredActivity: TaskActivityEvent[] = [];
       const sessionHasVisibleMessages = collectAssistantMessages(restoredMessages).length > 0;
       if (!sessionHasVisibleMessages && latestRun?.taskId) {
         try {
@@ -6459,7 +6459,6 @@ export default function BuildPage() {
         const taskMessages = latestRunTask?.messages || [];
         if (collectAssistantMessages(taskMessages).length > 0) {
           restoredMessages = mergeIncomingWithLocalBuildGoalMessages(restoredMessages, taskMessages);
-          restoredActivity = latestRunTask?.activity || [];
           void accomplish.updateBuildTaskHistorySession({
             sessionId: session.id,
             messages: restoredMessages,
@@ -6485,7 +6484,6 @@ export default function BuildPage() {
       setSelectedUsageProject('build', session.execution.usageProjectId || null);
       startTransition(() => {
         setAiMessages(restoredMessages);
-        setAiActivity(restoredActivity);
         setQualityCheckRun(session.execution.latestQualityCheckRun || null);
         setDiff(session.execution.latestDiff || null);
         setWorkspaceFingerprint(session.execution.latestFingerprint || null);
@@ -6806,6 +6804,17 @@ export default function BuildPage() {
       cancelled = true;
     };
   }, [accomplish, activeAgentId]);
+
+  useEffect(() => {
+    const handleSelectedModelChanged = (event: Event) => {
+      const detail = event instanceof CustomEvent ? event.detail : null;
+      setGlobalSelectedModel(normalizeSelectedModel(detail));
+    };
+    window.addEventListener(SELECTED_MODEL_CHANGED_EVENT, handleSelectedModelChanged);
+    return () => {
+      window.removeEventListener(SELECTED_MODEL_CHANGED_EVENT, handleSelectedModelChanged);
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -7411,7 +7420,6 @@ export default function BuildPage() {
             mergedMessages = mergeIncomingWithLocalBuildGoalMessages(current, task.messages || []);
             return mergedMessages;
           });
-          setAiActivity(task.activity || []);
           if (task.sessionId) {
             setActiveHistorySessionToken(task.sessionId);
           }
@@ -7630,7 +7638,6 @@ export default function BuildPage() {
         });
         setAiTaskId(task.id);
         setAiMessages((current) => mergeIncomingWithLocalBuildGoalMessages(current, task.messages || []));
-        setAiActivity(task.activity || []);
         setAiBusy(true);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -9534,7 +9541,6 @@ export default function BuildPage() {
       }
 
       setAiTaskId(task.id);
-      setAiActivity(task.activity || []);
       setGoalPrompt('');
       goalPromptDraftRef.current = '';
       setPromptComposerResetKey((current) => current + 1);
@@ -9590,41 +9596,6 @@ export default function BuildPage() {
     promptAttachedFiles,
     qualityCheckRun,
   ]);
-
-  const resumeBuildAnswerRecovery = useCallback(async (prompt: string) => {
-    if (!activeHistorySessionToken || !activeHistoryRunTaskId) return;
-    setAiBusy(true);
-    setError(null);
-    try {
-      const task = await accomplish.resumeSession(
-        activeHistorySessionToken,
-        prompt,
-        activeHistoryRunTaskId,
-        undefined,
-        undefined,
-        selectedBuildProjectId ?? null,
-      );
-      setAiTaskId(task.id);
-      setAiActivity(task.activity || []);
-      setAiMessages((current) => mergeIncomingWithLocalBuildGoalMessages(current, task.messages || []));
-      setActiveHistorySessionToken(task.sessionId || activeHistorySessionToken);
-    } catch (err) {
-      setAiBusy(false);
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }, [accomplish, activeHistoryRunTaskId, activeHistorySessionToken, selectedBuildProjectId]);
-
-  const handleBuildRecoveryContinue = useCallback(() => {
-    void resumeBuildAnswerRecovery(
-      'Continue from the current Build mode session state. If the previous run failed, explain the failure briefly, use the current workspace and existing tool results where possible, then continue toward the user goal. Do not repeat successful tool calls unless needed. Provide the final answer and summarize changed files, checks, and next steps.'
-    );
-  }, [resumeBuildAnswerRecovery]);
-
-  const handleBuildRecoveryRetry = useCallback(() => {
-    void resumeBuildAnswerRecovery(
-      'Retry the last Build mode step from the current session. Use existing tool results and current workspace state where possible, and only rerun tools if the result is missing, stale, or needed to recover from the failure.'
-    );
-  }, [resumeBuildAnswerRecovery]);
 
   const refreshQualityChecks = useCallback(async () => {
     if (!activeAgentId) return;
@@ -10740,7 +10711,6 @@ export default function BuildPage() {
     setAiTaskId(null);
     setAiBusy(false);
     setAiMessages([]);
-    setAiActivity([]);
     setQualityCheckRun(null);
     setGoalPrompt('');
     goalPromptDraftRef.current = '';
@@ -15422,16 +15392,6 @@ export default function BuildPage() {
                   ) : null}
                 </div>
               </div>
-
-              {aiActivity.length > 0 ? (
-                <TaskActivityTimeline
-                  activity={aiActivity}
-                  onContinue={activeHistorySessionToken && activeHistoryRunTaskId ? handleBuildRecoveryContinue : undefined}
-                  onRetry={activeHistorySessionToken && activeHistoryRunTaskId ? handleBuildRecoveryRetry : undefined}
-                  busy={aiBusy}
-                  className="max-h-64 overflow-auto"
-                />
-              ) : null}
 
               {subagentParentTaskId ? (
                 <div

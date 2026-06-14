@@ -8,6 +8,7 @@ import { resolveActiveAgentId } from './agent-context';
 import { approveDiscordPairing, getOrCreateDiscordPairing } from '../store/discordPairing';
 import { resolveGatewayRoute } from './gateway-routing';
 import { getGatewaySession } from '../store/gatewaySessions';
+import { stripReasoningForExternalReply } from '../runtime/task-message-reasoning';
 
 const DISCORD_MESSAGE_LIMIT = 1900;
 const DEFAULT_RUNTIME_KEY = 'default';
@@ -110,11 +111,17 @@ function pickDiscordResponseText(resultStatus: string, taskId: string, agentId: 
     .find((msg) => msg.type === 'assistant');
 
   if (lastAssistant?.content) {
-    return lastAssistant.content;
+    const publicContent = stripReasoningForExternalReply(lastAssistant.content);
+    if (publicContent) {
+      return publicContent;
+    }
   }
 
   if (stored?.summary) {
-    return stored.summary;
+    const publicSummary = stripReasoningForExternalReply(stored.summary);
+    if (publicSummary) {
+      return publicSummary;
+    }
   }
 
   if (resultStatus === 'error') {

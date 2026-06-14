@@ -678,8 +678,8 @@ interface AccomplishAPI {
     models?: Array<{ id: string; displayName: string; size: number }>;
     error?: string;
   }>;
-  getOllamaConfig(): Promise<{ baseUrl: string; enabled: boolean; lastValidated?: number; models?: Array<{ id: string; displayName: string; size: number }> } | null>;
-  setOllamaConfig(config: { baseUrl: string; enabled: boolean; lastValidated?: number; models?: Array<{ id: string; displayName: string; size: number }> } | null): Promise<void>;
+  getOllamaConfig(): Promise<{ baseUrl: string; enabled: boolean; lastValidated?: number; models?: Array<{ id: string; displayName: string; size: number }>; toolMode?: 'off' | 'internet' | 'workspace-read' | 'workspace-edit' | 'desktop' | 'full' } | null>;
+  setOllamaConfig(config: { baseUrl: string; enabled: boolean; lastValidated?: number; models?: Array<{ id: string; displayName: string; size: number }>; toolMode?: 'off' | 'internet' | 'workspace-read' | 'workspace-edit' | 'desktop' | 'full' } | null): Promise<void>;
 
   // Event subscriptions
   onTaskUpdate(callback: (event: TaskUpdateEvent) => void): () => void;

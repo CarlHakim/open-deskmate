@@ -18,6 +18,10 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import type { SelectedModel } from '@accomplish/shared';
 import { createAppSlashCommands } from '../lib/app-commands';
 import { usePluginSlashCommands } from '../hooks/usePluginSlashCommands';
+import {
+  normalizeSelectedModel,
+  SELECTED_MODEL_CHANGED_EVENT,
+} from '../lib/selected-model-events';
 
 // Import use case images for proper bundling in production
 import calendarPrepNotesImg from '/assets/usecases/calendar-prep-notes.png';
@@ -237,6 +241,17 @@ export default function HomePage() {
   useEffect(() => {
     void refreshGlobalSelectedModel();
   }, [refreshGlobalSelectedModel]);
+
+  useEffect(() => {
+    const handleSelectedModelChanged = (event: Event) => {
+      const detail = event instanceof CustomEvent ? event.detail : null;
+      setGlobalSelectedModel(normalizeSelectedModel(detail));
+    };
+    window.addEventListener(SELECTED_MODEL_CHANGED_EVENT, handleSelectedModelChanged);
+    return () => {
+      window.removeEventListener(SELECTED_MODEL_CHANGED_EVENT, handleSelectedModelChanged);
+    };
+  }, []);
 
   const executeTask = useCallback(async (
     prompt: string,

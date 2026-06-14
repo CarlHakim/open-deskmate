@@ -100,6 +100,16 @@ function hasReasoningTag(value: string): boolean {
   return /<(think|thinking|reasoning)>/i.test(value);
 }
 
+export function stripReasoningForExternalReply(text: string): string {
+  let result = String(text || '');
+  result = result.replace(
+    /<\s*(?:think|thinks|thinking|reasoning|thought|thoughts)\b[^>]*>[\s\S]*?<\s*\/\s*(?:think|thinks|thinking|reasoning|thought|thoughts)\s*>/gi,
+    ''
+  );
+  result = result.replace(/<\s*\/?\s*(?:think|thinks|thinking|reasoning|thought|thoughts)\b[^>]*>/gi, '');
+  return result.trim();
+}
+
 export function buildAssistantContentWithReasoning(
   message: OpenCodeMessage,
   answerText?: string | null

@@ -2,7 +2,7 @@ import { Bot, type Context, type BotError } from 'grammy';
 import type { TelegramConnectorConfig, TelegramConnectorStatus } from '@accomplish/shared';
 import { addTelegramDmAllowlistEntry, getTelegramConfig } from '../store/telegramConfig';
 import { getTelegramToken } from '../store/secureStorage';
-import { startAgentEngineTask } from '../runtime/agent-engine';
+import { hasActiveAgentEngineTask, isAgentEngineTaskQueued, startAgentEngineTask } from '../runtime/agent-engine';
 import { getTask } from '../store/taskHistory';
 import { resolveActiveAgentId } from './agent-context';
 import { approveTelegramPairing, getOrCreateTelegramPairing } from '../store/telegramPairing';
@@ -11,9 +11,16 @@ import { getGatewaySession } from '../store/gatewaySessions';
 import { getGatewayConfig } from '../store/gatewayConfig';
 import { resolveGatewayConnectorExtensionConfig } from '../store/gatewayConnectorExtensions';
 import { recordGatewayConnectorObservation } from '../store/gatewayConnectorDiscovery';
+import { stripReasoningForExternalReply } from '../runtime/task-message-reasoning';
 
 const TELEGRAM_MESSAGE_LIMIT = 3900;
 const DEFAULT_RUNTIME_KEY = 'default';
+const IN_FLIGHT_ROUTE_STALE_MS = 60 * 60 * 1000;
+const RECENT_TELEGRAM_MESSAGE_TTL_MS = 24 * 60 * 60 * 1000;
+
+const inFlightTelegramMessages = new Set<string>();
+const inFlightTelegramRoutes = new Map<string, { taskId: string; startedAt: number }>();
+const recentlyHandledTelegramMessages = new Map<string, number>();
 
 interface TelegramRuntimeState {
   bot: Bot | null;
@@ -105,6 +112,49 @@ function splitTelegramMessage(text: string, limit = TELEGRAM_MESSAGE_LIMIT): str
   return chunks.length > 0 ? chunks : [''];
 }
 
+function isTaskBusy(taskId: string | undefined | null): boolean {
+  const normalized = normalizeText(taskId);
+  return Boolean(normalized && (hasActiveAgentEngineTask(normalized) || isAgentEngineTaskQueued(normalized)));
+}
+
+function cleanupStaleTelegramRouteLocks(): void {
+  const now = Date.now();
+  for (const [key, value] of inFlightTelegramRoutes.entries()) {
+    if (!isTaskBusy(value.taskId) || now - value.startedAt > IN_FLIGHT_ROUTE_STALE_MS) {
+      inFlightTelegramRoutes.delete(key);
+    }
+  }
+  for (const [key, timestamp] of recentlyHandledTelegramMessages.entries()) {
+    if (now - timestamp > RECENT_TELEGRAM_MESSAGE_TTL_MS) {
+      recentlyHandledTelegramMessages.delete(key);
+    }
+  }
+}
+
+function buildTelegramTaskId(params: {
+  runtimeKey: string;
+  chatId: string;
+  messageId?: string;
+  updateId?: string;
+}): string {
+  const seed = params.messageId || params.updateId || `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  return `telegram_${params.runtimeKey}_${params.chatId}_${seed}`;
+}
+
+function buildTelegramMessageKey(params: {
+  runtimeKey: string;
+  chatId: string;
+  messageId?: string;
+  updateId?: string;
+}): string {
+  return [
+    normalizeRuntimeKey(params.runtimeKey),
+    params.chatId,
+    params.messageId || '',
+    params.updateId || '',
+  ].join(':');
+}
+
 function formatPrompt(ctx: Context, content: string): string {
   const chat = ctx.chat;
   const from = ctx.from;
@@ -121,11 +171,17 @@ function pickTelegramResponseText(resultStatus: string, taskId: string, agentId:
     .find((msg) => msg.type === 'assistant');
 
   if (lastAssistant?.content) {
-    return lastAssistant.content;
+    const publicContent = stripReasoningForExternalReply(lastAssistant.content);
+    if (publicContent) {
+      return publicContent;
+    }
   }
 
   if (stored?.summary) {
-    return stored.summary;
+    const publicSummary = stripReasoningForExternalReply(stored.summary);
+    if (publicSummary) {
+      return publicSummary;
+    }
   }
 
   if (resultStatus === 'error') {
@@ -233,7 +289,7 @@ async function handleTelegramMessage(
   ctx: Context,
   runtimeKey: string
 ): Promise<void> {
-  const message = ctx.message as { text?: string } | undefined;
+  const message = ctx.message as { text?: string; message_id?: number | string; date?: number } | undefined;
   if (!message?.text) return;
   if (ctx.from?.is_bot) return;
 
@@ -293,7 +349,43 @@ async function handleTelegramMessage(
   });
   const existingGatewaySession = getGatewaySession(route.sessionKey);
   const agentId = route.agentId;
-  const taskId = `telegram_${runtimeKey}_${chat?.id ?? 'dm'}_${Date.now()}`;
+  const chatId = String(chat?.id ?? (userId || 'dm'));
+  const messageId = message.message_id !== undefined ? String(message.message_id) : undefined;
+  const updateId = typeof ctx.update?.update_id === 'number' ? String(ctx.update.update_id) : undefined;
+  const messageKey = buildTelegramMessageKey({ runtimeKey, chatId, messageId, updateId });
+  const taskId = buildTelegramTaskId({ runtimeKey, chatId, messageId, updateId });
+
+  cleanupStaleTelegramRouteLocks();
+
+  if (recentlyHandledTelegramMessages.has(messageKey)) {
+    return;
+  }
+
+  if (inFlightTelegramMessages.has(messageKey)) {
+    return;
+  }
+
+  const inFlightRoute = inFlightTelegramRoutes.get(route.sessionKey);
+  const existingTaskId = existingGatewaySession?.taskId;
+  const activeRouteTaskId = isTaskBusy(inFlightRoute?.taskId)
+    ? inFlightRoute?.taskId
+    : isTaskBusy(existingTaskId)
+      ? existingTaskId
+      : undefined;
+
+  if (activeRouteTaskId && activeRouteTaskId !== taskId) {
+    recentlyHandledTelegramMessages.set(messageKey, Date.now());
+    try {
+      await ctx.reply('I am still working on the previous Telegram task in this chat. I will reply here when it finishes.');
+    } catch {
+      // ignore
+    }
+    return;
+  }
+
+  inFlightTelegramMessages.add(messageKey);
+  recentlyHandledTelegramMessages.set(messageKey, Date.now());
+  inFlightTelegramRoutes.set(route.sessionKey, { taskId, startedAt: Date.now() });
 
   try {
     await ctx.replyWithChatAction('typing');
@@ -329,11 +421,19 @@ async function handleTelegramMessage(
     }
   } catch (error) {
     const fallback = error instanceof Error ? error.message : 'Unknown error';
-    const errorText = `Sorry — I couldn't run that task (${fallback}).`;
+    const errorText = /already running or queued/i.test(fallback)
+      ? 'I am already working on that Telegram task and will reply when it finishes.'
+      : `Sorry — I couldn't run that task (${fallback}).`;
     try {
       await ctx.reply(errorText);
     } catch {
       // ignore
+    }
+  } finally {
+    inFlightTelegramMessages.delete(messageKey);
+    const inFlightRouteAfterRun = inFlightTelegramRoutes.get(route.sessionKey);
+    if (inFlightRouteAfterRun?.taskId === taskId) {
+      inFlightTelegramRoutes.delete(route.sessionKey);
     }
   }
 }
