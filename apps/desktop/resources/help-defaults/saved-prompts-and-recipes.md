@@ -51,6 +51,10 @@ They use the same category system as recipes so the prompt picker stays consiste
 - Chat Mode follow-up prompt.
 - Build Mode prompt.
 - Build Mode current prompt save button.
+- Workboard list prompt generation.
+- Workboard note prompt generation.
+
+Generated prompts from Workboard lists and notes can be copied, saved as a note, or inserted into the currently open Chat or Build prompt.
 
 ## Managing Categories
 
@@ -65,6 +69,8 @@ Use **Settings > Saved Prompts & Recipes** to:
 
 The Manage saved prompts popup can send you to Settings when you need category management.
 
+Use the compact Chat and Build prompt pickers for insertion. Use Settings for larger cleanup work such as categories, renaming, or deleting prompts.
+
 ## Tips
 
 - Keep reusable prompts specific.
@@ -77,9 +83,11 @@ The Manage saved prompts popup can send you to Settings when you need category m
 - If a category appears empty, check the active filter and search text.
 - If you need to rename or delete a category, use Settings rather than the compact prompt picker.
 - If a Build prompt picker only shows Build prompts, check whether the picker is filtering by mode.
+- If a generated prompt ignores extra instructions, regenerate it and make the extra instruction explicit and concrete.
 
 ## Related Pages
 
 - [Chat Mode](./chat-mode.md)
 - [Build Mode](./build-mode.md)
 - [Settings Overview](./settings/overview.md)
+- [Workboard](./workboard.md)

@@ -29,8 +29,10 @@ You can attach those items to a Project Management project so their usage, work 
   - Spend over time, token mix, model usage, budget health, and top work items.
 - **Workboard**
   - Table, Kanban, Timeline, and Calendar views for project work items.
+  - Create lists, notes, drawings, documents, prompts, and CSV exports.
 - **Work**
   - Budget contents and assignment tools for Chat projects, direct Chat tasks, Build presets, and Build sessions.
+  - Move work between budgets or remove work from budget tracking.
 - **Assignees**
   - People directory, workload overview, budget defaults, and assignment overrides.
 - **Budgets**
@@ -52,6 +54,16 @@ The Work tab shows what is currently attached to the selected budget:
 - Build sessions.
 
 Use the budget dropdowns to move work to another budget or remove it from tracking.
+
+Direct Chat tasks are included so a task with a selected project still appears even when it is not inside a Chat Mode sidebar project.
+
+## Work Assignment
+
+Use **Assign existing work** when you want to attach or move existing work.
+
+The assignment table can be filtered, resized, and exported. Hover over shortened names or context values to see the full text. Use column visibility when you need a smaller table.
+
+If a Build preset is assigned to a budget, new Build sessions from that preset inherit the budget. If only a single Build session is assigned, the preset itself remains unassigned.
 
 ## Quick Steps
 
@@ -78,11 +90,13 @@ Use the budget dropdowns to move work to another budget or remove it from tracki
 - If a Build preset does not appear, confirm the preset itself has a budget, not only one of its sessions.
 - If usage appears unpriced, add or fix pricing rows in **Settings > API usage estimate**.
 - If the left project list scrolls with the right panel, reopen Project Management after updating the app.
+- If a direct Chat task is missing, confirm the task itself has a project selected or that its Chat project is attached to the budget.
 
 ## Related Pages
 
 - [Project Budgets And Usage](./project-budgets-and-usage.md)
 - [Workboard](./workboard.md)
+- [Project Work Popup](./project-work-popup.md)
 - [Assignees](./assignees.md)
 - [Chat Mode](./chat-mode.md)
 - [Build Mode](./build-mode.md)

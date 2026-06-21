@@ -33,6 +33,8 @@ When an answer includes image links, the app can show:
 
 Image loading depends on the URL being reachable and allowing the app to display it.
 
+Click a thumbnail or inline image to open the preview for images from that answer only.
+
 ## Image Preview
 
 Click an image or thumbnail to open the preview.
@@ -59,12 +61,15 @@ For MiniMax, the app avoids resending older image content unless:
 
 This avoids unnecessary provider failures without making the user manage old image attachments manually.
 
+This cleanup should happen quietly in the background. The chat normally does not need to show a warning when the app starts a fresh provider session to avoid resending old image content.
+
 ## Troubleshooting
 
 - If a thumbnail is blank, open the source link externally to check whether the image URL is reachable.
 - If the preview cannot close, use the close button in the preview toolbar or press Escape.
 - If a provider fails after older images were used, start a fresh task or ask specifically about the current image only.
 - If you want MiniMax to use an image, attach it to the current prompt or clearly reference the earlier image.
+- If a URL points to an image but the app does not render it, the server may block hotlinking or require browser cookies.
 
 ## Related Pages
 

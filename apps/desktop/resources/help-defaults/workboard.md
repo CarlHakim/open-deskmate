@@ -46,6 +46,7 @@ Each work item can include:
 
 - Title and description.
 - Color badge.
+- Outline colors for lists, notes, drawings, and documents.
 - Source, such as a Chat project, Chat task, Build preset, or Build session.
 - State/status.
 - Priority.
@@ -65,8 +66,13 @@ Checklist items can have:
 - Assignee.
 - Due date.
 - Delete action.
+- Wrapped multi-line text.
 
 Each list and work item shows completion percentage based on checked checklist items.
+
+Lists can also have a description. Use it to describe what page, element, feature, or task area the list applies to. The description can be used later when generating an AI prompt from selected list items.
+
+Use the generate-prompt button beside a list's progress badge to create a prompt from all or selected checklist items. You can include or exclude the work item name, list name, completed items, and extra instructions.
 
 ## Notes
 
@@ -81,6 +87,8 @@ Work item notes support rich text:
 
 Notes can be edited, deleted, popped out, and shown full screen.
 
+Notes can also generate AI prompts. Use this when a note describes a request, issue, client instruction, or design idea and you want the settings assistant to turn it into a clearer prompt.
+
 ## Drawings
 
 Drawings support:
@@ -94,6 +102,8 @@ Drawings support:
 
 Exported drawing filenames include date and time.
 
+Drawings can also be attached to the current Chat or Build prompt as PNG images from the Workboard or Project Work popup.
+
 ## Documents
 
 Documents can link to:
@@ -106,6 +116,20 @@ Documents can link to:
 
 If a local file is moved, the link can break. Use edit/relink to update the document link.
 
+Documents can be attached to the current prompt when you want the AI to use a linked file or document in the next task.
+
+## Outline Colors
+
+Lists, notes, drawings, and documents can use an outline color so important items stand out.
+
+Use the color button on the item to open the color picker. Choose a swatch, pick a custom color, or use **Default** to return to the normal outline.
+
+## Project Work Popup
+
+The same work item data is available in the floating Project Work popup from Chat Mode and Build Mode.
+
+The popup is best for quick edits while staying in a task. Project Management is best for larger table, Kanban, Timeline, Calendar, reporting, and assignment work.
+
 ## Troubleshooting
 
 - If a work item is missing, check the selected project and active state filters.
@@ -116,5 +140,6 @@ If a local file is moved, the link can break. Use edit/relink to update the docu
 ## Related Pages
 
 - [Project Management](./project-management.md)
+- [Project Work Popup](./project-work-popup.md)
 - [Assignees](./assignees.md)
 - [Saving Answers And Exports](./saving-answers-and-exports.md)

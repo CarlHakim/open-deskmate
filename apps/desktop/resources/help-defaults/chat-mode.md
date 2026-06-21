@@ -15,6 +15,9 @@ Use Chat Mode when you want an answer, report, analysis, research task, file-bas
 - Stop a running task.
 - Use saved prompts and recipes.
 - Open project work linked to the current task.
+- Change the chat background without changing answer bubbles.
+- Show or hide agent avatars on answers.
+- Navigate long tasks with the Prompt Navigator.
 - Save answers as project notes or RTF files.
 - Save a completed workflow as a reusable skill.
 - Switch to Build Mode when the task becomes workspace- or runtime-oriented.
@@ -39,11 +42,19 @@ Use Chat Mode when you want an answer, report, analysis, research task, file-bas
 
 ## Useful Features
 
+- **Appearance**
+  - Use **Background** in the upper-right of the chat area to choose a chat background or return to the default theme background.
+  - Background images only affect the chat area, not answer bubbles.
+  - Answer bubbles can show the active agent avatar. Use the small avatar control to hide it, and use the restore control near the answer actions to turn it back on.
 - **Project budget selector**
   - Attach a task to a usage project so input hit, input miss, output tokens, and estimated cost are grouped with the right project.
   - Tasks inside a Chat project inherit that Chat project's attached budget unless you choose another project.
 - **Project work popup**
   - Open the linked project's lists, notes, drawings, and documents without leaving Chat Mode.
+  - The popup can also attach drawings or documents from the project to the current prompt.
+- **Prompt Navigator**
+  - Long tasks show a right-side navigator with one tick per user prompt.
+  - Hover to preview prompts, click a prompt to jump to that part of the chat, or hide the navigator from its popup.
 - **Saved prompts and recipes**
   - Insert reusable prompts from the prompt picker.
   - Manage categories from Settings.
@@ -79,6 +90,8 @@ Use Chat Mode when you want an answer, report, analysis, research task, file-bas
 
 - [Getting Started](./getting-started.md)
 - [Build Mode](./build-mode.md)
+- [Prompt Navigator](./prompt-navigator.md)
+- [Project Work Popup](./project-work-popup.md)
 - [Project Management](./project-management.md)
 - [Project Budgets And Usage](./project-budgets-and-usage.md)
 - [Saved Prompts And Recipes](./saved-prompts-and-recipes.md)

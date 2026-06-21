@@ -53,6 +53,8 @@ Use **AI Build Operator Only** to hide all other sections and focus on the Build
 
 When this mode is active, the AI Build Operator expands. Its content stays centered and readable instead of stretching edge to edge.
 
+The working directory remains visible near the prompt controls, and Changes & Git can be opened from its popup button when that section is hidden.
+
 ## Resizing
 
 You can resize:
@@ -60,6 +62,8 @@ You can resize:
 - Project & Workspace width.
 - AI Build Operator width.
 - Terminal, Runtime Logs, and Changes & Git widths.
+
+The Prompt Navigator stays attached to the AI Build Operator message area, so hiding or resizing other sections does not remove prompt navigation from long Build chats.
 
 ## Troubleshooting
 
@@ -73,3 +77,5 @@ You can resize:
 - [Build Mode](./build-mode.md)
 - [Changes And Git](./changes-and-git.md)
 - [Runtime Screenshots](./runtime-screenshots.md)
+- [Prompt Navigator](./prompt-navigator.md)
+- [Project Work Popup](./project-work-popup.md)

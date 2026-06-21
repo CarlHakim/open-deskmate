@@ -26,6 +26,11 @@ import type {
   PermissionRequest,
 } from '@accomplish/shared';
 
+const TOOL_LOOP_CONSECUTIVE_REPEAT_LIMIT = 3;
+const TOOL_LOOP_SIGNATURE_REPEAT_LIMIT = 5;
+const TOOL_LOOP_TOTAL_CALL_LIMIT = 80;
+const TOOL_LOOP_SIGNATURE_MAX_LENGTH = 4000;
+
 /**
  * Error thrown when OpenCode CLI is not available
  */
@@ -54,6 +59,91 @@ function killProcessTree(pid: number): void {
     }
   } catch {
     // ignore
+  }
+}
+
+function normalizeToolArgumentForSignature(value: unknown, depth = 0): unknown {
+  if (value == null) return value;
+  if (typeof value === 'string') {
+    return value.trim().replace(/\s+/g, ' ').slice(0, 2000);
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') return value;
+  if (Array.isArray(value)) {
+    return value.slice(0, 50).map((item) => normalizeToolArgumentForSignature(item, depth + 1));
+  }
+  if (typeof value === 'object') {
+    if (depth >= 8) return '[object]';
+    const source = value as Record<string, unknown>;
+    const output: Record<string, unknown> = {};
+    for (const key of Object.keys(source).sort().slice(0, 80)) {
+      output[key] = normalizeToolArgumentForSignature(source[key], depth + 1);
+    }
+    return output;
+  }
+  return String(value);
+}
+
+export function buildToolCallSignature(toolName: string, input: unknown): string {
+  const normalizedToolName = (toolName || 'unknown').trim().toLowerCase();
+  let normalizedInput = '';
+  try {
+    normalizedInput = JSON.stringify(normalizeToolArgumentForSignature(input));
+  } catch {
+    normalizedInput = String(input);
+  }
+  return `${normalizedToolName}:${normalizedInput}`.slice(0, TOOL_LOOP_SIGNATURE_MAX_LENGTH);
+}
+
+type ToolLoopGuardDecision = {
+  shouldStop: boolean;
+  reason?: string;
+};
+
+export class ToolLoopGuard {
+  private signatureCounts = new Map<string, number>();
+  private totalCalls = 0;
+  private lastSignature: string | null = null;
+  private consecutiveCount = 0;
+
+  record(toolName: string, input: unknown, options: { isError?: boolean } = {}): ToolLoopGuardDecision {
+    if (options.isError) {
+      return { shouldStop: false };
+    }
+
+    this.totalCalls += 1;
+    const signature = buildToolCallSignature(toolName, input);
+    const count = (this.signatureCounts.get(signature) || 0) + 1;
+    this.signatureCounts.set(signature, count);
+
+    if (signature === this.lastSignature) {
+      this.consecutiveCount += 1;
+    } else {
+      this.lastSignature = signature;
+      this.consecutiveCount = 1;
+    }
+
+    if (this.consecutiveCount >= TOOL_LOOP_CONSECUTIVE_REPEAT_LIMIT) {
+      return {
+        shouldStop: true,
+        reason: `The model repeated the same successful ${toolName || 'tool'} call ${this.consecutiveCount} times in a row.`,
+      };
+    }
+
+    if (count >= TOOL_LOOP_SIGNATURE_REPEAT_LIMIT) {
+      return {
+        shouldStop: true,
+        reason: `The model repeated the same successful ${toolName || 'tool'} call ${count} times in this run.`,
+      };
+    }
+
+    if (this.totalCalls >= TOOL_LOOP_TOTAL_CALL_LIMIT) {
+      return {
+        shouldStop: true,
+        reason: `The model reached the per-run tool call limit of ${TOOL_LOOP_TOTAL_CALL_LIMIT}.`,
+      };
+    }
+
+    return { shouldStop: false };
   }
 }
 
@@ -117,6 +207,9 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
   private interruptForceKillTimer: NodeJS.Timeout | null = null;
   private isDisposed: boolean = false;
   private wasInterrupted: boolean = false;
+  private toolLoopGuard = new ToolLoopGuard();
+  private toolLoopGuardTriggered: boolean = false;
+  private seenToolLoopInvocationIds = new Set<string>();
   /** Temp file holding the prompt (to avoid shell escaping issues on Windows) */
   private promptFilePath: string | null = null;
   private readonly verboseStreamLogs =
@@ -162,6 +255,9 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
     this.sawAssistantTextAfterLastToolFinish = false;
     this.sawAssistantText = false;
     this.wasInterrupted = false;
+    this.toolLoopGuard = new ToolLoopGuard();
+    this.toolLoopGuardTriggered = false;
+    this.seenToolLoopInvocationIds = new Set<string>();
     // Clean up previous child process if adapter is reused
     if (this.childProcess) {
       try {
@@ -183,7 +279,9 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
     const configPath = await generateOpenCodeConfig({
       agentId: config.agentId,
       systemPromptAppend: config.systemPromptAppend,
-      includeBrowserSkill: config.requiresBrowser !== false,
+      includeBrowserSkill: config.requiresBrowser === true,
+      buildMode: config.buildMode === true,
+      buildWorkspaceRelativePath: config.buildWorkspaceRelativePath,
     });
     this.currentConfigPath = configPath;
     console.log('[OpenCode CLI] Config generated at:', configPath);
@@ -707,6 +805,13 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
     };
+    const opencodeConfigHome = path.join(app.getPath('userData'), 'opencode-xdg');
+    try {
+      fs.mkdirSync(opencodeConfigHome, { recursive: true });
+      env.XDG_CONFIG_HOME = opencodeConfigHome;
+    } catch (error) {
+      console.warn('[OpenCode CLI] Failed to prepare app-scoped XDG_CONFIG_HOME:', error);
+    }
 
     if (app.isPackaged) {
       // Run the bundled CLI with Electron acting as Node (no system Node required).
@@ -747,6 +852,11 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
         env.PATH = getExtendedNodePath(env.PATH);
         console.log('[OpenCode CLI] Extended PATH for packaged app');
       }
+    }
+
+    if (config?.buildMode) {
+      env.ACCOMPLISH_BUILD_MODE = '1';
+      env.ACCOMPLISH_BUILD_WORKSPACE_RELATIVE = config.buildWorkspaceRelativePath || '.';
     }
 
     // Load all API keys
@@ -995,6 +1105,8 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
           message: `Using ${toolName}`,
         });
 
+        this.recordToolLoopGuard(toolName, toolInput, false, message.part.id);
+
         // Check if this is AskUserQuestion (requires user input)
         if (toolName === 'AskUserQuestion') {
           this.handleAskUserQuestion(toolInput as AskUserQuestionInput);
@@ -1046,6 +1158,12 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
         // If status is completed or error, also emit tool-result
         if (toolUseStatus === 'completed' || toolUseStatus === 'error') {
           this.emit('tool-result', toolUseOutput);
+          this.recordToolLoopGuard(
+            toolUseName,
+            toolUseInput,
+            toolUseStatus === 'error',
+            toolUseMessage.part.callID || toolUseMessage.part.id
+          );
         }
 
         // Check if this is AskUserQuestion (requires user input)
@@ -1372,6 +1490,75 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
 
     // Avoid keeping app alive on shutdown just because the timer exists.
     this.interruptForceKillTimer.unref?.();
+  }
+
+  private recordToolLoopGuard(toolName: string, input: unknown, isError = false, invocationId?: string): void {
+    if (this.toolLoopGuardTriggered || this.hasCompleted || this.pendingComplete) return;
+    if (invocationId) {
+      const scopedInvocationId = `${toolName || 'unknown'}:${invocationId}`;
+      if (this.seenToolLoopInvocationIds.has(scopedInvocationId)) return;
+      this.seenToolLoopInvocationIds.add(scopedInvocationId);
+    }
+    const decision = this.toolLoopGuard.record(toolName, input, { isError });
+    if (!decision.shouldStop) return;
+    this.stopRepeatedToolLoop(decision.reason || 'The model appears to be repeating tool calls.');
+  }
+
+  private stopRepeatedToolLoop(reason: string): void {
+    if (this.toolLoopGuardTriggered || this.hasCompleted || this.pendingComplete) return;
+    this.toolLoopGuardTriggered = true;
+    const text = [
+      'I stopped this run because the model appeared to be stuck repeating the same tool call.',
+      '',
+      reason,
+      '',
+      'The repeated tool results were already available, so the model should use the existing result and answer instead of calling the same tool again.',
+    ].join('\n');
+    const msgId = this.generateMessageId();
+    const synthetic: OpenCodeMessage = {
+      type: 'text',
+      timestamp: Date.now(),
+      sessionID: this.currentSessionId || undefined,
+      part: {
+        id: msgId,
+        sessionID: this.currentSessionId || 'unknown',
+        messageID: msgId,
+        type: 'text',
+        text,
+      },
+    };
+    this.handleMessage(synthetic);
+    this.emit('debug', { type: 'warn', message: reason });
+    this.emit('progress', { stage: 'tool-loop-guard', message: reason });
+    this.scheduleComplete({
+      status: 'success',
+      sessionId: this.currentSessionId || this.requestedSessionId || undefined,
+    });
+    this.killActiveProcessForGuard();
+  }
+
+  private killActiveProcessForGuard(): void {
+    if (this.childProcess) {
+      try {
+        killProcessTree(this.childProcess.pid ?? 0);
+        this.childProcess.kill();
+      } catch {
+        // ignore
+      }
+    }
+    if (this.ptyProcess) {
+      const pid = this.ptyProcess.pid ?? 0;
+      try {
+        this.ptyProcess.kill();
+      } catch {
+        // ignore
+      }
+      try {
+        killProcessTree(pid);
+      } catch {
+        // ignore
+      }
+    }
   }
 
   private clearInterruptForceKillTimer(): void {

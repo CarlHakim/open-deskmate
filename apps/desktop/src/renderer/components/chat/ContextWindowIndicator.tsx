@@ -17,11 +17,11 @@ function classifyColor(usedPct: number): 'green' | 'yellow' | 'red' {
 function badgeClasses(kind: 'green' | 'yellow' | 'red'): string {
   switch (kind) {
     case 'red':
-      return 'border-red-500/25 bg-red-500/10 text-red-700';
+      return 'border-red-500/55 bg-background/90 text-red-700 shadow-sm backdrop-blur-sm dark:text-red-200';
     case 'yellow':
-      return 'border-amber-500/25 bg-amber-500/10 text-amber-800';
+      return 'border-amber-500/55 bg-background/90 text-amber-800 shadow-sm backdrop-blur-sm dark:text-amber-200';
     default:
-      return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-700';
+      return 'border-emerald-500/55 bg-background/90 text-emerald-700 shadow-sm backdrop-blur-sm dark:text-emerald-200';
   }
 }
 

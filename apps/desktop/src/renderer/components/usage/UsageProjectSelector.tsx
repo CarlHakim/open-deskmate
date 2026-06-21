@@ -45,7 +45,9 @@ export function UsageProjectSelector({
 
   return (
     <label className={cn('inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground', className)}>
-      <Folder className="h-3.5 w-3.5 shrink-0" />
+      <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-background/85 text-foreground/80 shadow-sm backdrop-blur-sm">
+        <Folder className="h-3.5 w-3.5" />
+      </span>
       {!compact && <span className="shrink-0">Project</span>}
       <select
         value={selected || ''}
@@ -57,7 +59,10 @@ export function UsageProjectSelector({
           }
           onChange?.(next);
         }}
-        className="h-8 min-w-[150px] max-w-[220px] rounded-md border border-border/70 bg-background px-2 text-xs text-foreground outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
+        className={cn(
+          'h-8 rounded-md border border-border/70 bg-background px-2 text-xs text-foreground outline-none focus:ring-2 focus:ring-ring disabled:opacity-50',
+          compact ? 'min-w-[104px] max-w-[132px]' : 'min-w-[150px] max-w-[220px]'
+        )}
         title="Assign this run to a usage project"
       >
         <option value="">No project</option>

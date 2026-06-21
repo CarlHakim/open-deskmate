@@ -36,6 +36,8 @@ const VALID_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
 const INVALID_CHARS_RE = /[^a-z0-9_-]+/g;
 const LEADING_DASH_RE = /^-+/;
 const TRAILING_DASH_RE = /-+$/;
+const AVATAR_IMAGE_DATA_URL_RE = /^data:image\/(?:png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=\r\n]+$/i;
+const MAX_AVATAR_IMAGE_DATA_URL_LENGTH = 1_000_000;
 
 function normalizeAgentId(value: string | undefined | null): string {
   const trimmed = (value ?? '').trim();
@@ -110,6 +112,13 @@ function normalizeOptionalShortText(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   return trimmed || undefined;
+}
+
+function normalizeAvatarImageDataUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > MAX_AVATAR_IMAGE_DATA_URL_LENGTH) return undefined;
+  return AVATAR_IMAGE_DATA_URL_RE.test(trimmed) ? trimmed : undefined;
 }
 
 function normalizeAgentIdList(value: unknown): string[] {
@@ -238,6 +247,7 @@ export function listAgents(): AgentProfile[] {
     const next: AgentProfile = {
       ...agent,
       roleName: normalizeOptionalShortText(agent.roleName),
+      avatarImageDataUrl: normalizeAvatarImageDataUrl(agent.avatarImageDataUrl),
       agenticLoopEnabled: loopEnabled,
       agenticLoopMaxIterations: normalizeAgenticLoopMaxIterations(
         agent.agenticLoopMaxIterations,
@@ -279,6 +289,7 @@ export function listAgents(): AgentProfile[] {
     };
     if (
       next.roleName !== agent.roleName
+      || next.avatarImageDataUrl !== agent.avatarImageDataUrl
       || next.agenticLoopEnabled !== agent.agenticLoopEnabled
       || next.agenticLoopMaxIterations !== agent.agenticLoopMaxIterations
       || next.agenticLoopTimeoutMs !== agent.agenticLoopTimeoutMs
@@ -391,6 +402,7 @@ export function upsertAgent(config: AgentConfig): AgentProfile {
       description: config.description,
       avatar: config.avatar,
       avatarColor: config.avatarColor,
+      avatarImageDataUrl: normalizeAvatarImageDataUrl(config.avatarImageDataUrl),
       workspaceRoot: config.workspaceRoot,
       systemPromptAppend: config.systemPromptAppend,
       selectedModel: hasSelectedModel
@@ -509,6 +521,7 @@ export function upsertAgent(config: AgentConfig): AgentProfile {
     description: config.description,
     avatar: config.avatar,
     avatarColor: config.avatarColor,
+    avatarImageDataUrl: normalizeAvatarImageDataUrl(config.avatarImageDataUrl),
     workspaceRoot: config.workspaceRoot,
     systemPromptAppend: config.systemPromptAppend,
     selectedModel: config.selectedModel ?? undefined,

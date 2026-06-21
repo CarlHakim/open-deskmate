@@ -7,15 +7,21 @@ Project Management sits alongside those modes so you can track project budgets, 
 ## Core Areas
 
 - [Chat Mode](./chat-mode.md)
-  - Start a new task, attach files, work in a folder, use memory hints, and continue an existing conversation.
+  - Start a new task, attach files, work in a folder, use memory hints, customize the chat background, view image previews, and continue an existing conversation.
 - [Build Mode](./build-mode.md)
-  - Pick a workspace, run the project runtime, inspect terminals and logs, review Changes & Git, and work with the AI Build Operator.
+  - Pick a workspace, run the project runtime, inspect terminals and logs, capture screenshots, run smoke-test workflows, review Changes & Git, and work with the AI Build Operator.
 - [Project Management](./project-management.md)
   - Create usage projects, attach Chat projects and Build presets, manage budgets, assignees, Workboard items, notes, drawings, documents, and analytics.
 - [Project Budgets And Usage](./project-budgets-and-usage.md)
   - Track input hit, input miss, and output tokens and costs by project, with optional warning or blocking budget windows.
 - [Workboard](./workboard.md)
-  - Manage project work in Table, Kanban, Timeline, and Calendar views.
+  - Manage project work in Table, Kanban, Timeline, and Calendar views, including lists, notes, drawings, documents, and prompt generation.
+- [Project Work Popup](./project-work-popup.md)
+  - Open project lists, notes, drawings, and documents from Chat Mode or Build Mode without leaving the current task.
+- [Prompt Navigator](./prompt-navigator.md)
+  - Jump between prompts in long Chat and Build conversations.
+- [Local Models And Ollama](./local-models-and-ollama.md)
+  - Use local Ollama models with capability levels and context limit overrides.
 - [Changes And Git](./changes-and-git.md)
   - Review Build Mode file changes, Git status, commit, push, branches, remotes, and mismatch recovery.
 - [Slash Commands](./slash-commands.md)
@@ -40,9 +46,10 @@ Use this page when you are new to the app or you are not sure whether a task bel
 3. Switch to **Build Mode** if you need runtime preview, terminals, runtime logs, Git review, screenshots, or workspace-level editing.
 4. Open **Project Management** if you want to track usage budgets, client/project details, Workboard items, notes, documents, drawings, or assignees.
 5. Use **Saved Prompts And Recipes** for repeatable prompts.
-6. Use **slash commands** for fast navigation and task control.
-7. Use **Plugins** if you want manifest-driven commands, hooks, tools, or help docs.
-8. Open **Help** whenever you need a page-specific reference.
+6. Use the **Project Work popup** when you want project work beside the current Chat or Build task.
+7. Use **slash commands** for fast navigation and task control.
+8. Use **Plugins** if you want manifest-driven commands, hooks, tools, or help docs.
+9. Open **Help** whenever you need a page-specific reference.
 
 ## Troubleshooting
 
@@ -65,6 +72,8 @@ The Help viewer itself is editable.
 - [Editing Help Content](./editing-help.md)
 - [Help Architecture](./help-architecture.md)
 - [Activity Timeline And Recovery](./activity-timeline-and-recovery.md)
+- [Build Smoke Testing](./build-smoke-testing.md)
+- [Troubleshooting Agent Loops](./troubleshooting-agent-loops.md)
 - [Runtime Screenshots](./runtime-screenshots.md)
 - [Saving Answers And Exports](./saving-answers-and-exports.md)
 

@@ -48,6 +48,19 @@ interface ConversationListItemProps {
   draggable?: boolean;
 }
 
+export function getTaskDisplayTitle(task: Task): string {
+  return task.summary || task.prompt || 'Untitled task';
+}
+
+export function getTaskHoverTitle(task: Task): string {
+  const displayTitle = getTaskDisplayTitle(task);
+  const prompt = String(task.prompt || '').trim();
+  const display = String(displayTitle || '').trim();
+  const looksTruncated = /(\.\.\.|…)\s*$/.test(display);
+  if (looksTruncated && prompt && prompt !== display) return prompt;
+  return display;
+}
+
 export default function ConversationListItem({ task, draggable = true }: ConversationListItemProps) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -60,7 +73,9 @@ export default function ConversationListItem({ task, draggable = true }: Convers
   const [pendingMoveAfterCreate, setPendingMoveAfterCreate] = useState(false);
   const [showRenameDialog, setShowRenameDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
-  const [newName, setNewName] = useState(task.summary || task.prompt);
+  const [newName, setNewName] = useState(getTaskDisplayTitle(task));
+  const displayTitle = getTaskDisplayTitle(task);
+  const hoverTitle = getTaskHoverTitle(task);
 
   const stopEventPropagation = (event: SyntheticEvent) => {
     event.stopPropagation();
@@ -159,7 +174,7 @@ export default function ConversationListItem({ task, draggable = true }: Convers
         }}
         draggable={draggable}
         onDragStart={handleDragStart}
-        title={task.summary || task.prompt}
+        title={hoverTitle}
         className={cn(
           'task-item w-full text-left px-3 py-2.5 rounded-xl text-sm transition-all duration-200',
           'text-foreground/80 hover:bg-accent/60 hover:text-foreground',
@@ -177,7 +192,7 @@ export default function ConversationListItem({ task, draggable = true }: Convers
         >
           {getStatusIcon()}
         </div>
-        <span className="block truncate flex-1 font-medium">{task.summary || task.prompt}</span>
+        <span className="block truncate flex-1 font-medium">{displayTitle}</span>
 
         {/* Three-dot dropdown menu */}
         <DropdownMenu>

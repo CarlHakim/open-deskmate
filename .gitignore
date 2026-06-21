@@ -96,3 +96,6 @@ apps/desktop/skills/dev-browser/*debug*.webp
 *.sqlite-shm
 *.db-wal
 *.db-shm
+
+# Local pnpm store
+.pnpm-store/

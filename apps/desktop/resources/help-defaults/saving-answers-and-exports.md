@@ -47,6 +47,8 @@ Rich copy preserves common formatting when the destination supports it:
 
 Plain text destinations such as Notepad receive a compatible plain text version.
 
+For word processors such as Microsoft Word, use the built-in copy action instead of manually selecting the text. The built-in copy includes both rich HTML and plain text where supported by the destination app.
+
 ## Answer Popout
 
 Long answers can be opened in a larger reading popup.
@@ -85,9 +87,13 @@ You can choose the location and rename the file before saving.
 
 RTF output is designed for word processors such as Microsoft Word and preserves tables where possible.
 
+RTF files use a standard timestamped filename by default so long answer text does not accidentally become an invalid filename. You can rename the file in the save dialog.
+
 ## Attach Exported Files To Work Items
 
 When saving an RTF file, you can also attach it to a project work item as a document link.
+
+The same save-to-note and save-to-RTF flows are available from Chat Mode answers and Build Mode final answers.
 
 ## Troubleshooting
 
@@ -95,6 +101,7 @@ When saving an RTF file, you can also attach it to a project work item as a docu
 - If a note is too large to save, export as RTF or split the answer into smaller notes.
 - If Word does not preserve formatting, use the answer copy/export buttons rather than selecting text manually.
 - If an RTF filename is rejected, use the default timestamped name or shorten the custom name.
+- If a saved note loses table formatting, reopen the work item note editor and confirm the note was saved as rich text, not plain text.
 
 ## Related Pages
 

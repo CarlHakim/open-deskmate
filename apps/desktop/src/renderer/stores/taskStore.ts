@@ -65,6 +65,7 @@ interface TaskState {
   loadTasks: () => Promise<void>;
   loadTaskById: (taskId: string) => Promise<void>;
   deleteTask: (taskId: string) => Promise<void>;
+  clearCurrentTask: () => void;
   clearHistory: () => Promise<void>;
   reset: () => void;
   // Folder management
@@ -187,7 +188,37 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     const accomplish = getAccomplish();
     const agentId = config.agentId ?? useAgentStore.getState().activeAgentId;
     const finalConfig = { ...config, agentId };
-    set({ isLoading: true, error: null });
+    const optimisticTaskId = finalConfig.taskId;
+    if (optimisticTaskId) {
+      const now = new Date().toISOString();
+      const optimisticTask: Task = {
+        id: optimisticTaskId,
+        prompt: finalConfig.prompt,
+        agentId,
+        status: 'queued',
+        messages: [{
+          id: `optimistic_${createMessageId()}`,
+          type: 'user',
+          content: finalConfig.prompt,
+          timestamp: now,
+        }],
+        createdAt: now,
+        workingDirectory: finalConfig.workingDirectory,
+        attachedFiles: finalConfig.attachedFiles,
+        privacyMode: finalConfig.privacyMode ?? 'normal',
+        usageProjectId: finalConfig.usageProjectId ?? null,
+        hiddenFromHistory: finalConfig.hiddenFromHistory,
+        parentTaskId: finalConfig.parentTaskId,
+      };
+      set((state) => ({
+        currentTask: state.currentTask?.id === optimisticTaskId ? state.currentTask : optimisticTask,
+        tasks: [optimisticTask, ...state.tasks.filter((task) => task.id !== optimisticTaskId)],
+        isLoading: true,
+        error: null,
+      }));
+    } else {
+      set({ isLoading: true, error: null });
+    }
     try {
       void accomplish.logEvent({
         level: 'info',
@@ -196,8 +227,17 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       });
       const task = await accomplish.startTask(finalConfig);
       const existingCurrent = get().currentTask;
+      const existingMessages = existingCurrent?.id === task.id
+        ? existingCurrent.messages.filter((message) => !(
+          message.id.startsWith('optimistic_')
+          && task.messages.some((incoming) => (
+            incoming.type === message.type
+            && String(incoming.content || '').trim() === String(message.content || '').trim()
+          ))
+        ))
+        : [];
       const mergedMessages = existingCurrent?.id === task.id
-        ? [...existingCurrent.messages, ...task.messages]
+        ? [...existingMessages, ...task.messages]
         : task.messages;
       const nextTask = existingCurrent?.id === task.id
         ? { ...task, messages: mergedMessages }
@@ -219,6 +259,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       return nextTask;
     } catch (err) {
       set({
+        currentTask: optimisticTaskId && get().currentTask?.id === optimisticTaskId ? null : get().currentTask,
+        tasks: optimisticTaskId ? get().tasks.filter((task) => task.id !== optimisticTaskId) : get().tasks,
         error: err instanceof Error ? err.message : 'Failed to start task',
         isLoading: false,
       });
@@ -734,7 +776,15 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     const accomplish = getAccomplish();
     const agentId = useAgentStore.getState().activeAgentId;
     const task = await accomplish.getTask(taskId, agentId);
-    set({ currentTask: task, error: task ? null : 'Task not found' });
+    set((state) => {
+      if (task) {
+        return { currentTask: task, error: null };
+      }
+      if (state.currentTask?.id === taskId) {
+        return { currentTask: state.currentTask, error: null };
+      }
+      return { currentTask: null, error: 'Task not found' };
+    });
   },
 
   deleteTask: async (taskId: string) => {
@@ -777,6 +827,19 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         console.error('Failed to refresh tasks after delete failure:', refreshErr);
       }
     }
+  },
+
+  clearCurrentTask: () => {
+    set({
+      currentTask: null,
+      isLoading: false,
+      error: null,
+      permissionRequest: null,
+      setupProgress: null,
+      setupProgressTaskId: null,
+      setupDownloadStep: 1,
+      isLauncherOpen: false,
+    });
   },
 
   clearHistory: async () => {

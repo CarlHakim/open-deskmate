@@ -27,12 +27,13 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
-import { XCircle, CornerDownLeft, ArrowLeft, CheckCircle2, AlertCircle, Terminal, Wrench, FileText, Search, Code, Brain, Clock, Square, Play, Download, File, Bug, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Trash2, Check, Folder, FolderOpen, X, Bookmark, BookmarkCheck, Settings, User, Mic, Copy, Plus, Image, Sparkles, Shield, ZoomIn, ZoomOut, RotateCcw, Loader2 } from 'lucide-react';
+import { XCircle, CornerDownLeft, ArrowLeft, CheckCircle2, AlertCircle, Terminal, Wrench, FileText, Search, Code, Brain, Clock, Square, Play, Download, File, Bug, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Trash2, Check, Folder, FolderOpen, X, Bookmark, BookmarkCheck, Settings, User, Mic, Copy, Plus, Image, Sparkles, Shield, ZoomIn, ZoomOut, RotateCcw, Loader2, Eye, EyeOff } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -46,6 +47,7 @@ import ModeSwitch from '../components/layout/ModeSwitch';
 import BuildRuntimeIndicator from '../components/layout/BuildRuntimeIndicator';
 import ContextWindowIndicator from '../components/chat/ContextWindowIndicator';
 import ContextInspector from '../components/chat/ContextInspector';
+import PromptNavigator, { createPromptPreview, type PromptNavigatorEntry } from '../components/chat/PromptNavigator';
 import { UsageBudgetPill } from '../components/usage/UsageBudgetPill';
 import { UsageProjectSelector } from '../components/usage/UsageProjectSelector';
 import BuildProjectWorkPopup from '../components/build/BuildProjectWorkPopup';
@@ -71,8 +73,13 @@ import {
   normalizeSelectedModel,
   SELECTED_MODEL_CHANGED_EVENT,
 } from '../lib/selected-model-events';
+import { registerPromptAttachmentTarget, registerPromptInsertionTarget } from '../lib/prompt-insertion';
 import { useUsageProjectStore } from '../stores/usageProjectStore';
 import { useFolderStore } from '../stores/folderStore';
+import { AgentAvatarIcon } from '../components/layout/AgentAvatarPicker';
+import { isAgentCharacterAvatar } from '@/lib/agent-character-gallery';
+import ChatBackgroundSwitcher, { useChatBackgroundSelection } from '@/components/chat/ChatBackgroundSwitcher';
+import { useTopBarControls } from '../stores/topBarControlsStore';
 // Debug log entry type
 interface DebugLogEntry {
   taskId: string;
@@ -97,6 +104,113 @@ type AnswerSavePending = {
   html: string;
   rtf: string;
 };
+
+const CHAT_ANSWER_AVATAR_STORAGE_KEY = 'opendeskmate:chat-answer-agent-avatar-visible';
+const CHAT_PROMPT_NAVIGATOR_STORAGE_KEY = 'opendeskmate:prompt-navigator:chat-visible';
+
+function readChatAnswerAvatarVisible(): boolean {
+  if (typeof window === 'undefined') return true;
+  try {
+    return window.localStorage.getItem(CHAT_ANSWER_AVATAR_STORAGE_KEY) !== 'off';
+  } catch {
+    return true;
+  }
+}
+
+function persistChatAnswerAvatarVisible(visible: boolean): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(CHAT_ANSWER_AVATAR_STORAGE_KEY, visible ? 'on' : 'off');
+  } catch {
+    // Ignore preference persistence failures.
+  }
+}
+
+function isPictureAvatar(avatar: string | undefined, imageDataUrl: string | undefined): boolean {
+  return Boolean(imageDataUrl || isAgentCharacterAvatar(avatar));
+}
+
+function formatExecutionModelBadgeLabel(
+  model: SelectedModel | null | undefined,
+  modelProviders: ProviderConfig[]
+): string {
+  const selected = model as (SelectedModel & { id?: string }) | null | undefined;
+  const modelFullId = (
+    typeof selected?.model === 'string'
+      ? selected.model
+      : typeof selected?.id === 'string'
+        ? selected.id
+        : ''
+  ).trim();
+  if (!modelFullId) return '';
+
+  const providerId = (selected?.provider || '').trim();
+  const providerLabel =
+    modelProviders.find((entry) => String(entry.id) === providerId)?.name || providerId;
+  const knownModel = modelProviders
+    .flatMap((entry) => entry.models)
+    .find((entry) => entry.fullId === modelFullId);
+  const shortModelName = knownModel
+    ? knownModel.displayName
+    : modelFullId.includes('/')
+      ? modelFullId.slice(modelFullId.indexOf('/') + 1)
+      : modelFullId;
+  return providerLabel ? `${providerLabel}: ${shortModelName}` : shortModelName;
+}
+
+function TaskStatusBadge({ status }: { status: Task['status'] }) {
+  switch (status) {
+    case 'queued':
+      return (
+        <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-600">
+          <Clock className="h-3 w-3" />
+          Queued
+        </span>
+      );
+    case 'running':
+      return (
+        <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium">
+          <span className="animate-shimmer bg-gradient-to-r from-primary via-primary/50 to-primary bg-[length:200%_100%] bg-clip-text text-transparent">
+            Running
+          </span>
+        </span>
+      );
+    case 'completed':
+      return (
+        <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-green-500/10 px-2.5 py-1 text-xs font-medium text-green-600">
+          <CheckCircle2 className="h-3 w-3" />
+          Completed
+        </span>
+      );
+    case 'failed':
+      return (
+        <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-destructive/10 px-2.5 py-1 text-xs font-medium text-destructive">
+          <XCircle className="h-3 w-3" />
+          Failed
+        </span>
+      );
+    case 'cancelled':
+      return (
+        <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">
+          <XCircle className="h-3 w-3" />
+          Cancelled
+        </span>
+      );
+    case 'interrupted':
+      return (
+        <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-600">
+          <Square className="h-3 w-3" />
+          Stopped
+        </span>
+      );
+    default:
+      return (
+        <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">
+          {status}
+        </span>
+      );
+  }
+}
 
 // Typing dots indicator for thinking/processing states
 const TypingDots = ({ className }: { className?: string }) => (
@@ -886,6 +1000,7 @@ function getPlanPriorityBadgeClasses(priority?: string): string {
 
 interface FollowUpBarHandle {
   setValue: (text: string) => void;
+  appendValue: (text: string) => void;
   focus: () => void;
 }
 
@@ -906,11 +1021,12 @@ interface FollowUpBarProps {
   privacyMode?: 'normal' | 'incognito';
   onPrivacyModeChange?: (mode: 'normal' | 'incognito') => void;
   slashCommands: SlashCommandDefinition[];
+  translucentSurface?: boolean;
 }
 
 const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
   function FollowUpBar(
-    { isLoading, hasSession, currentTaskStatus, promptsCount, onSend, onOpenSavedPrompts, onOpenProjectWork, onUsageProjectChange, onPlanNextJobs, planningJobs, taskId, agentId, usageProjectId, privacyMode = 'normal', onPrivacyModeChange, slashCommands },
+    { isLoading, hasSession, currentTaskStatus, promptsCount, onSend, onOpenSavedPrompts, onOpenProjectWork, onUsageProjectChange, onPlanNextJobs, planningJobs, taskId, agentId, usageProjectId, privacyMode = 'normal', onPrivacyModeChange, slashCommands, translucentSurface = false },
     ref
   ) {
     const [followUp, setFollowUp] = useState('');
@@ -935,6 +1051,13 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
         promptHistoryDraftRef.current = '';
         setFollowUp(text);
       },
+      appendValue: (text: string) => {
+        const insertion = text.trim();
+        if (!insertion) return;
+        promptHistoryCursorRef.current = null;
+        promptHistoryDraftRef.current = '';
+        setFollowUp((current) => (current.trim() ? `${current.trim()}\n\n${insertion}` : insertion));
+      },
       focus: () => {
         inputRef.current?.focus();
       },
@@ -957,6 +1080,28 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
       promptHistoryCursorRef.current = null;
       promptHistoryDraftRef.current = '';
     }, []);
+
+    useEffect(() => registerPromptInsertionTarget(
+      { mode: 'chat', label: 'Chat follow-up prompt' },
+      (text) => {
+        const insertion = text.trim();
+        if (!insertion) return;
+        resetPromptHistoryNavigation();
+        setFollowUp((current) => (current.trim() ? `${current.trim()}\n\n${insertion}` : insertion));
+        window.requestAnimationFrame(() => {
+          const input = inputRef.current;
+          if (!input) return;
+          input.focus();
+          const cursor = input.value.length;
+          input.setSelectionRange(cursor, cursor);
+        });
+      }
+    ), [resetPromptHistoryNavigation]);
+
+    useEffect(() => registerPromptAttachmentTarget(
+      { mode: 'chat', label: 'Chat follow-up prompt' },
+      addAttachedFiles
+    ), [addAttachedFiles]);
 
     const setFollowUpFromHistory = useCallback((value: string) => {
       setFollowUp(value);
@@ -1123,41 +1268,39 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
     };
 
     return (
-      <div className="flex-shrink-0 border-t border-border bg-card/50 px-6 py-4">
-        <div className="max-w-5xl mx-auto space-y-2">
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex min-w-0 items-center gap-2">
-              <ContextWindowIndicator stats={contextStats} />
-              <ContextInspector
-                stats={contextStats}
-                agentId={agentId}
-                workspace={workingFolder}
-                attachedFiles={attachedFiles}
-                privacyMode={privacyMode}
-                usageProjectId={selectedUsageProjectId}
-              />
-              <UsageProjectSelector
-                mode="chat"
-                value={selectedUsageProjectId}
-                onChange={handleUsageProjectChange}
-                compact
-                disabled={isLoading}
-              />
-            </div>
-            {privacyMode === 'incognito' && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/40 bg-amber-400/10 px-2 py-0.5 text-[10px] font-medium text-amber-700">
-                <Shield className="h-3 w-3" />
-                Incognito (not saved)
-              </span>
-            )}
-          </div>
+      <div
+        className={cn(
+          'flex-shrink-0 border-t border-border px-4 py-2',
+          translucentSurface ? 'bg-background/28 backdrop-blur-md' : 'bg-card/50'
+        )}
+      >
+        <div className="mx-auto max-w-5xl space-y-1.5">
           {privacyMode === 'incognito' && (
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-[10px] leading-tight text-muted-foreground">
               Chat content is not saved. Usage totals still include this session.
             </p>
           )}
           {/* Input field with Ideas/Send buttons */}
-          <div className="flex gap-3 items-end">
+          <div className="flex items-center gap-2">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  disabled={isLoading}
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-background/85 text-foreground/80 shadow-sm backdrop-blur-sm transition-colors duration-150 hover:border-border hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                  title="Add photos and files"
+                  aria-label="Add photos and files"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" side="top">
+                <DropdownMenuItem onClick={handleSelectFiles}>
+                  <Image className="h-4 w-4" />
+                  Add photos & files
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <div className="relative min-w-0 flex-1">
               <textarea
                 ref={inputRef}
@@ -1239,7 +1382,7 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
                 }
                 disabled={isLoading}
                 rows={1}
-                className="followup-textarea-scrollbar min-h-[40px] max-h-[120px] w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 leading-relaxed"
+                className="followup-textarea-scrollbar block min-h-9 max-h-[104px] w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm leading-5 ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                 data-testid="execution-follow-up-input"
               />
               <InlineSlashCommandMenu
@@ -1257,58 +1400,54 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
                 onClick={() => void onPlanNextJobs()}
                 disabled={isLoading || Boolean(planningJobs)}
                 variant="outline"
+                size="icon"
+                className="h-9 w-9 shrink-0"
                 title="Ask Deskmate for ideas based on your memory"
+                aria-label="Ask Deskmate for ideas based on your memory"
               >
-                <Sparkles className={`h-4 w-4 ${planningJobs ? 'mr-1.5' : ''}`} />
-                {planningJobs ? (
-                  <span className="inline-flex items-center gap-2">
-                    Thinking
-                    <TypingDots />
-                  </span>
-                ) : null}
+                {planningJobs ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
               </Button>
             )}
             <Button
               onClick={() => void handleSubmit()}
               disabled={!followUp.trim() || isLoading}
               variant="outline"
+              className="h-9 shrink-0 gap-1.5 px-3"
             >
-              <CornerDownLeft className="h-4 w-4 mr-1.5" />
+              <CornerDownLeft className="h-4 w-4" />
               {hasSession || currentTaskStatus === 'interrupted' ? 'Send' : 'Start'}
             </Button>
           </div>
 
           {/* Action buttons under prompt input */}
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <ContextWindowIndicator stats={contextStats} />
+            <ContextInspector
+              stats={contextStats}
+              agentId={agentId}
+              workspace={workingFolder}
+              attachedFiles={attachedFiles}
+              privacyMode={privacyMode}
+              usageProjectId={selectedUsageProjectId}
+            />
+            <UsageProjectSelector
+              mode="chat"
+              value={selectedUsageProjectId}
+              onChange={handleUsageProjectChange}
+              compact
+              disabled={isLoading}
+            />
             <UsageBudgetPill usageProjectId={selectedUsageProjectId} label="Task budget" className="max-w-[220px]" />
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button
-                  type="button"
-                  disabled={isLoading}
-                  className="flex items-center gap-1.5 shrink-0 px-2.5 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50 border border-border/50 hover:border-border"
-                  title="Add files"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" side="top">
-                <DropdownMenuItem onClick={handleSelectFiles}>
-                  <Image className="h-4 w-4" />
-                  Add photos & files
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
 
             <button
               type="button"
               onClick={handleSelectFolder}
               disabled={isLoading}
-              className="flex items-center gap-1.5 shrink-0 px-2.5 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50 border border-border/50 hover:border-border"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-background/85 text-xs font-medium text-foreground/80 shadow-sm backdrop-blur-sm transition-colors duration-150 hover:border-border hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
               title="Select a working folder"
+              aria-label="Select a working folder"
             >
               <Folder className="h-3.5 w-3.5" />
-              <span>Work in folder</span>
             </button>
 
             {onPrivacyModeChange && (
@@ -1316,15 +1455,15 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
                 type="button"
                 onClick={() => onPrivacyModeChange(privacyMode === 'incognito' ? 'normal' : 'incognito')}
                 disabled={isLoading}
-                className={`flex items-center gap-1.5 shrink-0 px-2.5 py-2 rounded-lg text-xs font-medium transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50 border ${
+                className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border text-xs font-medium shadow-sm backdrop-blur-sm transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50 ${
                   privacyMode === 'incognito'
-                    ? 'border-amber-500/50 bg-amber-500/10 text-amber-700'
-                    : 'border-border/50 text-muted-foreground hover:text-foreground hover:bg-accent/60 hover:border-border'
+                    ? 'border-amber-500/60 bg-amber-500/20 text-amber-700'
+                    : 'border-border/70 bg-background/85 text-foreground/80 hover:border-border hover:bg-background hover:text-foreground'
                 }`}
                 title="Toggle incognito mode for this task/session"
+                aria-label="Toggle incognito mode for this task/session"
               >
                 <Shield className="h-3.5 w-3.5" />
-                <span>{privacyMode === 'incognito' ? 'Incognito on' : 'Incognito'}</span>
               </button>
             )}
 
@@ -1332,8 +1471,9 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
               type="button"
               onClick={() => onOpenSavedPrompts('select')}
               disabled={isLoading || promptsCount === 0}
-              className="flex items-center gap-1.5 shrink-0 px-2.5 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50 border border-border/50 hover:border-border"
+              className="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-border/70 bg-background/85 px-2 text-xs font-medium text-foreground/80 shadow-sm backdrop-blur-sm transition-colors duration-150 hover:border-border hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
               title={promptsCount === 0 ? 'No saved prompts or recipes' : 'Use a saved prompt or recipe'}
+              aria-label={promptsCount === 0 ? 'No saved prompts or recipes' : 'Use a saved prompt or recipe'}
             >
               <FileText className="h-3.5 w-3.5" />
               {promptsCount > 0 && (
@@ -1347,8 +1487,9 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
               type="button"
               onClick={() => onOpenSavedPrompts('manage')}
               disabled={isLoading}
-              className="flex items-center gap-1.5 shrink-0 px-2.5 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50 border border-border/50 hover:border-border"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-background/85 text-xs font-medium text-foreground/80 shadow-sm backdrop-blur-sm transition-colors duration-150 hover:border-border hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
               title="Manage saved prompts"
+              aria-label="Manage saved prompts"
             >
               <Settings className="h-3.5 w-3.5" />
             </button>
@@ -1357,8 +1498,9 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
               type="button"
               onClick={onOpenProjectWork}
               disabled={isLoading || !onOpenProjectWork}
-              className="flex items-center gap-1.5 shrink-0 px-2.5 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50 border border-border/50 hover:border-border"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-background/85 text-xs font-medium text-foreground/80 shadow-sm backdrop-blur-sm transition-colors duration-150 hover:border-border hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
               title="Open project work linked to this Chat task."
+              aria-label="Open project work linked to this Chat task"
             >
               <FolderOpen className="h-3.5 w-3.5" />
             </button>
@@ -1367,8 +1509,8 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
               type="button"
               onClick={toggleVoiceWake}
               disabled={voiceToggleBusy || isLoading || !voiceAccessKeySet || talkModeActive}
-              className={`flex items-center gap-2 rounded-lg border border-border/50 px-2.5 py-1.5 text-xs font-medium transition-colors ${
-                voiceEnabled ? 'bg-emerald-500/10 text-emerald-600' : 'bg-muted/40 text-muted-foreground'
+              className={`flex items-center gap-2 rounded-lg border border-border/70 px-2.5 py-1.5 text-xs font-medium shadow-sm backdrop-blur-sm transition-colors ${
+                voiceEnabled ? 'bg-emerald-500/20 text-emerald-700' : 'bg-background/85 text-foreground/80'
               } ${voiceToggleBusy ? 'opacity-60' : ''} ${talkModeActive ? 'ring-2 ring-emerald-400/40 shadow-glow' : ''}`}
               title={
                 !voiceAccessKeySet
@@ -1501,6 +1643,7 @@ export default function ExecutionPage() {
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [privacyMode, setPrivacyMode] = useState<'normal' | 'incognito'>('normal');
   const [taskRunCount, setTaskRunCount] = useState(0);
+  const [activePromptNavigatorId, setActivePromptNavigatorId] = useState<string | null>(null);
   const [currentTool, setCurrentTool] = useState<string | null>(null);
   const [currentToolInput, setCurrentToolInput] = useState<unknown>(null);
   const [debugLogs, setDebugLogs] = useState<DebugLogEntry[]>([]);
@@ -1540,6 +1683,14 @@ export default function ExecutionPage() {
   const addAttachedFiles = useAttachmentStore((state) => state.addFiles);
   const autoFollowUpSentRef = useRef<Set<string>>(new Set());
   const { agents, activeAgentId, loadAgents } = useAgentStore();
+  const [chatAnswerAvatarsVisible, setChatAnswerAvatarsVisible] = useState(readChatAnswerAvatarVisible);
+  const [chatAnswerAvatarNoticeVisible, setChatAnswerAvatarNoticeVisible] = useState(false);
+  const {
+    selectedId: chatBackgroundId,
+    selectedBackground,
+    backgroundStyle: chatBackgroundStyle,
+    setSelectedId: setChatBackgroundId,
+  } = useChatBackgroundSelection();
   const {
     projects: usageProjects,
     assignees: usageAssignees,
@@ -1600,6 +1751,52 @@ export default function ExecutionPage() {
       return taskIsComplete && isLastMessageBashTool && index === messages.length - 1;
     });
   }, [currentTask?.messages, currentTask?.status]);
+  const promptNavigatorEntries = useMemo<PromptNavigatorEntry[]>(() => {
+    return visibleTaskMessages
+      .flatMap((message, index): PromptNavigatorEntry[] => {
+        if (message.type !== 'user') return [];
+        return [{
+          id: message.id,
+          messageIndex: index,
+          preview: createPromptPreview(message.content),
+          fullText: String(message.content || '').trim(),
+          timestamp: message.timestamp,
+        }];
+      });
+  }, [visibleTaskMessages]);
+  useEffect(() => {
+    if (promptNavigatorEntries.length === 0) {
+      setActivePromptNavigatorId(null);
+      return;
+    }
+    setActivePromptNavigatorId((current) => (
+      current && promptNavigatorEntries.some((entry) => entry.id === current)
+        ? current
+        : promptNavigatorEntries[0]?.id ?? null
+    ));
+  }, [promptNavigatorEntries]);
+  const handlePromptNavigatorRangeChanged = useCallback((range: { startIndex: number; endIndex: number }) => {
+    if (promptNavigatorEntries.length === 0) return;
+    const midpoint = (range.startIndex + range.endIndex) / 2;
+    let activeEntry = promptNavigatorEntries[0];
+    for (const entry of promptNavigatorEntries) {
+      if (entry.messageIndex <= midpoint) {
+        activeEntry = entry;
+      } else {
+        break;
+      }
+    }
+    setActivePromptNavigatorId((current) => current === activeEntry.id ? current : activeEntry.id);
+  }, [promptNavigatorEntries]);
+  const handlePromptNavigatorJump = useCallback((entry: PromptNavigatorEntry) => {
+    setActivePromptNavigatorId(entry.id);
+    isNearBottomRef.current = false;
+    messagesVirtuosoRef.current?.scrollToIndex({
+      index: entry.messageIndex,
+      align: 'start',
+      behavior: 'smooth',
+    });
+  }, []);
   const lastVisibleAssistantIndex = useMemo(() => {
     for (let index = visibleTaskMessages.length - 1; index >= 0; index -= 1) {
       if (visibleTaskMessages[index]?.type === 'assistant') return index;
@@ -1624,6 +1821,12 @@ export default function ExecutionPage() {
     () => agents.filter((agent) => agent.id !== saveSkillOwnerAgentId),
     [agents, saveSkillOwnerAgentId]
   );
+
+  const handleChatAnswerAvatarVisibilityChange = useCallback((visible: boolean) => {
+    setChatAnswerAvatarsVisible(visible);
+    setChatAnswerAvatarNoticeVisible(!visible);
+    persistChatAnswerAvatarVisible(visible);
+  }, []);
 
   const toggleSaveSkillShareAgentId = useCallback((agentId: string, checked: boolean) => {
     const normalized = String(agentId || '').trim();
@@ -2123,14 +2326,17 @@ export default function ExecutionPage() {
     ));
     const requesterAgentId = String(taskAgentId || activeAgentId || '').trim() || undefined;
 
-    const draftResponse = await accomplish.generateUserSkillFromTask({
-      taskId: currentTask.id,
-      agentId: currentTask.agentId ?? undefined,
-    });
-    if (!draftResponse.ok || !draftResponse.draft) {
-      throw new Error(draftResponse.error || 'Failed to generate skill draft.');
+    let draft: { skillId?: string; name?: string; description?: string; skillMd?: string } = {};
+    if (!explicitSkillMd) {
+      const draftResponse = await accomplish.generateUserSkillFromTask({
+        taskId: currentTask.id,
+        agentId: currentTask.agentId ?? undefined,
+      });
+      if (!draftResponse.ok || !draftResponse.draft) {
+        throw new Error(draftResponse.error || 'Failed to generate skill draft.');
+      }
+      draft = draftResponse.draft;
     }
-    const draft = draftResponse.draft;
 
     const skillMd = explicitSkillMd || String(draft.skillMd || '').trim();
     if (!skillMd) {
@@ -2754,6 +2960,95 @@ export default function ExecutionPage() {
     });
   };
 
+  const topBarTaskAgentName =
+    agents.find((agent) => agent.id === taskAgentId)?.name || taskAgentId;
+  const topBarTaskAgent = agents.find((agent) => agent.id === taskAgentId);
+  const topBarEffectiveSelectedModel = topBarTaskAgent?.selectedModel ?? globalSelectedModel;
+  const topBarModelBadgeLabel = formatExecutionModelBadgeLabel(topBarEffectiveSelectedModel, modelProviders);
+  const executionTopBarControls = useMemo(() => {
+    if (!currentTask) return null;
+
+    return (
+      <div
+        className={cn(
+          'flex max-w-[min(68vw,1040px)] items-center gap-2 overflow-x-auto rounded-full border border-border/60 px-2 py-1 shadow-md backdrop-blur-md',
+          selectedBackground ? 'bg-background/28' : 'bg-card/85'
+        )}
+      >
+        <div className="shrink-0">
+          <ModeSwitch />
+        </div>
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => navigate('/')}
+          className="h-8 w-8 shrink-0 no-drag rounded-full"
+        >
+          <ArrowLeft className="h-4 w-4" />
+        </Button>
+        <div className="flex min-w-0 items-center gap-2">
+          <h1
+            className="min-w-0 max-w-[260px] truncate text-sm font-medium text-foreground"
+            title={currentTask.prompt}
+          >
+            {currentTask.prompt}
+          </h1>
+          <TaskStatusBadge status={currentTask.status} />
+          {topBarModelBadgeLabel && (
+            <span
+              data-testid="execution-model-badge"
+              title={topBarModelBadgeLabel}
+              className="inline-flex max-w-[300px] shrink-0 items-center gap-1.5 truncate rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground"
+            >
+              <Code className="h-3 w-3 shrink-0" />
+              <span className="truncate">Model: {topBarModelBadgeLabel}</span>
+            </span>
+          )}
+          {planningJobs && (
+            <span className="inline-flex shrink-0 items-center gap-2 rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary">
+              <Sparkles className="h-3 w-3" />
+              Planning
+              <TypingDots className="text-primary" />
+            </span>
+          )}
+          {taskAgentId && (
+            <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">
+              <User className="h-3 w-3" />
+              Agent: {topBarTaskAgentName}
+            </span>
+          )}
+        </div>
+
+        <div className="flex shrink-0 items-center gap-2">
+          <BuildRuntimeIndicator agentId={taskAgentId || undefined} />
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!isComplete || currentTask.messages.length === 0}
+            onClick={() => {
+              setSaveSkillOpen(true);
+              setSaveSkillError(null);
+            }}
+            title={isComplete ? 'Generate a reusable skill from this finished chat' : 'Finish the task to save it as a skill'}
+          >
+            <FileText className="mr-2 h-4 w-4" />
+            Save as skill
+          </Button>
+        </div>
+      </div>
+    );
+  }, [
+    currentTask,
+    isComplete,
+    navigate,
+    planningJobs,
+    selectedBackground,
+    taskAgentId,
+    topBarModelBadgeLabel,
+    topBarTaskAgentName,
+  ]);
+  useTopBarControls(executionTopBarControls);
+
   if (error) {
     return (
       <div className="h-full flex items-center justify-center p-6">
@@ -2774,169 +3069,16 @@ export default function ExecutionPage() {
     );
   }
 
-  const getStatusBadge = () => {
-    switch (currentTask.status) {
-      case 'queued':
-        return (
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-500/10 text-amber-600 shrink-0">
-            <Clock className="h-3 w-3" />
-            Queued
-          </span>
-        );
-      case 'running':
-        return (
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-primary/10 shrink-0">
-            <span
-              className="animate-shimmer bg-gradient-to-r from-primary via-primary/50 to-primary bg-[length:200%_100%] bg-clip-text text-transparent"
-            >
-              Running
-            </span>
-          </span>
-        );
-      case 'completed':
-        return (
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-green-500/10 text-green-600 shrink-0">
-            <CheckCircle2 className="h-3 w-3" />
-            Completed
-          </span>
-        );
-      case 'failed':
-        return (
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-destructive/10 text-destructive shrink-0">
-            <XCircle className="h-3 w-3" />
-            Failed
-          </span>
-        );
-      case 'cancelled':
-        return (
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-muted text-muted-foreground shrink-0">
-            <XCircle className="h-3 w-3" />
-            Cancelled
-          </span>
-        );
-      case 'interrupted':
-        return (
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-500/10 text-amber-600 shrink-0">
-            <Square className="h-3 w-3" />
-            Stopped
-          </span>
-        );
-      default:
-        return (
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-muted text-muted-foreground shrink-0">
-            {currentTask.status}
-          </span>
-        );
-    }
-  };
-
   const taskAgentName =
     agents.find((agent) => agent.id === taskAgentId)?.name || taskAgentId;
   const taskAgent = agents.find((agent) => agent.id === taskAgentId);
-  const effectiveSelectedModel = taskAgent?.selectedModel ?? globalSelectedModel;
-  const getModelBadgeLabel = () => {
-    const selected = effectiveSelectedModel as (SelectedModel & { id?: string }) | null | undefined;
-    const modelFullId = (
-      typeof selected?.model === 'string'
-        ? selected.model
-        : typeof selected?.id === 'string'
-          ? selected.id
-          : ''
-    ).trim();
-    if (!modelFullId) return '';
-
-    const providerId = (selected?.provider || '').trim();
-    const providerLabel =
-      modelProviders.find((entry) => String(entry.id) === providerId)?.name || providerId;
-    const knownModel = modelProviders
-      .flatMap((entry) => entry.models)
-      .find((entry) => entry.fullId === modelFullId);
-    const shortModelName = knownModel
-      ? knownModel.displayName
-      : modelFullId.includes('/')
-        ? modelFullId.slice(modelFullId.indexOf('/') + 1)
-        : modelFullId;
-    return providerLabel ? `${providerLabel}: ${shortModelName}` : shortModelName;
-  };
-  const modelBadgeLabel = getModelBadgeLabel();
-  const getModelBadge = () => {
-    if (!modelBadgeLabel) return null;
-    return (
-      <span
-        data-testid="execution-model-badge"
-        title={modelBadgeLabel}
-        className="inline-flex max-w-[300px] items-center gap-1.5 truncate px-2.5 py-1 rounded-full text-xs font-medium bg-muted text-muted-foreground shrink-0"
-      >
-        <Code className="h-3 w-3 shrink-0" />
-        <span className="truncate">Model: {modelBadgeLabel}</span>
-      </span>
-    );
-  };
-  const getAgentBadge = () => {
-    if (!taskAgentId) return null;
-    return (
-      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-muted text-muted-foreground shrink-0">
-        <User className="h-3 w-3" />
-        Agent: {taskAgentName}
-      </span>
-    );
-  };
+  const subagentDetailAgent = agents.find((agent) => agent.id === (subagentDetailTask?.agentId || subagentDetailRun?.childAgentId));
 
   return (
-    <div className="h-full flex flex-col bg-background relative">
-      {/* Task header */}
-      <div className="flex-shrink-0 border-b border-border bg-card/50 px-6 py-4">
-        <div className="flex items-center justify-between gap-3 max-w-6xl mx-auto">
-          <div className="shrink-0">
-            <ModeSwitch />
-          </div>
-          <div className="flex items-center gap-4 min-w-0 flex-1">
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => navigate('/')}
-              className="shrink-0 no-drag"
-            >
-              <ArrowLeft className="h-4 w-4" />
-            </Button>
-            <div className="flex items-center gap-3 min-w-0 flex-1">
-              <h1 className="text-base font-medium text-foreground truncate min-w-0">
-                {currentTask.prompt}
-              </h1>
-              <span data-testid="execution-status-badge">
-                {getStatusBadge()}
-              </span>
-              {getModelBadge()}
-              {planningJobs && (
-                <span className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-xs font-medium bg-primary/10 text-primary shrink-0">
-                  <Sparkles className="h-3 w-3" />
-                  Planning
-                  <TypingDots className="text-primary" />
-                </span>
-              )}
-              {getAgentBadge()}
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2 shrink-0">
-            <BuildRuntimeIndicator agentId={taskAgentId || undefined} />
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={!isComplete || currentTask.messages.length === 0}
-              onClick={() => {
-                setSaveSkillOpen(true);
-                setSaveSkillError(null);
-              }}
-              title={isComplete ? 'Generate a reusable skill from this finished chat' : 'Finish the task to save it as a skill'}
-            >
-              <FileText className="h-4 w-4 mr-2" />
-              Save as skill
-            </Button>
-          </div>
-        </div>
-      </div>
-
+    <div
+      className="h-full flex flex-col bg-background relative"
+      style={selectedBackground ? chatBackgroundStyle : undefined}
+    >
       {currentTask?.id && subagentRuns.length > 0 ? (
         <div className="border-b border-border/60 bg-card/30 px-6 py-2">
           <div className="mx-auto max-w-6xl rounded-lg border border-border/60 bg-background/60 p-3">
@@ -2955,6 +3097,48 @@ export default function ExecutionPage() {
           </div>
         </div>
       ) : null}
+
+      <AnimatePresence>
+        {chatAnswerAvatarNoticeVisible ? (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={springs.gentle}
+            className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center px-6"
+            role="status"
+          >
+            <motion.div
+              initial={{ y: -8, scale: 0.98 }}
+              animate={{ y: 0, scale: 1 }}
+              exit={{ y: -8, scale: 0.98 }}
+              transition={springs.gentle}
+              className="pointer-events-auto w-[min(92vw,460px)] rounded-2xl border border-primary/30 bg-card px-5 py-4 shadow-2xl shadow-black/25"
+            >
+              <div className="flex items-start gap-3">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+                  <EyeOff className="h-4.5 w-4.5" />
+                </div>
+                <div className="min-w-0 text-sm text-muted-foreground">
+                  <div className="text-base font-semibold text-foreground">Answer avatars hidden</div>
+                  <p className="mt-1 leading-relaxed">
+                    To switch them back on, use the eye button beside the Copy final answer button at the bottom of any answer.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setChatAnswerAvatarNoticeVisible(false)}
+                  className="-mr-2 -mt-2 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  aria-label="Close answer avatar notice"
+                  title="Close"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
 
       {/* Browser installation modal - only shown during Playwright download */}
       <AnimatePresence>
@@ -3038,8 +3222,10 @@ export default function ExecutionPage() {
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           transition={springs.gentle}
-          className="flex-1 flex flex-col items-center justify-center gap-6 px-6"
+          className="relative flex-1 flex flex-col items-center justify-center gap-6 bg-background px-6"
+          style={chatBackgroundStyle}
         >
+          <ChatBackgroundSwitcher selectedId={chatBackgroundId} onSelect={setChatBackgroundId} />
           <div className="flex h-16 w-16 items-center justify-center rounded-full bg-amber-500/10">
             <Clock className="h-8 w-8 text-amber-600" />
           </div>
@@ -3056,7 +3242,11 @@ export default function ExecutionPage() {
 
       {/* Queued state - inline (follow-up, has previous messages) */}
       {currentTask.status === 'queued' && currentTask.messages.length > 0 && (
-        <div className="min-h-0 flex-1">
+        <div
+          className="relative min-h-0 flex-1 bg-background"
+          style={chatBackgroundStyle}
+        >
+          <ChatBackgroundSwitcher selectedId={chatBackgroundId} onSelect={setChatBackgroundId} />
           <Virtuoso
             ref={messagesVirtuosoRef}
             className="h-full"
@@ -3065,6 +3255,7 @@ export default function ExecutionPage() {
             defaultItemHeight={180}
             increaseViewportBy={{ top: 500, bottom: 700 }}
             atBottomStateChange={handleMessagesAtBottomChange}
+            rangeChanged={handlePromptNavigatorRangeChanged}
             itemContent={(index, message) => (
               <div className={cn('px-6', index === 0 ? 'pt-6' : 'pt-2', index === visibleTaskMessages.length - 1 ? 'pb-2' : 'pb-2')}>
                 <div className="mx-auto max-w-5xl">
@@ -3073,6 +3264,13 @@ export default function ExecutionPage() {
                     onSavePrompt={handleSavePrompt}
                     onSaveAnswerAsProjectNote={handleSaveAnswerAsProjectNote}
                     onSaveAnswerAsRtf={handleSaveAnswerAsRtf}
+                    assistantAgentName={taskAgentName || 'Agent'}
+                    assistantAgentRoleName={taskAgent?.roleName}
+                    assistantAgentAvatar={taskAgent?.avatar}
+                    assistantAgentAvatarColor={taskAgent?.avatarColor}
+                    assistantAgentAvatarImageDataUrl={taskAgent?.avatarImageDataUrl}
+                    showAssistantAvatar={chatAnswerAvatarsVisible}
+                    onToggleAssistantAvatar={handleChatAnswerAvatarVisibilityChange}
                     debugMode={debugModeEnabled}
                   />
                 </div>
@@ -3103,12 +3301,23 @@ export default function ExecutionPage() {
               ),
             }}
           />
+          <PromptNavigator
+            entries={promptNavigatorEntries}
+            activeEntryId={activePromptNavigatorId}
+            onJump={handlePromptNavigatorJump}
+            storageKey={CHAT_PROMPT_NAVIGATOR_STORAGE_KEY}
+            label="Prompt navigator"
+          />
         </div>
       )}
 
       {/* Messages - normal state (running, completed, failed, etc.) */}
       {currentTask.status !== 'queued' && (
-        <div className="min-h-0 flex-1">
+        <div
+          className="relative min-h-0 flex-1 bg-background"
+          style={chatBackgroundStyle}
+        >
+          <ChatBackgroundSwitcher selectedId={chatBackgroundId} onSelect={setChatBackgroundId} />
           <Virtuoso
             ref={messagesVirtuosoRef}
             className="h-full"
@@ -3121,6 +3330,7 @@ export default function ExecutionPage() {
               return isAtBottom ? 'auto' : false;
             }}
             atBottomStateChange={handleMessagesAtBottomChange}
+            rangeChanged={handlePromptNavigatorRangeChanged}
             itemContent={(index, message) => {
               const isLastMessage = index === visibleTaskMessages.length - 1;
               const isLastAssistantMessage =
@@ -3147,6 +3357,13 @@ export default function ExecutionPage() {
                       onSavePrompt={handleSavePrompt}
                       onSaveAnswerAsProjectNote={handleSaveAnswerAsProjectNote}
                       onSaveAnswerAsRtf={handleSaveAnswerAsRtf}
+                      assistantAgentName={taskAgentName || 'Agent'}
+                      assistantAgentRoleName={taskAgent?.roleName}
+                      assistantAgentAvatar={taskAgent?.avatar}
+                      assistantAgentAvatarColor={taskAgent?.avatarColor}
+                      assistantAgentAvatarImageDataUrl={taskAgent?.avatarImageDataUrl}
+                      showAssistantAvatar={chatAnswerAvatarsVisible}
+                      onToggleAssistantAvatar={handleChatAnswerAvatarVisibilityChange}
                       debugMode={debugModeEnabled}
                     />
                   </div>
@@ -3183,6 +3400,13 @@ export default function ExecutionPage() {
                 </AnimatePresence>
               ),
             }}
+          />
+          <PromptNavigator
+            entries={promptNavigatorEntries}
+            activeEntryId={activePromptNavigatorId}
+            onJump={handlePromptNavigatorJump}
+            storageKey={CHAT_PROMPT_NAVIGATOR_STORAGE_KEY}
+            label="Prompt navigator"
           />
         </div>
       )}
@@ -3396,7 +3620,12 @@ export default function ExecutionPage() {
 
 {/* Running state input with Stop button */}
       {currentTask.status === 'running' && !permissionRequest && (
-        <div className="flex-shrink-0 border-t border-border bg-card/50 px-6 py-4">
+        <div
+          className={cn(
+            'flex-shrink-0 border-t border-border px-6 py-4',
+            selectedBackground ? 'bg-background/28 backdrop-blur-md' : 'bg-card/50'
+          )}
+        >
           <div className="max-w-5xl mx-auto flex gap-3">
             <Input
               placeholder="Agent is working..."
@@ -3440,6 +3669,7 @@ export default function ExecutionPage() {
           }}
           onOpenProjectWork={openChatProjectWorkPopup}
           onUsageProjectChange={handleFollowUpUsageProjectChange}
+          translucentSurface={Boolean(selectedBackground)}
         />
       )}
 
@@ -3459,6 +3689,11 @@ export default function ExecutionPage() {
         sourceLabel={chatProjectWorkSourceLabel}
         fallbackLabel="Chat project work"
         storageScope="chat"
+        agentId={currentTask?.agentId ?? taskAgentId}
+        onInsertPrompt={(prompt) => {
+          followUpBarRef.current?.appendValue(prompt);
+          followUpBarRef.current?.focus();
+        }}
         onSelectedProjectChange={(projectId) => writeChatProjectWorkPopupSession(true, projectId)}
         onClose={() => {
           setProjectWorkPopupOpen(false);
@@ -3858,6 +4093,13 @@ export default function ExecutionPage() {
                       message={message}
                       onSaveAnswerAsProjectNote={handleSaveAnswerAsProjectNote}
                       onSaveAnswerAsRtf={handleSaveAnswerAsRtf}
+                      assistantAgentName={subagentDetailAgent?.name || subagentDetailTask?.agentId || subagentDetailRun?.childAgentId || 'Agent'}
+                      assistantAgentRoleName={subagentDetailAgent?.roleName}
+                      assistantAgentAvatar={subagentDetailAgent?.avatar}
+                      assistantAgentAvatarColor={subagentDetailAgent?.avatarColor}
+                      assistantAgentAvatarImageDataUrl={subagentDetailAgent?.avatarImageDataUrl}
+                      showAssistantAvatar={chatAnswerAvatarsVisible}
+                      onToggleAssistantAvatar={handleChatAnswerAvatarVisibilityChange}
                       debugMode={debugModeEnabled}
                     />
                   ))}
@@ -4092,7 +4334,12 @@ export default function ExecutionPage() {
 
       {/* Completed/Failed state (no session to continue) */}
       {isComplete && !canInlinePrompt && (
-        <div className="flex-shrink-0 border-t border-border bg-card/50 px-6 py-4 text-center">
+        <div
+          className={cn(
+            'flex-shrink-0 border-t border-border px-6 py-4 text-center',
+            selectedBackground ? 'bg-background/28 backdrop-blur-md' : 'bg-card/50'
+          )}
+        >
           <p className="text-sm text-muted-foreground mb-3">
             Task {currentTask.status === 'interrupted' ? 'stopped' : currentTask.status}
           </p>
@@ -4236,11 +4483,18 @@ interface MessageBubbleProps {
   onSavePrompt?: (content: string) => void;
   onSaveAnswerAsProjectNote?: (payload: { messageId: string; content: string; sourceElement?: HTMLElement | null }) => void;
   onSaveAnswerAsRtf?: (payload: { messageId: string; content: string; sourceElement?: HTMLElement | null }) => void;
+  assistantAgentName?: string;
+  assistantAgentRoleName?: string;
+  assistantAgentAvatar?: string;
+  assistantAgentAvatarColor?: string;
+  assistantAgentAvatarImageDataUrl?: string;
+  showAssistantAvatar?: boolean;
+  onToggleAssistantAvatar?: (visible: boolean) => void;
   debugMode?: boolean;
 }
 
 // Memoized MessageBubble to prevent unnecessary re-renders and markdown re-parsing
-const MessageBubble = memo(function MessageBubble({ message, shouldStream = false, isLastMessage = false, isRunning = false, showContinueButton = false, continueLabel, onContinue, isLoading = false, onSavePrompt, onSaveAnswerAsProjectNote, onSaveAnswerAsRtf, debugMode = false }: MessageBubbleProps) {
+const MessageBubble = memo(function MessageBubble({ message, shouldStream = false, isLastMessage = false, isRunning = false, showContinueButton = false, continueLabel, onContinue, isLoading = false, onSavePrompt, onSaveAnswerAsProjectNote, onSaveAnswerAsRtf, assistantAgentName = 'Agent', assistantAgentRoleName, assistantAgentAvatar, assistantAgentAvatarColor, assistantAgentAvatarImageDataUrl, showAssistantAvatar = true, onToggleAssistantAvatar, debugMode = false }: MessageBubbleProps) {
   const [streamComplete, setStreamComplete] = useState(!shouldStream);
   const [saved, setSaved] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -4642,6 +4896,64 @@ const MessageBubble = memo(function MessageBubble({ message, shouldStream = fals
     );
   }, [openImagePreview]);
 
+  const renderAssistantAvatarHeader = (): ReactElement | null => {
+    if (!isAssistant || !showAssistantAvatar) return null;
+    const avatarIsPicture = isPictureAvatar(assistantAgentAvatar, assistantAgentAvatarImageDataUrl);
+    const roleLabel = assistantAgentRoleName?.trim() || 'No role set';
+    return (
+      <div className="mb-3 flex items-start gap-1.5">
+        <TooltipProvider delayDuration={200}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div
+                className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-border/60 bg-muted/60"
+                style={{ backgroundColor: assistantAgentAvatarColor ? `${assistantAgentAvatarColor}15` : undefined }}
+                aria-label={`${assistantAgentName}, ${roleLabel}`}
+              >
+                <AgentAvatarIcon
+                  avatar={assistantAgentAvatar}
+                  color={assistantAgentAvatarColor || 'hsl(var(--primary))'}
+                  imageDataUrl={assistantAgentAvatarImageDataUrl}
+                  className={avatarIsPicture ? 'h-full w-full' : 'h-7 w-7'}
+                />
+              </div>
+            </TooltipTrigger>
+            <TooltipContent side="right" align="start" sideOffset={10} className="w-64 p-3">
+              <div className="flex items-center gap-3">
+                <div
+                  className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-border/70 bg-muted/70"
+                  style={{ backgroundColor: assistantAgentAvatarColor ? `${assistantAgentAvatarColor}18` : undefined }}
+                >
+                  <AgentAvatarIcon
+                    avatar={assistantAgentAvatar}
+                    color={assistantAgentAvatarColor || 'hsl(var(--primary))'}
+                    imageDataUrl={assistantAgentAvatarImageDataUrl}
+                    className={avatarIsPicture ? 'h-full w-full' : 'h-12 w-12'}
+                  />
+                </div>
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold text-popover-foreground">{assistantAgentName}</div>
+                  <div className="mt-0.5 truncate text-xs text-muted-foreground">{roleLabel}</div>
+                </div>
+              </div>
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+        {onToggleAssistantAvatar ? (
+          <button
+            type="button"
+            onClick={() => onToggleAssistantAvatar(false)}
+            className="mt-0.5 rounded-md p-1 text-muted-foreground/70 transition-colors hover:bg-muted hover:text-foreground"
+            title="Hide agent avatar on answers"
+            aria-label="Hide agent avatar on answers"
+          >
+            <EyeOff className="h-3.5 w-3.5" />
+          </button>
+        ) : null}
+      </div>
+    );
+  };
+
   const renderAssistantFooter = () => (
     <div className="mt-1.5 flex items-center justify-between gap-2">
       <div className="flex items-center gap-1">
@@ -4677,6 +4989,17 @@ const MessageBubble = memo(function MessageBubble({ message, shouldStream = fals
             <Copy className="h-3.5 w-3.5" />
           )}
         </button>
+        {isAssistant && !showAssistantAvatar && onToggleAssistantAvatar ? (
+          <button
+            type="button"
+            onClick={() => onToggleAssistantAvatar(true)}
+            className="rounded-md p-1 text-muted-foreground/80 transition-colors hover:bg-muted hover:text-foreground"
+            title="Show agent avatar on answers"
+            aria-label="Show agent avatar on answers"
+          >
+            <Eye className="h-3.5 w-3.5" />
+          </button>
+        ) : null}
       </div>
       <p className="text-xs text-muted-foreground">
         {new Date(message.timestamp).toLocaleTimeString()}
@@ -4704,7 +5027,7 @@ const MessageBubble = memo(function MessageBubble({ message, shouldStream = fals
   ): ReactElement | null => {
     if (!reasoning.trim()) return null;
     return (
-      <div className="rounded-2xl border border-border/70 bg-muted/45 px-4 py-3 text-muted-foreground">
+      <div className="rounded-2xl border border-border/70 bg-muted/90 px-4 py-3 text-muted-foreground shadow-sm backdrop-blur-sm">
         <div className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
           <Brain className="h-3.5 w-3.5" />
           Reasoning
@@ -4783,6 +5106,7 @@ const MessageBubble = memo(function MessageBubble({ message, shouldStream = fals
     const linkPreviews = extractAssistantLinkPreviews(content);
     return (
       <div className="rounded-2xl border border-border bg-card px-4 py-3 transition-colors duration-150 group">
+        {renderAssistantAvatarHeader()}
         {renderAssistantAnswerContent(content, planItems, linkPreviews)}
         {renderAssistantLinkPreviewStrip(content, linkPreviews)}
         {renderAssistantFooter()}
@@ -4807,6 +5131,7 @@ const MessageBubble = memo(function MessageBubble({ message, shouldStream = fals
     const linkPreviews = extractAssistantLinkPreviews(message.content);
     return (
       <>
+        {renderAssistantAvatarHeader()}
         {shouldStream && !streamComplete ? (
           <StreamingText
             text={message.content}
@@ -5212,4 +5537,11 @@ const MessageBubble = memo(function MessageBubble({ message, shouldStream = fals
   && prev.debugMode === next.debugMode
   && prev.onSaveAnswerAsProjectNote === next.onSaveAnswerAsProjectNote
   && prev.onSaveAnswerAsRtf === next.onSaveAnswerAsRtf
+  && prev.assistantAgentName === next.assistantAgentName
+  && prev.assistantAgentRoleName === next.assistantAgentRoleName
+  && prev.assistantAgentAvatar === next.assistantAgentAvatar
+  && prev.assistantAgentAvatarColor === next.assistantAgentAvatarColor
+  && prev.assistantAgentAvatarImageDataUrl === next.assistantAgentAvatarImageDataUrl
+  && prev.showAssistantAvatar === next.showAssistantAvatar
+  && prev.onToggleAssistantAvatar === next.onToggleAssistantAvatar
 ));

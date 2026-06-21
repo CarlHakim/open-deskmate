@@ -38,8 +38,12 @@ A tracked project can report:
 - Output cost.
 - Total tokens.
 - Total estimated cost.
+- Attached Chat projects and direct Chat tasks.
+- Attached Build presets and direct Build sessions.
 
 Input hit tokens are reused/cached input tokens when the provider reports them. Input miss tokens are new billable input tokens. Output tokens are model response tokens.
+
+Chat tasks inside a Chat Mode sidebar project inherit that Chat project's budget unless you select another project directly on the task. Build sessions inherit the budget from the selected Build preset unless you choose a different project for that run.
 
 ## Tracking Only
 
@@ -60,6 +64,8 @@ Each window can have:
 - Mode: `Warn` or `Block`.
 
 If a window has both money and token limits, crossing either limit can trigger the window status.
+
+Use multiple windows when the same project has monthly limits, milestone limits, or a one-off client cap alongside a wider internal budget.
 
 ## Warn And Block
 
@@ -99,9 +105,11 @@ The Project Management Usage and Analytics tabs use these pricing rows.
 - If provider billing and the app estimate differ, compare date ranges, time zones, cached token reporting, and effective-from dates.
 - If a blocked project should run again, increase the limit, disable the window, change the mode to Warn, or choose another project.
 - If usage does not appear under a project, confirm the task, Chat project, Build preset, or Build session is attached to that budget.
+- If a task is not inside a Chat project, check whether it is directly assigned to the budget from the task project dropdown.
 
 ## Related Pages
 
 - [Project Management](./project-management.md)
 - [Settings: API usage estimate](./settings/usage-estimate.md)
 - [Assignees](./assignees.md)
+- [Local Models And Ollama](./local-models-and-ollama.md)

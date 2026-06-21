@@ -10,6 +10,7 @@ import type {
   BuildWorkspaceBaselineDecision,
   BuildWorkspaceBaselineResolveResult,
   BuildWorkspaceDiffFile,
+  BuildWorkspaceDiffFileContent,
   BuildFileTreeNode,
   BuildWorkspaceFingerprint,
   BuildWorkspaceDiff,
@@ -106,6 +107,158 @@ export async function readWorkspaceFile(agentId: string, relativePath: string, w
     encoding: 'utf8',
     size: Buffer.byteLength(content, 'utf8'),
     modifiedAt: stat.mtime.toISOString(),
+  };
+}
+
+async function readWorkspaceTextFileIfAvailable(
+  workspaceRoot: string,
+  relativePath: string
+): Promise<{ content?: string; available: boolean; reason?: string; size?: number }> {
+  const normalizedRelativePath = canonicalizeRelativePath(relativePath || '.');
+  if (!normalizedRelativePath || normalizedRelativePath === '.') {
+    return { available: false, reason: 'No file was selected.' };
+  }
+
+  const absolute = resolveInsideRoot(workspaceRoot, normalizedRelativePath);
+  if (!fs.existsSync(absolute)) {
+    return { available: false, reason: 'File does not exist in the current workspace.' };
+  }
+
+  const stat = await fs.promises.stat(absolute);
+  if (!stat.isFile()) {
+    return { available: false, reason: 'Selected path is not a file.' };
+  }
+  if (stat.size > MAX_FILE_READ_BYTES) {
+    return {
+      available: false,
+      reason: `File is too large to load fully (${Math.round(stat.size / 1024)} KB).`,
+      size: stat.size,
+    };
+  }
+
+  const raw = await fs.promises.readFile(absolute);
+  if (raw.includes(0)) {
+    return { available: false, reason: 'Binary files are not shown in the text diff viewer.', size: stat.size };
+  }
+
+  return {
+    content: raw.toString('utf8'),
+    available: true,
+    size: stat.size,
+  };
+}
+
+async function readGitHeadTextFileIfAvailable(
+  workspaceRoot: string,
+  relativePath: string
+): Promise<{ content?: string; available: boolean; reason?: string; size?: number }> {
+  const normalizedRelativePath = canonicalizeRelativePath(relativePath || '.');
+  if (!normalizedRelativePath || normalizedRelativePath === '.') {
+    return { available: false, reason: 'No file was selected.' };
+  }
+
+  const repoCheck = await runCommand('git', ['-C', workspaceRoot, 'rev-parse', '--is-inside-work-tree']);
+  if (repoCheck.exitCode !== 0) {
+    return { available: false, reason: 'No Git repository baseline is available for this file.' };
+  }
+
+  const objectRef = `HEAD:${normalizedRelativePath}`;
+  const sizeResult = await runCommand('git', ['-C', workspaceRoot, 'cat-file', '-s', objectRef]);
+  if (sizeResult.exitCode !== 0) {
+    return { available: false, reason: 'File is new or not present in the last commit.' };
+  }
+
+  const size = Number(sizeResult.stdout.trim());
+  if (Number.isFinite(size) && size > MAX_FILE_READ_BYTES) {
+    return {
+      available: false,
+      reason: `Committed file is too large to load fully (${Math.round(size / 1024)} KB).`,
+      size,
+    };
+  }
+
+  const showResult = await runCommand('git', ['-C', workspaceRoot, 'show', objectRef]);
+  if (showResult.exitCode !== 0) {
+    return { available: false, reason: showResult.stderr.trim() || 'Unable to read the file from the last commit.' };
+  }
+  if (showResult.stdout.includes('\0')) {
+    return { available: false, reason: 'Binary files are not shown in the text diff viewer.', size };
+  }
+
+  return {
+    content: showResult.stdout,
+    available: true,
+    size: Number.isFinite(size) ? size : Buffer.byteLength(showResult.stdout, 'utf8'),
+  };
+}
+
+export async function readWorkspaceDiffFileContent(
+  agentId: string,
+  workspaceRelativePath = '.',
+  fileRelativePath: string,
+  baselineId?: string
+): Promise<BuildWorkspaceDiffFileContent> {
+  const root = resolveAgentWorkspaceRoot(agentId);
+  const workspaceRoot = resolveInsideRoot(root, workspaceRelativePath);
+  const normalizedFilePath = canonicalizeRelativePath(fileRelativePath || '.');
+  const normalizedWorkspacePath = normalizePath(workspaceRelativePath || '.');
+  const normalizedAgentId = normalizeAgentId(agentId);
+  const id = typeof baselineId === 'string' ? baselineId.trim() : '';
+
+  let beforeContent: string | undefined;
+  let beforeAvailable = false;
+  let beforeUnavailableReason: string | undefined = id ? 'Baseline does not contain this file.' : 'No baseline is available for the before side.';
+  let beforeSize: number | undefined;
+
+  if (id) {
+    const snapshot = baselineSnapshots.get(id);
+    if (!snapshot) {
+      beforeUnavailableReason = 'Baseline snapshot is no longer available.';
+    } else if (snapshot.agentId !== normalizedAgentId) {
+      throw new Error('Baseline snapshot does not belong to this agent.');
+    } else if (snapshot.workspaceRoot !== workspaceRoot || snapshot.workspaceRelativePath !== normalizedWorkspacePath) {
+      beforeUnavailableReason = 'Baseline does not match the current workspace path.';
+    } else {
+      const beforeEntry = snapshot.files.get(normalizedFilePath);
+      if (beforeEntry) {
+        beforeContent = beforeEntry.content;
+        beforeAvailable = true;
+        beforeSize = Buffer.byteLength(beforeEntry.content, 'utf8');
+      }
+    }
+  }
+
+  if (!beforeAvailable) {
+    try {
+      const gitBefore = await readGitHeadTextFileIfAvailable(workspaceRoot, normalizedFilePath);
+      if (gitBefore.available) {
+        beforeContent = gitBefore.content;
+        beforeAvailable = true;
+        beforeSize = gitBefore.size;
+        beforeUnavailableReason = undefined;
+      } else if (!id) {
+        beforeUnavailableReason = gitBefore.reason;
+      }
+    } catch {
+      if (!id) {
+        beforeUnavailableReason = 'Unable to read this file from the last Git commit.';
+      }
+    }
+  }
+
+  const after = await readWorkspaceTextFileIfAvailable(workspaceRoot, normalizedFilePath);
+
+  return {
+    relativePath: normalizedFilePath,
+    beforeContent,
+    afterContent: after.content,
+    beforeAvailable,
+    afterAvailable: after.available,
+    beforeUnavailableReason: beforeAvailable ? undefined : beforeUnavailableReason,
+    afterUnavailableReason: after.available ? undefined : after.reason,
+    beforeSize,
+    afterSize: after.size,
+    baselineId: id || undefined,
   };
 }
 

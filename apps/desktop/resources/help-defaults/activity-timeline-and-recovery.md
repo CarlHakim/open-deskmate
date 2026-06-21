@@ -6,6 +6,8 @@ Activity timelines explain what an agent did while running a Chat or Build task.
 
 Use the activity timeline when a task runs tools, requests permission, fails, appears to stop, or you need to understand what happened before an answer appeared.
 
+The activity list is meant to stay out of the way during normal work. It should be expanded only when there is something useful to inspect or recover.
+
 ## Quick Steps
 
 1. Open the task in Chat Mode or Build Mode.
@@ -57,6 +59,16 @@ Recovery actions can include:
 
 Recovery should not run automatically. You choose when to continue.
 
+The missing-answer recovery UI should not appear while the AI is still actively trying another approach. If the task produced a useful answer, you can leave the activity details hidden.
+
+## Repeated Tool-Call Guard
+
+The app can stop a task when it repeats the same successful tool call too many times.
+
+This protects the app from cases where the model keeps inspecting the same file, runtime state, or page snapshot without making progress.
+
+When this happens, start a narrower follow-up prompt and tell the AI whether you want explanation only or execution.
+
 ## Reasoning Bubbles
 
 When a model sends visible thinking text, the app separates it from the final answer where possible.
@@ -78,9 +90,11 @@ Open raw logs when:
 - If activity takes too much space, keep it collapsed or hide it by default.
 - If a reasoning tag such as `</think>` appears in the final text, report the model/provider output because it should be moved into the reasoning bubble when detected.
 - If recovery buttons do not appear after a true failure, open raw logs and include them in a bug report.
+- If the app stops a repeated tool loop, continue with a focused prompt instead of asking the model to repeat the same inspection.
 
 ## Related Pages
 
 - [Chat Mode](./chat-mode.md)
 - [Build Mode](./build-mode.md)
 - [Changes And Git](./changes-and-git.md)
+- [Troubleshooting Agent Loops](./troubleshooting-agent-loops.md)

@@ -435,8 +435,8 @@ export default function SubagentsPage() {
                               {run.closedAt ? <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">Closed</span> : null}
                             </div>
                             <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-                              <span className="inline-flex items-center gap-1"><AgentAvatarIcon avatar={childAgent?.avatar} color={childAgent?.avatarColor || 'hsl(var(--primary))'} className="h-3.5 w-3.5" />Child: {childAgent?.name || run.childAgentId}</span>
-                              <span className="inline-flex items-center gap-1"><AgentAvatarIcon avatar={parentAgent?.avatar} color={parentAgent?.avatarColor || 'hsl(var(--muted-foreground))'} className="h-3.5 w-3.5" />Parent: {parentAgent?.name || run.parentAgentId}</span>
+                              <span className="inline-flex items-center gap-1"><AgentAvatarIcon avatar={childAgent?.avatar} color={childAgent?.avatarColor || 'hsl(var(--primary))'} imageDataUrl={childAgent?.avatarImageDataUrl} className="h-3.5 w-3.5" />Child: {childAgent?.name || run.childAgentId}</span>
+                              <span className="inline-flex items-center gap-1"><AgentAvatarIcon avatar={parentAgent?.avatar} color={parentAgent?.avatarColor || 'hsl(var(--muted-foreground))'} imageDataUrl={parentAgent?.avatarImageDataUrl} className="h-3.5 w-3.5" />Parent: {parentAgent?.name || run.parentAgentId}</span>
                               <span>Depth {run.depth}</span>
                               {run.mode === 'session' && run.sessionState ? <span>Session {run.sessionState}</span> : null}
                               {typeof run.reuseCount === 'number' ? <span>Reuse {run.reuseCount}</span> : null}

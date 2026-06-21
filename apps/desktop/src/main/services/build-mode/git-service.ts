@@ -1077,14 +1077,47 @@ function parseStashList(output: string): BuildGitStashEntry[] {
     .filter((entry): entry is BuildGitStashEntry => Boolean(entry));
 }
 
-export async function readBuildGitSummary(agentId: string, relativePath = '.'): Promise<BuildGitSummary> {
+function getSkippedGitHubCliStatus(): BuildGitToolStatus {
+  return {
+    available: false,
+    detail: 'GitHub CLI status is skipped during live file-change updates.',
+  };
+}
+
+function getLocalSyncStatus(ahead: number, behind: number): { syncStatus: BuildGitSyncStatus; syncDetail: string } {
+  if (ahead > 0 && behind > 0) {
+    return {
+      syncStatus: 'diverged',
+      syncDetail: `Local status reports ${ahead} local commit${ahead === 1 ? '' : 's'} and ${behind} remote commit${behind === 1 ? '' : 's'} pending.`,
+    };
+  }
+  if (behind > 0) {
+    return {
+      syncStatus: 'behind',
+      syncDetail: `Local status reports ${behind} remote commit${behind === 1 ? '' : 's'} to pull.`,
+    };
+  }
+  if (ahead > 0) {
+    return {
+      syncStatus: 'ahead',
+      syncDetail: `Local status reports ${ahead} local commit${ahead === 1 ? '' : 's'} ready to push.`,
+    };
+  }
+  return {
+    syncStatus: 'unknown',
+    syncDetail: 'Live status checks only local changes. Fetch status after the task finishes to confirm remote sync.',
+  };
+}
+
+export async function readBuildGitSummary(agentId: string, relativePath = '.', options?: { lightweight?: boolean }): Promise<BuildGitSummary> {
   const { workspace, workspaceRelativePath } = await resolveWorkspaceDirectory(agentId, relativePath);
   const generatedAt = new Date().toISOString();
+  const lightweight = options?.lightweight === true;
   const git = await getGitToolStatus();
-  const githubCliPromise = getGitHubCliStatus(workspace);
+  const githubCliPromise = lightweight ? null : getGitHubCliStatus(workspace);
 
   if (!git.available) {
-    const githubCli = await githubCliPromise;
+    const githubCli = githubCliPromise ? await githubCliPromise : getSkippedGitHubCliStatus();
     const summaryBase: Omit<BuildGitSummary, 'nextAction'> = {
       generatedAt,
       workspaceRoot: workspace,
@@ -1118,7 +1151,7 @@ export async function readBuildGitSummary(agentId: string, relativePath = '.'): 
 
   const repoCheck = await runGit(workspace, ['rev-parse', '--is-inside-work-tree']);
   if (repoCheck.exitCode !== 0 || repoCheck.stdout.trim() !== 'true') {
-    const githubCli = await githubCliPromise;
+    const githubCli = githubCliPromise ? await githubCliPromise : getSkippedGitHubCliStatus();
     const summaryBase: Omit<BuildGitSummary, 'nextAction'> = {
       generatedAt,
       workspaceRoot: workspace,
@@ -1172,10 +1205,49 @@ export async function readBuildGitSummary(agentId: string, relativePath = '.'): 
   const unstagedCount = files.filter((file) => file.unstaged).length;
   const untrackedCount = files.filter((file) => file.untracked).length;
   const conflictedCount = files.filter((file) => file.status === 'conflicted').length;
+  if (lightweight) {
+    const remote = await readRemoteDetails(workspace, branch);
+    const githubCli = getSkippedGitHubCliStatus();
+    const sync = getLocalSyncStatus(parsedStatus.ahead, parsedStatus.behind);
+    const summaryBase: Omit<BuildGitSummary, 'nextAction'> = {
+      generatedAt,
+      workspaceRoot: workspace,
+      workspaceRelativePath,
+      available: true,
+      isRepository: true,
+      git,
+      githubCli,
+      branch,
+      commit: commitResult.exitCode === 0 ? commitResult.stdout.trim() || undefined : undefined,
+      shortCommit: commitResult.exitCode === 0 ? commitResult.stdout.trim().slice(0, 7) || undefined : undefined,
+      ...remote,
+      ahead: parsedStatus.ahead,
+      behind: parsedStatus.behind,
+      ...sync,
+      authStatus: 'unknown',
+      authMethod: 'unknown',
+      authDetail: 'Authentication is not checked during live file-change updates.',
+      authSetupHints: [],
+      branches: [],
+      conflictedCount,
+      dirty: files.length > 0,
+      hasChanges: files.length > 0,
+      changedFileCount: files.length,
+      stagedCount,
+      unstagedCount,
+      untrackedCount,
+      totalAddedLines: files.reduce((sum, file) => sum + file.addedLines, 0),
+      totalDeletedLines: files.reduce((sum, file) => sum + file.deletedLines, 0),
+      files,
+    };
+
+    return { ...summaryBase, nextAction: makeNextAction(summaryBase) };
+  }
+
   const remote = await readRemoteDetails(workspace, branch);
   const sync = await readSyncStatus(workspace, remote, parsedStatus.ahead, parsedStatus.behind);
   const branches = await readBranches(workspace);
-  const githubCli = await githubCliPromise;
+  const githubCli = await githubCliPromise!;
   const auth = await readGitAuthStatus(workspace, remote, githubCli);
   const summaryBase: Omit<BuildGitSummary, 'nextAction'> = {
     generatedAt,

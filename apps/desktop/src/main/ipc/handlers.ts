@@ -29,6 +29,7 @@ import {
 import { disposeTaskManager } from '../opencode/task-manager';
 import {
   getTasks,
+  getTaskList,
   getTask,
   saveTask,
   addTaskActivity,
@@ -74,6 +75,7 @@ import {
   exportWorkspaceZipToFile,
   listWorkspaceTree,
   pasteWorkspaceEntry,
+  readWorkspaceDiffFileContent,
   readWorkspaceFile,
   readWorkspaceFingerprint,
   readWorkspaceGitDiff,
@@ -274,6 +276,7 @@ import {
   writeUserSkillFile,
 } from '../services/user-skills';
 import { askUserSkillAssistant } from '../services/user-skill-assistant';
+import { generateChecklistListPrompt, generateWorkItemNotePrompt } from '../services/checklist-list-prompt-generator';
 import { getUserSkillConfig, setUserSkillConfig } from '../store/userSkillsConfig';
 import { buildAttachmentsPrefix } from '../utils/file-attachments';
 import { getDesktopConfig } from '../config';
@@ -302,6 +305,8 @@ import type {
   UsageProjectUpdate,
   UsageProjectWorkItemInput,
   UsageProjectWorkItemUpdate,
+  ChecklistListPromptGenerateRequest,
+  WorkItemNotePromptGenerateRequest,
   SelectedModel,
   ProviderConfig,
   ModelConfig,
@@ -419,8 +424,11 @@ import {
   startAppConnectorOAuthFlow,
 } from '../services/app-connector-oauth';
 import {
+  deleteBuiltinProviderModel,
   listCustomModelProviders,
+  listBuiltinProviderModelOverrides,
   upsertCustomModelProvider,
+  upsertBuiltinProviderModel,
   deleteCustomModelProvider,
 } from '../store/modelProviders';
 import { listModelProviders } from '../services/model-providers';
@@ -450,6 +458,8 @@ import {
 } from '../services/help-docs';
 
 const MAX_TEXT_LENGTH = 8000;
+const MAX_AVATAR_IMAGE_DATA_URL_LENGTH = 1_000_000;
+const AVATAR_IMAGE_DATA_URL_RE = /^data:image\/(?:png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=\r\n]+$/i;
 const ALLOWED_API_KEY_PROVIDERS = new Set(['anthropic', 'openai', 'google', 'xai', 'custom']);
 const ALLOWED_SELECTED_MODEL_PROVIDERS = new Set(['anthropic', 'openai', 'google', 'xai', 'ollama', 'custom']);
 const PROVIDER_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
@@ -553,7 +563,15 @@ async function saveTextToChosenFile(window: BrowserWindow, params: {
     return { cancelled: true };
   }
 
-  fs.writeFileSync(saveResult.filePath, params.content, 'utf8');
+  try {
+    fs.writeFileSync(saveResult.filePath, params.content, 'utf8');
+  } catch (err) {
+    const code = typeof err === 'object' && err && 'code' in err ? String((err as NodeJS.ErrnoException).code) : '';
+    if (code === 'EBUSY' || code === 'EPERM' || code === 'EACCES') {
+      throw new Error('The selected file is open or locked by another app. Close it, or choose a different filename and try again.');
+    }
+    throw err;
+  }
   return { filePath: saveResult.filePath };
 }
 
@@ -723,6 +741,22 @@ function sanitizeOptionalText(input: unknown, field: string, maxLength: number):
   return input;
 }
 
+function sanitizeOptionalAvatarImageDataUrl(input: unknown): string | undefined {
+  if (input === null || input === undefined) return undefined;
+  if (typeof input !== 'string') {
+    throw new Error('avatarImageDataUrl must be a string');
+  }
+  const trimmed = input.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.length > MAX_AVATAR_IMAGE_DATA_URL_LENGTH) {
+    throw new Error('avatarImageDataUrl exceeds maximum length');
+  }
+  if (!AVATAR_IMAGE_DATA_URL_RE.test(trimmed)) {
+    throw new Error('avatarImageDataUrl must be a supported image data URL');
+  }
+  return trimmed;
+}
+
 function sanitizeUsageProjectBillingType(input: unknown): UsageProjectInput['billingType'] {
   const raw = sanitizeOptionalText(input, 'billingType', 32).trim().toLowerCase();
   return ['internal', 'client_billable', 'fixed_fee', 'retainer', 'r_and_d', 'support', 'other'].includes(raw)
@@ -786,6 +820,11 @@ function sanitizeIdList(input: unknown, field = 'ids'): string[] {
     ids.push(id);
   });
   return ids;
+}
+
+function sanitizeWorkItemOutlineColor(input: unknown, field = 'outlineColor'): string | undefined {
+  const value = sanitizeOptionalText(input, field, 32).trim();
+  return /^#[0-9a-f]{6}$/i.test(value) ? value : undefined;
 }
 
 function sanitizeOptionalIdOverride(input: unknown, field = 'assigneeIds'): string[] | null | undefined {
@@ -930,6 +969,8 @@ function sanitizeWorkItemChecklistLists(input: unknown): UsageProjectWorkItemInp
       id: sanitizeOptionalText(source.id, `checklistLists.${index}.id`, 80).trim() || randomUUID(),
       name: name || 'List',
       items,
+      context: sanitizeOptionalText(source.context, `checklistLists.${index}.context`, 5000).trim() || undefined,
+      outlineColor: sanitizeWorkItemOutlineColor(source.outlineColor, `checklistLists.${index}.outlineColor`),
       createdAt: sanitizeOptionalText(source.createdAt, `checklistLists.${index}.createdAt`, 64).trim() || new Date().toISOString(),
       updatedAt: source.updatedAt ? sanitizeOptionalText(source.updatedAt, `checklistLists.${index}.updatedAt`, 64).trim() : undefined,
     }];
@@ -957,6 +998,7 @@ function sanitizeWorkItemNotes(input: unknown): UsageProjectWorkItemInput['notes
       title: sanitizeOptionalText(source.title, `notes.${index}.title`, 160).trim() || undefined,
       text,
       html: html || undefined,
+      outlineColor: sanitizeWorkItemOutlineColor(source.outlineColor, `notes.${index}.outlineColor`),
       createdAt: sanitizeOptionalText(source.createdAt, `notes.${index}.createdAt`, 64).trim() || new Date().toISOString(),
       updatedAt: source.updatedAt ? sanitizeOptionalText(source.updatedAt, `notes.${index}.updatedAt`, 64).trim() : undefined,
     }];
@@ -1019,6 +1061,7 @@ function sanitizeWorkItemDrawings(input: unknown): UsageProjectWorkItemInput['dr
       width: Math.max(320, Math.min(1600, sanitizeDrawingNumber(source.width, 640))),
       height: Math.max(200, Math.min(1200, sanitizeDrawingNumber(source.height, 360))),
       elements,
+      outlineColor: sanitizeWorkItemOutlineColor(source.outlineColor, `drawings.${drawingIndex}.outlineColor`),
       createdAt: sanitizeOptionalText(source.createdAt, `drawings.${drawingIndex}.createdAt`, 64).trim() || new Date().toISOString(),
       updatedAt: source.updatedAt ? sanitizeOptionalText(source.updatedAt, `drawings.${drawingIndex}.updatedAt`, 64).trim() : undefined,
     }];
@@ -1044,6 +1087,7 @@ function sanitizeWorkItemDocuments(input: unknown): UsageProjectWorkItemInput['d
       kind,
       path: kind === 'local' ? path : undefined,
       url: kind === 'url' ? url : undefined,
+      outlineColor: sanitizeWorkItemOutlineColor(source.outlineColor, `documents.${index}.outlineColor`),
       createdAt: sanitizeOptionalText(source.createdAt, `documents.${index}.createdAt`, 64).trim() || new Date().toISOString(),
     }];
   });
@@ -1468,6 +1512,19 @@ function validateTaskConfig(config: TaskConfig): TaskConfig {
   }
   if (config.workingDirectory) {
     validated.workingDirectory = sanitizeString(config.workingDirectory, 'workingDirectory', 1024);
+  }
+  if (config.requiresBrowser === true || config.requiresBrowser === false) {
+    validated.requiresBrowser = config.requiresBrowser;
+  }
+  if (config.buildMode === true) {
+    validated.buildMode = true;
+  }
+  if (config.buildWorkspaceRelativePath) {
+    validated.buildWorkspaceRelativePath = sanitizeString(
+      config.buildWorkspaceRelativePath,
+      'buildWorkspaceRelativePath',
+      300
+    );
   }
   if (Array.isArray(config.allowedTools)) {
     validated.allowedTools = config.allowedTools
@@ -1934,7 +1991,7 @@ export function registerIPCHandlers(): void {
   // Task: List tasks from history
   handle('task:list', async (_event: IpcMainInvokeEvent, agentId?: string) => {
     const resolvedAgentId = agentId || resolveActiveAgentId();
-    return getTasks(resolvedAgentId);
+    return getTaskList(resolvedAgentId);
   });
 
   // Task: Delete task from history
@@ -2002,7 +2059,13 @@ export function registerIPCHandlers(): void {
       existingTaskId?: string,
       attachedFiles?: string[],
       privacyMode?: 'normal' | 'incognito',
-      usageProjectId?: string | null
+      usageProjectId?: string | null,
+      options?: {
+        workingDirectory?: string;
+        requiresBrowser?: boolean;
+        buildMode?: boolean;
+        buildWorkspaceRelativePath?: string;
+      }
     ) => {
       const window = assertTrustedWindow(BrowserWindow.fromWebContents(event.sender));
       ensureDesktopRuntimeServices({
@@ -2023,6 +2086,20 @@ export function registerIPCHandlers(): void {
         attachedFiles,
         privacyMode,
         usageProjectId: usageProjectId ? sanitizeString(usageProjectId, 'usageProjectId', 128) : null,
+        resumeOptions: options && typeof options === 'object'
+          ? {
+              workingDirectory: options.workingDirectory
+                ? sanitizeString(options.workingDirectory, 'resumeOptions.workingDirectory', 1024)
+                : undefined,
+              requiresBrowser: options.requiresBrowser === true || options.requiresBrowser === false
+                ? options.requiresBrowser
+                : undefined,
+              buildMode: options.buildMode === true,
+              buildWorkspaceRelativePath: options.buildWorkspaceRelativePath
+                ? sanitizeString(options.buildWorkspaceRelativePath, 'resumeOptions.buildWorkspaceRelativePath', 300)
+                : undefined,
+            }
+          : undefined,
         applyAgentContext,
       });
     }
@@ -2302,6 +2379,48 @@ export function registerIPCHandlers(): void {
   // Model providers: custom providers only
   handle('model-providers:custom:list', async () => {
     return listCustomModelProviders();
+  });
+
+  // Model providers: user-added models for built-in providers such as Google/OpenAI/Anthropic/xAI.
+  handle('model-providers:builtin-models:list', async () => {
+    return listBuiltinProviderModelOverrides();
+  });
+
+  handle('model-providers:builtin-models:upsert', async (
+    _event: IpcMainInvokeEvent,
+    payload: { providerId: string; model: ModelConfig }
+  ) => {
+    const providerId = sanitizeProviderId(payload?.providerId, 'providerId');
+    const model = payload?.model;
+    if (!model || typeof model !== 'object') {
+      throw new Error('model is required');
+    }
+    const modelId = sanitizeString(model.id, 'model.id', 128);
+    const displayName = sanitizeString(model.displayName || modelId, 'model.displayName', 128);
+    const contextWindow = typeof model.contextWindow === 'number' && Number.isFinite(model.contextWindow)
+      ? Math.max(1, Math.floor(model.contextWindow))
+      : undefined;
+    const maxOutputTokens = typeof model.maxOutputTokens === 'number' && Number.isFinite(model.maxOutputTokens)
+      ? Math.max(1, Math.floor(model.maxOutputTokens))
+      : undefined;
+    return upsertBuiltinProviderModel(providerId, {
+      id: modelId,
+      displayName,
+      provider: providerId,
+      fullId: `${providerId}/${modelId}`,
+      contextWindow,
+      maxOutputTokens,
+      supportsVision: model.supportsVision === true ? true : undefined,
+    });
+  });
+
+  handle('model-providers:builtin-models:delete', async (
+    _event: IpcMainInvokeEvent,
+    payload: { providerId: string; modelId: string }
+  ) => {
+    const providerId = sanitizeProviderId(payload?.providerId, 'providerId');
+    const modelId = sanitizeString(payload?.modelId, 'modelId', 256);
+    return { ok: deleteBuiltinProviderModel(providerId, modelId) };
   });
 
   // Model providers: create/update custom provider
@@ -3203,6 +3322,7 @@ export function registerIPCHandlers(): void {
       description?: string;
       avatar?: string;
       avatarColor?: string;
+      avatarImageDataUrl?: string;
       workspaceRoot?: string;
       systemPromptAppend?: string;
       selectedModel?: SelectedModel | null;
@@ -3261,6 +3381,7 @@ export function registerIPCHandlers(): void {
       description?: string;
       avatar?: string;
       avatarColor?: string;
+      avatarImageDataUrl?: string;
       workspaceRoot?: string;
       systemPromptAppend?: string;
       selectedModel?: SelectedModel | null;
@@ -3311,6 +3432,7 @@ export function registerIPCHandlers(): void {
       description: config.description ? sanitizeString(config.description, 'description', 256) : undefined,
       avatar: config.avatar ? sanitizeString(config.avatar, 'avatar', 64) : undefined,
       avatarColor: config.avatarColor ? sanitizeString(config.avatarColor, 'avatarColor', 16) : undefined,
+      avatarImageDataUrl: sanitizeOptionalAvatarImageDataUrl(config.avatarImageDataUrl),
       workspaceRoot: config.workspaceRoot ? sanitizeString(config.workspaceRoot, 'workspaceRoot', 1024) : undefined,
       systemPromptAppend: config.systemPromptAppend ? sanitizeString(config.systemPromptAppend, 'systemPromptAppend', MAX_TEXT_LENGTH) : undefined,
     };
@@ -4790,6 +4912,46 @@ export function registerIPCHandlers(): void {
     }
   );
 
+  handle(
+    'settings-assistant:list-prompt:generate',
+    async (_event: IpcMainInvokeEvent, req: ChecklistListPromptGenerateRequest) => {
+      return generateChecklistListPrompt({
+        agentId: sanitizeOptionalText(req?.agentId, 'agentId', 128) || undefined,
+        purpose: req?.purpose,
+        customPurpose: sanitizeOptionalText(req?.customPurpose, 'customPurpose', 500) || undefined,
+        workItemTitle: sanitizeOptionalText(req?.workItemTitle, 'workItemTitle', 300) || undefined,
+        listName: sanitizeOptionalText(req?.listName, 'listName', 300) || undefined,
+        listContext: sanitizeOptionalText(req?.listContext, 'listContext', 5000) || undefined,
+        extraInstruction: sanitizeOptionalText(req?.extraInstruction, 'extraInstruction', 2000) || undefined,
+        includeWorkItemName: req?.includeWorkItemName === true,
+        includeListName: req?.includeListName === true,
+        includeListContext: req?.includeListContext !== false,
+        includeAssignee: req?.includeAssignee === true,
+        includeDueDate: req?.includeDueDate === true,
+        includeCompletedItems: req?.includeCompletedItems === true,
+        items: Array.isArray(req?.items) ? req.items : [],
+      });
+    }
+  );
+
+  handle(
+    'settings-assistant:note-prompt:generate',
+    async (_event: IpcMainInvokeEvent, req: WorkItemNotePromptGenerateRequest) => {
+      return generateWorkItemNotePrompt({
+        agentId: sanitizeOptionalText(req?.agentId, 'agentId', 128) || undefined,
+        purpose: req?.purpose,
+        customPurpose: sanitizeOptionalText(req?.customPurpose, 'customPurpose', 500) || undefined,
+        workItemTitle: sanitizeOptionalText(req?.workItemTitle, 'workItemTitle', 300) || undefined,
+        noteTitle: sanitizeOptionalText(req?.noteTitle, 'noteTitle', 300) || undefined,
+        noteText: sanitizeOptionalText(req?.noteText, 'noteText', 12000) || '',
+        noteHtml: sanitizeOptionalText(req?.noteHtml, 'noteHtml', 12000) || undefined,
+        extraInstruction: sanitizeOptionalText(req?.extraInstruction, 'extraInstruction', 2000) || undefined,
+        includeWorkItemName: req?.includeWorkItemName === true,
+        includeNoteTitle: req?.includeNoteTitle !== false,
+      });
+    }
+  );
+
   handle('user-skills:zip:inspect', async (_event: IpcMainInvokeEvent, req: unknown) => {
     return inspectUserSkillZip(req as any);
   });
@@ -5294,10 +5456,18 @@ export function registerIPCHandlers(): void {
     return readWorkspaceGitDiff(agentId, relativePath, { maxChars, baselineId });
   });
 
-  handle('build-mode:git:summary', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown }) => {
+  handle('build-mode:workspace:diff-file', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown; filePath?: unknown; baselineId?: unknown }) => {
     const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
     const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
-    return readBuildGitSummary(agentId, relativePath);
+    const filePath = sanitizeString(payload?.filePath, 'filePath', 800);
+    const baselineId = sanitizeOptionalText(payload?.baselineId, 'baselineId', 120) || undefined;
+    return readWorkspaceDiffFileContent(agentId, relativePath, filePath, baselineId);
+  });
+
+  handle('build-mode:git:summary', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown; lightweight?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const relativePath = sanitizeOptionalText(payload?.relativePath, 'relativePath', 400) || '.';
+    return readBuildGitSummary(agentId, relativePath, { lightweight: payload?.lightweight === true });
   });
 
   handle('build-mode:git:mismatch:summary', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; relativePath?: unknown }) => {

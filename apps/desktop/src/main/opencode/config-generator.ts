@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { PERMISSION_API_PORT } from '../permission-api';
 import { NODE_TOOLS_API_PORT } from '../node-tools-api';
+import { BUILD_RUNTIME_TOOLS_API_PORT } from '../build-runtime-tools-api';
 import { CANVAS_API_PORT } from '../canvas-api';
 import { getDebugMode, getOllamaConfig } from '../store/appSettings';
 import { listCustomModelProviders } from '../store/modelProviders';
@@ -77,6 +78,7 @@ function resolveAnyTsxCli(skillsPath: string): string | null {
     'node-tools',
     'memory-tools',
     'canvas',
+    'build-runtime-tools',
     'dev-browser',
   ];
 
@@ -521,8 +523,27 @@ When in doubt, ask. A brief confirmation is better than an irreversible mistake.
 - Don't explain what bash commands you're running - just run them silently
 - Don't announce server checks or startup - proceed directly to the task
 - Only speak to the user when you have meaningful results or need input
+- If the user asks a reflection/debug question about what happened or why a task got stuck, answer directly. Do not start new implementation, file reads, searches, runtime checks, or smoke tests unless the user explicitly asks you to do that work.
+- Do not repeat the exact same successful tool call with the same arguments. Reuse the result already in the conversation, choose a more specific/different call, or answer the user.
 </behavior>
 `;
+
+const BUILD_RUNTIME_TOOLS_PROMPT = `<skill name="build-runtime-tools">
+Build mode runtime inspection tools are available for this task. Use them yourself before asking the user to take screenshots, read logs, or run basic checks.
+
+Smoke-test protocol:
+1. Start with build-runtime-tools_get_runtime_status.
+2. If the runtime is stopped and a preview is needed, call build-runtime-tools_start_runtime, then check status/logs.
+3. Use build-runtime-tools_get_page_snapshot to identify safe buttons, links, forms, tabs, and inputs.
+4. Use build-runtime-tools_capture_full_page_preview when visual evidence is useful. Use build-runtime-tools_capture_preview_screenshot for the visible viewport.
+5. Use build-runtime-tools_run_ui_interaction_test for safe click/type/press_key/wait/expect_text smoke tests. For short labels such as "+" or "0", prefer role plus exact label or a selector from get_page_snapshot. If the tool reports ambiguous candidates, retry with a more specific selector, role, exact label, or nth. Avoid destructive actions unless the user explicitly requested them.
+6. Use build-runtime-tools_get_runtime_logs and build-runtime-tools_get_terminal_snapshot when anything fails or appears stuck.
+7. Use build-runtime-tools_run_quality_checks after code changes when relevant.
+8. Use build-runtime-tools_get_git_summary before summarizing file changes.
+
+Do not repeat the exact same runtime tool call with the same arguments. If a call already succeeded, use that result and move to the next distinct check or summarize.
+Do not ask the user to manually operate the Runtime Preview screenshot tools unless these Build runtime tools fail.
+</skill>`;
 
 interface AgentConfig {
   description?: string;
@@ -1008,7 +1029,13 @@ function normalizeOpenAICompatibleBaseUrl(providerId: string, baseUrl: string): 
  * OpenCode reads config from .opencode.json in the working directory or
  * from ~/.config/opencode/opencode.json
  */
-export async function generateOpenCodeConfig(options?: { agentId?: string; systemPromptAppend?: string; includeBrowserSkill?: boolean }): Promise<string> {
+export async function generateOpenCodeConfig(options?: {
+  agentId?: string;
+  systemPromptAppend?: string;
+  includeBrowserSkill?: boolean;
+  buildMode?: boolean;
+  buildWorkspaceRelativePath?: string;
+}): Promise<string> {
   const agentContext = getAgentContext(options?.agentId);
   const selectedModel = resolveSelectedModelForAgent(agentContext.agentId);
   const ollamaConfig = getOllamaConfig();
@@ -1018,6 +1045,11 @@ export async function generateOpenCodeConfig(options?: { agentId?: string; syste
   const localOllamaFullToolMode = localOllamaMode && ollamaToolMode === 'full';
   const localOllamaBuiltInMcpMode = localOllamaDesktopToolMode || localOllamaFullToolMode;
   const useCompactLocalOllamaPrompt = localOllamaMode && usesCompactOllamaPrompt(ollamaToolMode);
+  const buildRuntimeToolsEnabled = Boolean(options?.buildMode && (!localOllamaMode || localOllamaBuiltInMcpMode));
+  const systemPromptAppend = [
+    options?.systemPromptAppend,
+    buildRuntimeToolsEnabled ? BUILD_RUNTIME_TOOLS_PROMPT : undefined,
+  ].filter((part): part is string => Boolean(part && part.trim())).join('\n\n');
   const workspaceRoot = agentContext.workspaceRoot || '';
   const agentId = normalizeAgentIdForStore(options?.agentId ?? 'main');
   const configDir = path.join(app.getPath('userData'), 'opencode', 'agents', agentId);
@@ -1033,12 +1065,12 @@ export async function generateOpenCodeConfig(options?: { agentId?: string; syste
   const systemPrompt = useCompactLocalOllamaPrompt
     ? buildCompactLocalOllamaPrompt(agentContext, {
         toolMode: ollamaToolMode,
-        systemPromptAppend: options?.systemPromptAppend,
+        systemPromptAppend,
       })
     : buildOpenCodeSystemPrompt({
         skillsPath,
         customMcpRegistryPath,
-        systemPromptAppend: options?.systemPromptAppend,
+        systemPromptAppend,
         includeBrowserSkill: options?.includeBrowserSkill !== false,
       });
 
@@ -1121,6 +1153,23 @@ export async function generateOpenCodeConfig(options?: { agentId?: string; syste
     console.log('[OpenCode Config] Using bundled tsx for canvas:', canvasTsxCli);
   } else {
     console.warn('[OpenCode Config] tsx CLI not found for canvas; falling back to npx');
+  }
+
+  // Build runtime tools are exposed only to Build mode tasks.
+  const buildRuntimeToolsSkillDir = path.join(skillsPath, 'build-runtime-tools');
+  const buildRuntimeToolsServerPath = path.join(buildRuntimeToolsSkillDir, 'src', 'index.ts');
+  const buildRuntimeToolsTsxCli =
+    resolveTsxCliForSkill(buildRuntimeToolsSkillDir) || filePermissionTsxCli;
+  const buildRuntimeToolsCommand = (() => {
+    const tsxCli = buildRuntimeToolsTsxCli || fallbackTsxCli;
+    if (tsxCli) return [mcpNodeCommand, tsxCli, buildRuntimeToolsServerPath];
+    return ['npx', 'tsx', buildRuntimeToolsServerPath];
+  })();
+
+  if (buildRuntimeToolsTsxCli) {
+    console.log('[OpenCode Config] Using bundled tsx for build-runtime-tools:', buildRuntimeToolsTsxCli);
+  } else if (options?.buildMode) {
+    console.warn('[OpenCode Config] tsx CLI not found for build-runtime-tools; falling back to npx');
   }
 
   // NOTE: We intentionally do NOT set `enabled_providers` in the OpenCode config.
@@ -1245,6 +1294,23 @@ export async function generateOpenCodeConfig(options?: { agentId?: string; syste
       timeout: 10000,
     },
   };
+
+  if (buildRuntimeToolsEnabled) {
+    builtInMcp['build-runtime-tools'] = {
+      type: 'local',
+      command: buildRuntimeToolsCommand,
+      enabled: true,
+      environment: {
+        BUILD_RUNTIME_TOOLS_API_PORT: String(BUILD_RUNTIME_TOOLS_API_PORT),
+        ACCOMPLISH_BUILD_MODE: '1',
+        ACCOMPLISH_AGENT_ID: agentContext.agentId,
+        ACCOMPLISH_BUILD_WORKSPACE_RELATIVE: options?.buildWorkspaceRelativePath || '.',
+        NODE_BIN_PATH: bundledPaths?.binDir || '',
+        ...(mcpUseElectronAsNode ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
+      },
+      timeout: 30000,
+    };
+  }
 
   const mergedMcp: Record<string, McpServerConfig> = {};
   if (!localOllamaMode || localOllamaBuiltInMcpMode) {

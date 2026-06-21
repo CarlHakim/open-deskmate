@@ -22,6 +22,9 @@ import {
   normalizeSelectedModel,
   SELECTED_MODEL_CHANGED_EVENT,
 } from '../lib/selected-model-events';
+import { cn } from '@/lib/utils';
+import ChatBackgroundSwitcher, { useChatBackgroundSelection } from '@/components/chat/ChatBackgroundSwitcher';
+import { useTopBarControls } from '../stores/topBarControlsStore';
 
 // Import use case images for proper bundling in production
 import calendarPrepNotesImg from '/assets/usecases/calendar-prep-notes.png';
@@ -171,7 +174,6 @@ export default function HomePage() {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [showExamples, setShowExamples] = useState(false);
   const [showSettingsDialog, setShowSettingsDialog] = useState(false);
-  const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
   const [planningJobs, setPlanningJobs] = useState(false);
   const [proactiveOpen, setProactiveOpen] = useState(false);
   const [proactiveError, setProactiveError] = useState<string | null>(null);
@@ -181,7 +183,7 @@ export default function HomePage() {
   const [globalWorkspace, setGlobalWorkspace] = useState<string | null>(null);
   const [globalSelectedModel, setGlobalSelectedModel] = useState<SelectedModel | null>(null);
   const [privacyMode, setPrivacyMode] = useState<'normal' | 'incognito'>('normal');
-  const { startTask, isLoading, addTaskUpdate, setPermissionRequest, error, currentTask } = useTaskStore();
+  const { startTask, isLoading, addTaskUpdate, setPermissionRequest, error } = useTaskStore();
   const { agents, activeAgentId, loadAgents } = useAgentStore();
   const activeAgent = agents.find((agent) => agent.id === activeAgentId);
   const navigate = useNavigate();
@@ -263,7 +265,7 @@ export default function HomePage() {
     if (!prompt.trim() || isLoading) return;
 
     const taskId = `task_${Date.now()}`;
-    const task = await startTask({
+    const taskPromise = startTask({
       prompt: prompt.trim(),
       taskId,
       workingDirectory: workingFolder,
@@ -271,12 +273,15 @@ export default function HomePage() {
       privacyMode: mode,
       usageProjectId: usageProjectId ?? null,
     });
-    if (task) {
-      setPendingTaskId(task.id);
-    } else {
-      setPendingTaskId(null);
-    }
-  }, [isLoading, startTask, privacyMode]);
+    navigate(`/execution/${taskId}`);
+    void taskPromise.then((task) => {
+      if (task?.id && task.id !== taskId) {
+        navigate(`/execution/${task.id}`, { replace: true });
+      }
+    }).catch(() => {
+      // startTask records the error in the shared task store.
+    });
+  }, [isLoading, navigate, startTask, privacyMode]);
 
   const handlePlanNextJobs = useCallback(async () => {
     setPlanningJobs(true);
@@ -293,14 +298,6 @@ export default function HomePage() {
       setPlanningJobs(false);
     }
   }, [accomplish, activeAgentId]);
-
-  useEffect(() => {
-    if (!pendingTaskId || location.pathname !== '/') return;
-    if (currentTask?.id === pendingTaskId) {
-      navigate(`/execution/${pendingTaskId}`);
-      setPendingTaskId(null);
-    }
-  }, [pendingTaskId, currentTask?.id, location.pathname, navigate]);
 
   const handleSubmit = useCallback(async (
     prompt: string,
@@ -358,10 +355,49 @@ export default function HomePage() {
   const defaultWorkspace = activeAgent?.workspaceRoot ?? globalWorkspace ?? null;
   const activeAgentDisplayName = activeAgent?.name || activeAgentId || 'main';
   const effectiveSelectedModel = activeAgent?.selectedModel ?? globalSelectedModel;
+  const {
+    selectedId: chatBackgroundId,
+    selectedBackground,
+    backgroundStyle: chatBackgroundStyle,
+    setSelectedId: setChatBackgroundId,
+  } = useChatBackgroundSelection();
   const landingModelBadgeLabel = useMemo(
     () => formatSelectedModelBadgeLabel(effectiveSelectedModel),
     [effectiveSelectedModel]
   );
+  const homeTopBarControls = useMemo(() => (
+    <div
+      className={cn(
+        'flex max-w-[min(64vw,860px)] items-center gap-2 overflow-x-auto rounded-full border border-border/60 px-2 py-1 shadow-md backdrop-blur-md',
+        selectedBackground ? 'bg-background/28' : 'bg-card/85'
+      )}
+    >
+      <div className="shrink-0">
+        <ModeSwitch />
+      </div>
+      <div className="flex min-w-0 items-center justify-end gap-2">
+        <BuildRuntimeIndicator agentId={activeAgentId} />
+        <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-700">
+          <CheckCircle2 className="h-3 w-3" />
+          Ready
+        </span>
+        {landingModelBadgeLabel && (
+          <span
+            title={landingModelBadgeLabel}
+            className="inline-flex max-w-[260px] shrink-0 items-center gap-1.5 truncate rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground"
+          >
+            <Code className="h-3 w-3 shrink-0" />
+            <span className="truncate">Model: {landingModelBadgeLabel}</span>
+          </span>
+        )}
+        <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">
+          <User className="h-3 w-3" />
+          Agent: {activeAgentDisplayName}
+        </span>
+      </div>
+    </div>
+  ), [activeAgentDisplayName, activeAgentId, landingModelBadgeLabel, selectedBackground]);
+  useTopBarControls(homeTopBarControls);
 
   return (
     <>
@@ -370,33 +406,15 @@ export default function HomePage() {
         onOpenChange={handleSettingsDialogChange}
         onApiKeySaved={handleApiKeySaved}
       />
-      <div className="h-full flex flex-col bg-background">
-        <div className="flex-shrink-0 border-b border-border bg-card/50 px-6 py-3">
-          <div className="mx-auto flex w-full max-w-5xl flex-wrap items-center justify-between gap-2">
-            <ModeSwitch />
-            <div className="flex flex-wrap items-center justify-end gap-2">
-            <BuildRuntimeIndicator agentId={activeAgentId} />
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-700 shrink-0">
-              <CheckCircle2 className="h-3 w-3" />
-              Ready
-            </span>
-            {landingModelBadgeLabel && (
-              <span
-                title={landingModelBadgeLabel}
-                className="inline-flex max-w-[320px] items-center gap-1.5 truncate rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground shrink-0"
-              >
-                <Code className="h-3 w-3 shrink-0" />
-                <span className="truncate">Model: {landingModelBadgeLabel}</span>
-              </span>
-            )}
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground shrink-0">
-              <User className="h-3 w-3" />
-              Agent: {activeAgentDisplayName}
-            </span>
-            </div>
-          </div>
-        </div>
-        <div className="flex-1 overflow-y-auto gradient-subtle">
+      <div
+        className="h-full flex flex-col bg-background"
+        style={selectedBackground ? chatBackgroundStyle : undefined}
+      >
+        <div
+          className={cn('relative flex-1 overflow-y-auto bg-background', !selectedBackground && 'gradient-subtle')}
+          style={chatBackgroundStyle}
+        >
+          <ChatBackgroundSwitcher selectedId={chatBackgroundId} onSelect={setChatBackgroundId} />
           <div className="min-h-full flex items-center justify-center p-8">
             <div className="w-full max-w-4xl flex flex-col items-center gap-10">
         {/* Main Title */}
@@ -423,7 +441,14 @@ export default function HomePage() {
           transition={{ ...springs.gentle, delay: 0.1 }}
           className="w-full"
         >
-          <Card className="w-full card-glass shadow-glow gap-0 py-0 flex flex-col max-h-[calc(100vh-4rem)] overflow-visible">
+          <Card
+            className={cn(
+              'w-full shadow-glow gap-0 py-0 flex flex-col max-h-[calc(100vh-4rem)] overflow-visible',
+              selectedBackground
+                ? 'border-border/45 bg-background/30 backdrop-blur-md'
+                : 'card-glass'
+            )}
+          >
             <CardContent className="p-6 pb-4 flex-shrink-0 overflow-visible">
               {/* Input Section */}
               <TaskInputBar
@@ -450,19 +475,6 @@ export default function HomePage() {
               {(submitError || error) && (
                 <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
                   {submitError || error}
-                </div>
-              )}
-              {pendingTaskId && currentTask?.id === pendingTaskId && location.pathname === '/' && (
-                <div className="mt-3 flex items-center justify-between rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
-                  <span>Task started. Opening task view...</span>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={() => navigate(`/execution/${pendingTaskId}`)}
-                  >
-                    Open task
-                  </Button>
                 </div>
               )}
             </CardContent>

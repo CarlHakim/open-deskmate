@@ -71,6 +71,8 @@ The Assignees overview shows:
 - Task and run counts.
 - Usage totals where available.
 
+Use this overview to see who is doing the work, which budgets they are attached to, and whether active Chat or Build work is concentrated in one project.
+
 ## Owner Vs Assignees
 
 The budget **Owner** is the internal person responsible for the budget or client relationship.
@@ -89,3 +91,4 @@ Assignees are the people doing the work.
 - [Project Management](./project-management.md)
 - [Workboard](./workboard.md)
 - [Project Budgets And Usage](./project-budgets-and-usage.md)
+- [Project Work Popup](./project-work-popup.md)

@@ -42,9 +42,14 @@ import type {
   UsageProjectWorkItem,
   UsageProjectWorkItemInput,
   UsageProjectWorkItemUpdate,
+  ChecklistListPromptGenerateRequest,
+  ChecklistListPromptGenerateResponse,
+  WorkItemNotePromptGenerateRequest,
+  WorkItemNotePromptGenerateResponse,
   UsagePeriod,
   UsagePricingSettings,
   UsageSummary,
+  ModelConfig,
   ProviderConfig,
   AgentConfig,
   AgentProfile,
@@ -103,6 +108,7 @@ import type {
   BuildWorkspaceBaselineResolveResult,
   BuildWorkspaceFingerprint,
   BuildWorkspaceDiff,
+  BuildWorkspaceDiffFileContent,
   BuildWorkspaceFileContent,
   SubagentRunDetail,
   SubagentRunRecord,
@@ -226,7 +232,13 @@ interface AccomplishAPI {
     taskId?: string,
     attachedFiles?: string[],
     privacyMode?: 'normal' | 'incognito',
-    usageProjectId?: string | null
+    usageProjectId?: string | null,
+    options?: {
+      workingDirectory?: string;
+      requiresBrowser?: boolean;
+      buildMode?: boolean;
+      buildWorkspaceRelativePath?: string;
+    }
   ): Promise<Task>;
 
   // Proactive assistant (runs only when user clicks the button)
@@ -554,7 +566,8 @@ interface AccomplishAPI {
     destinationWorkspaceRelativePath?: string;
   }): Promise<{ sourceRelativePath: string; pastedPath: string; mode: 'cut' | 'copy' }>;
   getBuildWorkspaceDiff(payload: { agentId: string; relativePath?: string; maxChars?: number; baselineId?: string }): Promise<BuildWorkspaceDiff>;
-  getBuildGitSummary(payload: { agentId: string; relativePath?: string }): Promise<BuildGitSummary>;
+  getBuildWorkspaceDiffFileContent(payload: { agentId: string; relativePath?: string; filePath: string; baselineId?: string }): Promise<BuildWorkspaceDiffFileContent>;
+  getBuildGitSummary(payload: { agentId: string; relativePath?: string; lightweight?: boolean }): Promise<BuildGitSummary>;
   getBuildGitMismatchSummary(payload: { agentId: string; relativePath?: string }): Promise<BuildGitMismatchSummary>;
   resolveBuildGitMismatch(payload: { agentId: string; relativePath?: string } & BuildGitResolveMismatchInput): Promise<BuildGitActionResult>;
   initBuildGitRepository(payload: { agentId: string; relativePath?: string }): Promise<BuildGitActionResult>;
@@ -642,6 +655,8 @@ interface AccomplishAPI {
   cleanupUserSkillZipSession(payload: UserSkillZipCleanupRequest): Promise<{ ok: boolean }>;
   generateUserSkillFromTask(payload: UserSkillGenerateFromTaskRequest): Promise<UserSkillGenerateFromTaskResponse>;
   askUserSkillAssistant(payload: UserSkillAssistantAskRequest): Promise<UserSkillAssistantAskResponse>;
+  generateChecklistListPrompt(payload: ChecklistListPromptGenerateRequest): Promise<ChecklistListPromptGenerateResponse>;
+  generateWorkItemNotePrompt(payload: WorkItemNotePromptGenerateRequest): Promise<WorkItemNotePromptGenerateResponse>;
 
   // Automations
   listSchedules(): Promise<Array<import('@accomplish/shared').ScheduledTask>>;
@@ -667,6 +682,9 @@ interface AccomplishAPI {
   setUserSkillAssistantModel(model: { provider: string; model: string; baseUrl?: string } | null): Promise<void>;
   listModelProviders(): Promise<ProviderConfig[]>;
   listCustomModelProviders(): Promise<ProviderConfig[]>;
+  listBuiltinProviderModelOverrides(): Promise<Record<string, ModelConfig[]>>;
+  upsertBuiltinProviderModel(payload: { providerId: string; model: ModelConfig }): Promise<ModelConfig>;
+  deleteBuiltinProviderModel(payload: { providerId: string; modelId: string }): Promise<{ ok: boolean }>;
   upsertCustomModelProvider(provider: ProviderConfig): Promise<ProviderConfig>;
   deleteCustomModelProvider(providerId: string): Promise<{ ok: boolean }>;
   getModelLimitOverrides(): Promise<{ overrides: Record<string, { contextWindowTokens?: number }> }>;

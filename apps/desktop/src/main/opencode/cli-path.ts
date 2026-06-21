@@ -275,7 +275,7 @@ function findBundledOpenCodePackageBin(): string | null {
     : ['opencode', 'opencode.exe'];
   for (const name of names) {
     const candidate = path.join(binDir, name);
-    if (fs.existsSync(candidate)) {
+    if (fs.existsSync(candidate) && isUsableOpenCodeBin(candidate)) {
       return candidate;
     }
   }
@@ -289,11 +289,33 @@ function findDevOpenCodePackageBin(): string | null {
     : ['opencode', 'opencode.exe'];
   for (const name of names) {
     const candidate = path.join(binDir, name);
-    if (fs.existsSync(candidate)) {
+    if (fs.existsSync(candidate) && isUsableOpenCodeBin(candidate)) {
       return candidate;
     }
   }
   return null;
+}
+
+function isUsableOpenCodeBin(candidate: string): boolean {
+  if (!fs.existsSync(candidate)) {
+    return false;
+  }
+
+  if (process.platform !== 'win32' || path.basename(candidate).toLowerCase() !== 'opencode.exe') {
+    return true;
+  }
+
+  // opencode-ai leaves a small shell-script placeholder at bin/opencode.exe when
+  // its postinstall did not run. It exists, but Windows cannot execute it.
+  try {
+    const fd = fs.openSync(candidate, 'r');
+    const header = Buffer.alloc(2);
+    fs.readSync(fd, header, 0, 2, 0);
+    fs.closeSync(fd);
+    return header[0] === 0x4d && header[1] === 0x5a; // "MZ"
+  } catch {
+    return false;
+  }
 }
 
 function findBundledWindowsOpenCodeExe(): string | null {
@@ -305,7 +327,7 @@ function findBundledWindowsOpenCodeExe(): string | null {
     'bin',
     'opencode.exe'
   );
-  if (fs.existsSync(packageExe)) {
+  if (isUsableOpenCodeBin(packageExe)) {
     return packageExe;
   }
 

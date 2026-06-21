@@ -4026,16 +4026,24 @@ function renderWebchatPage(): string {
 
       function updateAgentAvatarEl(el, agent) {
         if (!el) return;
-        if (agent && agent.avatar) {
+        if (agent && agent.avatarImageDataUrl) {
+          el.innerHTML = '<img src="' + escapeHtml(agent.avatarImageDataUrl) + '" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:inherit;display:block;" />';
+          el.style.background = 'transparent';
+          el.style.color = '';
+          el.style.fontSize = '';
+          el.style.padding = '0';
+        } else if (agent && agent.avatar) {
           var color = agent.avatarColor || 'var(--primary)';
           el.innerHTML = getAgentAvatarSvg(agent.avatar, color);
           el.style.background = agent.avatarColor ? (agent.avatarColor + '20') : 'rgba(77,182,172,0.1)';
           el.style.color = '';
           el.style.fontSize = '';
+          el.style.padding = '';
         } else {
           var name = agent ? (agent.name || agent.id) : 'A';
           el.textContent = name.charAt(0).toUpperCase();
           el.style.background = 'rgba(77,182,172,0.1)';
+          el.style.padding = '';
         }
       }
 
@@ -4050,7 +4058,11 @@ function renderWebchatPage(): string {
           var roleLabel = agent.roleName || agent.id;
           var avatarColor = agent.avatarColor || 'var(--muted-foreground)';
           var avatarBg = agent.avatarColor ? (agent.avatarColor + '20') : 'hsl(220 14.3% 95.9%)';
-          var avatarHtml = agent.avatar
+          var avatarHtml = agent.avatarImageDataUrl
+            ? '<div style="width:32px;height:32px;border-radius:9px;display:flex;align-items:center;justify-content:center;flex-shrink:0;background:transparent;overflow:hidden;">' +
+              '<img src="' + escapeHtml(agent.avatarImageDataUrl) + '" alt="" style="width:100%;height:100%;object-fit:cover;display:block;" />' +
+              '</div>'
+            : agent.avatar
             ? '<div style="width:32px;height:32px;border-radius:9px;display:flex;align-items:center;justify-content:center;flex-shrink:0;background:' + avatarBg + ';padding:4px;">' + getAgentAvatarSvg(agent.avatar, avatarColor) + '</div>'
             : '<div style="width:32px;height:32px;border-radius:9px;display:flex;align-items:center;justify-content:center;flex-shrink:0;background:' + avatarBg + ';font-size:12px;font-weight:600;color:' + avatarColor + ';">' + escapeHtml(name.charAt(0).toUpperCase()) + '</div>';
           menuHtml += '<button class="context-menu-item" data-agent-id="' + escapeHtml(agent.id) + '" style="' + (isActive ? 'color:var(--primary);' : '') + '">' +

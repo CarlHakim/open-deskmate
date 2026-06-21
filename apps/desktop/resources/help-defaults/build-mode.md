@@ -26,6 +26,8 @@ Use Build Mode when the task is tied to a workspace folder, source files, a runn
   - Load build task history.
   - Track subagents for the current build task.
   - Open project work linked to the current preset.
+  - Optionally enable **Ask AI to run tests** for code-changing tasks.
+  - Navigate long Build chats with the Prompt Navigator.
   - Pop out, copy, save, or export final answers.
 - **Changes & Git**
   - Review code changes produced during the Build workflow.
@@ -46,10 +48,11 @@ Use Build Mode when the task is tied to a workspace folder, source files, a runn
 1. Confirm the selected workspace and preset are correct.
 2. Attach the preset to a project budget if usage should be tracked.
 3. Start the runtime preview when the task affects a visible app.
-4. Enter the Build prompt and run the task.
-5. Watch the answer stream, edited-files card, runtime logs, and Changes & Git.
-6. Run checks or preview the app before committing.
-7. Use Changes & Git to review, commit, and push when ready.
+4. Enable **Ask AI to run tests** if code changes should include automated tests and checks.
+5. Enter the Build prompt and run the task.
+6. Watch the answer stream, edited-files card, runtime logs, and Changes & Git.
+7. Run checks or preview the app before committing.
+8. Use Changes & Git to review, commit, and push when ready.
 
 ## Build Task Output
 
@@ -57,6 +60,12 @@ Use Build Mode when the task is tied to a workspace folder, source files, a runn
 - Edited-files cards appear in the chat stream after runs that change files.
 - Activity events show tool calls, permission requests, errors, retries, and recovery actions when needed.
 - Final answers can be popped out, copied with formatting, saved as project notes, or exported as RTF files.
+
+## Tests And Smoke Testing
+
+Use **Ask AI to run tests** when the Build task changes code and you want the AI to add or update tests, run relevant checks, and fix failures. The instruction is added only when the task starts and does not change the visible prompt text.
+
+For UI work, ask for a smoke test. Build Mode can expose runtime tools that let the AI inspect runtime status, start or restart the preview, capture screenshots, read page structure, test safe visible controls, inspect logs, run checks, and summarize evidence.
 
 ## Project Work
 
@@ -92,8 +101,11 @@ Use the **Sections** menu to show, hide, or lock Build Mode sections.
 ## Related Pages
 
 - [Build Mode Layout And Sections](./build-layout-and-sections.md)
+- [Build Smoke Testing](./build-smoke-testing.md)
 - [Changes And Git](./changes-and-git.md)
 - [Runtime Screenshots](./runtime-screenshots.md)
+- [Prompt Navigator](./prompt-navigator.md)
+- [Project Work Popup](./project-work-popup.md)
 - [Project Management](./project-management.md)
 - [Workboard](./workboard.md)
 - [Saving Answers And Exports](./saving-answers-and-exports.md)

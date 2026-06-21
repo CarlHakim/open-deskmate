@@ -44,6 +44,13 @@ export function applyTaskHookInputPatch(baseConfig: TaskConfig, patch?: Record<s
   if (patch.requiresBrowser === true || patch.requiresBrowser === false) {
     next.requiresBrowser = patch.requiresBrowser;
   }
+  if (patch.buildMode === true || patch.buildMode === false) {
+    next.buildMode = patch.buildMode || undefined;
+  }
+  if (typeof patch.buildWorkspaceRelativePath === 'string') {
+    const relativePath = patch.buildWorkspaceRelativePath.trim();
+    next.buildWorkspaceRelativePath = relativePath || undefined;
+  }
   if (patch.speedMode === 'fast' || patch.speedMode === 'balanced' || patch.speedMode === 'deep') {
     next.speedMode = patch.speedMode;
   }

@@ -154,6 +154,19 @@ export interface BuildWorkspaceDiffFile {
   afterTruncated?: boolean;
 }
 
+export interface BuildWorkspaceDiffFileContent {
+  relativePath: string;
+  beforeContent?: string;
+  afterContent?: string;
+  beforeAvailable: boolean;
+  afterAvailable: boolean;
+  beforeUnavailableReason?: string;
+  afterUnavailableReason?: string;
+  beforeSize?: number;
+  afterSize?: number;
+  baselineId?: string;
+}
+
 export type BuildGitChangedFileStatus =
   | 'added'
   | 'modified'
@@ -600,6 +613,90 @@ export interface BuildQualityCheckRunRequest {
   diffSignature?: string;
   changedFileCount?: number;
   trigger?: 'manual' | 'suggested';
+}
+
+export interface BuildRuntimeToolError {
+  ok: false;
+  error: string;
+  detail?: string;
+  recoverable?: boolean;
+}
+
+export interface BuildRuntimeToolStatus {
+  ok: true;
+  snapshot: BuildSessionSnapshot;
+  previewUrl?: string;
+  recommendedNextAction: string;
+}
+
+export interface BuildRuntimeLogsResult {
+  ok: true;
+  logs: BuildLogEntry[];
+  nextCursor: number;
+  truncated: boolean;
+}
+
+export interface BuildRuntimeScreenshotResult {
+  ok: true;
+  filePath: string;
+  previewUrl: string;
+  width: number;
+  height: number;
+  fullWidth?: number;
+  fullHeight?: number;
+  clipped?: boolean;
+  kind: 'visible' | 'full-page';
+}
+
+export interface BuildPageSnapshotElement {
+  tagName: string;
+  role?: string;
+  text?: string;
+  label?: string;
+  placeholder?: string;
+  selector: string;
+  visible: boolean;
+  disabled: boolean;
+}
+
+export interface BuildPageSnapshotResult {
+  ok: true;
+  previewUrl: string;
+  title: string;
+  url: string;
+  elements: BuildPageSnapshotElement[];
+  consoleErrors: string[];
+}
+
+export type BuildUiInteractionAction =
+  | { type: 'click'; selector?: string; text?: string; label?: string; role?: string; exact?: boolean; nth?: number }
+  | { type: 'type'; selector?: string; text?: string; label?: string; role?: string; exact?: boolean; nth?: number; value: string }
+  | { type: 'press_key'; key: string; modifiers?: Array<'Control' | 'Ctrl' | 'Meta' | 'Command' | 'Cmd' | 'Shift' | 'Alt'> }
+  | { type: 'expect_text'; text: string }
+  | { type: 'wait'; ms?: number };
+
+export interface BuildUiInteractionMatchedElement {
+  selector: string;
+  tagName: string;
+  role?: string;
+  text?: string;
+  label?: string;
+  placeholder?: string;
+}
+
+export interface BuildUiInteractionTestResult {
+  ok: true;
+  previewUrl: string;
+  steps: Array<{
+    action: BuildUiInteractionAction['type'];
+    ok: boolean;
+    detail: string;
+    matchedElement?: BuildUiInteractionMatchedElement;
+    candidates?: BuildUiInteractionMatchedElement[];
+  }>;
+  beforeScreenshotPath?: string;
+  afterScreenshotPath?: string;
+  consoleErrors: string[];
 }
 
 export type BuildTerminalEntryKind = 'output' | 'system' | 'example';

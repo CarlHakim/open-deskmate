@@ -1,8 +1,10 @@
 import type * as React from 'react';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Archive, ArrowRight, Bold, CalendarDays, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Circle, ClipboardCopy, Columns3, Download, Edit3, Eye, EyeOff, FileText, FolderOpen, GripVertical, Heading2, Italic, Link, List, ListOrdered, Maximize2, Minimize2, Minus, MousePointer2, Plus, Quote, Search, Square, Tag, Trash2, Triangle, Type, Underline, Users, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { Archive, ArrowRight, Bold, CalendarDays, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Circle, ClipboardCopy, Columns3, Download, Edit3, Eye, EyeOff, FileText, FolderOpen, GripVertical, Heading2, Italic, Link, List, ListOrdered, Maximize2, MessageSquareText, Minimize2, Minus, MousePointer2, Palette, Paperclip, Plus, Quote, Search, Square, Tag, Trash2, Triangle, Type, Underline, Users, X, ZoomIn, ZoomOut } from 'lucide-react';
 import type {
+  ChecklistListPromptGenerateRequest,
+  ChecklistListPromptPurpose,
   UsageAssignee,
   UsageProject,
   UsageProjectBudgetWindow,
@@ -18,9 +20,21 @@ import type {
   UsageProjectWorkItemDrawingLineStyle,
   UsageProjectWorkItemNote,
   UsageProjectWorkItemSourceType,
+  WorkItemNotePromptGenerateRequest,
 } from '@accomplish/shared';
 import { Button } from '@/components/ui/button';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { getAccomplish } from '@/lib/accomplish';
+import {
+  attachFilesToActivePrompt,
+  getActivePromptAttachmentTarget,
+  getActivePromptInsertionTarget,
+  insertIntoActivePrompt,
+  subscribePromptAttachmentTarget,
+  subscribePromptInsertionTarget,
+  type PromptInsertionTarget,
+} from '@/lib/prompt-insertion';
 import { cn } from '@/lib/utils';
 
 export type WorkboardSourceOption = {
@@ -82,6 +96,88 @@ type DocumentEditDraft = {
   target: string;
 };
 
+type DocumentPromptNotice = { documentId: string; kind: 'success' | 'error'; text: string };
+
+type AutoGrowingTextareaProps = React.TextareaHTMLAttributes<HTMLTextAreaElement> & {
+  minRows?: number;
+  maxRows?: number;
+};
+
+export function AutoGrowingTextarea({
+  className,
+  minRows = 1,
+  maxRows = 6,
+  onInput,
+  style,
+  ...props
+}: AutoGrowingTextareaProps) {
+  const ref = useRef<HTMLTextAreaElement | null>(null);
+
+  const resize = useCallback((element: HTMLTextAreaElement | null = ref.current) => {
+    if (!element) return;
+    element.style.height = 'auto';
+    const computed = window.getComputedStyle(element);
+    const lineHeight = Number.parseFloat(computed.lineHeight) || 16;
+    const padding =
+      Number.parseFloat(computed.paddingTop || '0') +
+      Number.parseFloat(computed.paddingBottom || '0');
+    const border =
+      Number.parseFloat(computed.borderTopWidth || '0') +
+      Number.parseFloat(computed.borderBottomWidth || '0');
+    const minHeight = Math.ceil(lineHeight * minRows + padding + border);
+    const maxHeight = Math.ceil(lineHeight * maxRows + padding + border);
+    const nextHeight = Math.max(minHeight, Math.min(element.scrollHeight, maxHeight));
+    element.style.height = `${nextHeight}px`;
+    element.style.overflowY = element.scrollHeight > maxHeight ? 'auto' : 'hidden';
+  }, [maxRows, minRows]);
+
+  useEffect(() => {
+    resize();
+  }, [props.defaultValue, props.value, resize]);
+
+  return (
+    <textarea
+      {...props}
+      ref={ref}
+      rows={minRows}
+      onInput={(event) => {
+        resize(event.currentTarget);
+        onInput?.(event);
+      }}
+      style={style}
+      className={cn('overflow-hidden', className)}
+    />
+  );
+}
+
+const CHECKLIST_LIST_COLLAPSE_STORAGE_KEY = 'opendeskmate:workboard-checklist-list-collapse:v1';
+
+export function checklistListCollapseKey(projectId: string, itemId: string | undefined, listId: string): string {
+  return `${projectId || 'project'}:${itemId || 'draft'}:${listId}`;
+}
+
+export function readChecklistListCollapseState(): Record<string, boolean> {
+  try {
+    const raw = window.localStorage.getItem(CHECKLIST_LIST_COLLAPSE_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter((entry): entry is [string, boolean] => typeof entry[0] === 'string' && entry[1] === true)
+    );
+  } catch {
+    return {};
+  }
+}
+
+export function writeChecklistListCollapseState(state: Record<string, boolean>): void {
+  try {
+    window.localStorage.setItem(CHECKLIST_LIST_COLLAPSE_STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // Ignore storage failures; collapse state is a convenience preference.
+  }
+}
+
 const PRIORITIES: Array<{ value: UsageProjectPriority; label: string }> = [
   { value: 'low', label: 'Low' },
   { value: 'normal', label: 'Normal' },
@@ -109,6 +205,7 @@ function formatSourceOptionLabel(option: WorkboardSourceOption): string {
 
 const COLUMN_COLORS = ['#64748b', '#3b82f6', '#06b6d4', '#22c55e', '#f59e0b', '#f97316', '#ef4444', '#a855f7'];
 const WORK_ITEM_COLOR_SWATCHES = ['#2dd4bf', '#22c55e', '#84cc16', '#f59e0b', '#f97316', '#ef4444', '#ec4899', '#a855f7', '#6366f1', '#3b82f6', '#06b6d4', '#64748b'];
+const WORK_ITEM_OUTLINE_SWATCHES = ['#64748b', '#94a3b8', '#2dd4bf', '#22c55e', '#84cc16', '#f59e0b', '#f97316', '#ef4444', '#ec4899', '#a855f7', '#6366f1', '#3b82f6', '#06b6d4', '#111827'];
 const DRAWING_COLOR_SWATCHES = ['#000000', '#ffffff', '#64748b', '#ef4444', '#f97316', '#f59e0b', '#22c55e', '#14b8a6', '#3b82f6', '#6366f1', '#a855f7', '#ec4899'];
 const TIMELINE_PRESETS: Array<{ value: TimelineRangePreset; label: string; months?: number }> = [
   { value: '1m', label: '1 month', months: 1 },
@@ -118,6 +215,29 @@ const TIMELINE_PRESETS: Array<{ value: TimelineRangePreset; label: string; month
   { value: 'custom', label: 'Custom' },
 ];
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+export function WorkItemNameTooltip({
+  value,
+  children,
+  side = 'top',
+}: {
+  value: string | null | undefined;
+  children: React.ReactElement;
+  side?: 'top' | 'right' | 'bottom' | 'left';
+}) {
+  const text = String(value || '').trim();
+  if (!text) return children;
+  return (
+    <TooltipProvider delayDuration={250}>
+      <Tooltip>
+        <TooltipTrigger asChild>{children}</TooltipTrigger>
+        <TooltipContent side={side} className="max-w-[320px] break-words text-xs">
+          {text}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
 
 export function nowIso(): string {
   return new Date().toISOString();
@@ -281,11 +401,12 @@ function parseTags(value: string): string[] {
   return tags.slice(0, 20);
 }
 
-export function createChecklistList(name = 'Checklist', items: UsageProjectWorkItemChecklistItem[] = []): UsageProjectWorkItemChecklistList {
+export function createChecklistList(name = 'Checklist', items: UsageProjectWorkItemChecklistItem[] = [], outlineColor?: string): UsageProjectWorkItemChecklistList {
   return {
     id: localId(),
     name,
     items,
+    outlineColor,
     createdAt: nowIso(),
   };
 }
@@ -308,6 +429,946 @@ export function checklistProgress(items: UsageProjectWorkItemChecklistItem[]): {
     total,
     percent: total > 0 ? Math.round((done / total) * 100) : 0,
   };
+}
+
+export function normalizeWorkItemOutlineColor(value?: string | null): string | undefined {
+  const color = String(value || '').trim();
+  return /^#[0-9a-f]{6}$/i.test(color) ? color : undefined;
+}
+
+export function workItemOutlineStyle(value?: string | null): React.CSSProperties {
+  const color = normalizeWorkItemOutlineColor(value);
+  return color ? { borderColor: color, boxShadow: `inset 0 0 0 1px ${color}` } : {};
+}
+
+export function WorkItemOutlineColorPicker({
+  value,
+  onChange,
+  className,
+}: {
+  value?: string | null;
+  onChange: (value?: string) => void;
+  className?: string;
+}) {
+  const color = normalizeWorkItemOutlineColor(value);
+  const pickerValue = color || WORK_ITEM_OUTLINE_SWATCHES[0];
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className={cn('h-8 w-8 shrink-0', className)}
+          title={color ? `Outline color ${color}` : 'Choose outline color'}
+          aria-label="Choose outline color"
+        >
+          <Palette className="h-3.5 w-3.5" style={color ? { color } : undefined} />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-56 p-2" style={{ zIndex: 2147483647 }}>
+        <div className="grid gap-2">
+          <div className="text-xs font-semibold text-foreground">Outline color</div>
+          <div className="flex items-center gap-2">
+            <input
+              type="color"
+              value={pickerValue}
+              onChange={(event) => onChange(event.target.value)}
+              className="h-8 w-10 rounded border border-input bg-background p-0.5"
+              aria-label="Pick custom outline color"
+            />
+            <Button type="button" variant="outline" size="sm" className="h-8 px-2 text-xs" onClick={() => onChange(undefined)}>
+              Default
+            </Button>
+          </div>
+          <div className="grid grid-cols-7 gap-1">
+            {WORK_ITEM_OUTLINE_SWATCHES.map((swatch) => (
+              <button
+                key={swatch}
+                type="button"
+                className={cn(
+                  'h-6 w-6 rounded border border-border shadow-sm transition-transform hover:scale-110',
+                  color?.toLowerCase() === swatch.toLowerCase() && 'ring-2 ring-primary ring-offset-1 ring-offset-background'
+                )}
+                style={{ backgroundColor: swatch }}
+                title={swatch}
+                aria-label={`Use ${swatch} outline`}
+                onClick={() => onChange(swatch)}
+              />
+            ))}
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+export function ChecklistListContextButton({
+  value,
+  onSave,
+  className,
+}: {
+  value?: string | null;
+  onSave: (value?: string) => void;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(value || '');
+  const hasContext = Boolean(String(value || '').trim());
+  const preview = String(value || '').trim();
+
+  useEffect(() => {
+    if (open) setDraft(value || '');
+  }, [open, value]);
+
+  const save = () => {
+    const next = draft.trim();
+    onSave(next || undefined);
+    setOpen(false);
+  };
+
+  const clear = () => {
+    setDraft('');
+    onSave(undefined);
+    setOpen(false);
+  };
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className={cn('h-7 w-7 shrink-0', hasContext && 'border-primary/60 bg-primary/10 text-primary', className)}
+          title={hasContext ? `List context:\n${preview}` : 'Add list context'}
+          aria-label={hasContext ? 'View or edit list context' : 'Add list context'}
+        >
+          <MessageSquareText className="h-3.5 w-3.5" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-80 p-3" style={{ zIndex: 2147483647 }}>
+        <div className="grid gap-2">
+          <div>
+            <div className="text-xs font-semibold text-foreground">List context</div>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">
+              Saved with this list for later prompt generation.
+            </p>
+          </div>
+          <textarea
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            className="min-h-28 resize-y rounded-md border border-input bg-background px-2 py-2 text-xs leading-relaxed text-foreground"
+            placeholder="Describe what this list is for, including the page, screen, or element it applies to, plus constraints, tone, requirements, or instructions to include when generating prompts from its items."
+          />
+          <div className="flex items-center justify-between gap-2">
+            <Button type="button" variant="ghost" size="sm" className="h-8 px-2 text-xs" onClick={clear} disabled={!hasContext && !draft.trim()}>
+              Clear
+            </Button>
+            <div className="flex items-center gap-1.5">
+              <Button type="button" variant="outline" size="sm" className="h-8 px-2 text-xs" onClick={() => setOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="button" size="sm" className="h-8 px-2 text-xs" onClick={save}>
+                Save
+              </Button>
+            </div>
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+type ChecklistListPromptButtonProps = {
+  list: UsageProjectWorkItemChecklistList;
+  workItemTitle?: string;
+  agentId?: string | null;
+  className?: string;
+  resolveAssigneeNames?: (assigneeIds?: string[]) => string[];
+  onSavePromptAsNote?: (title: string, prompt: string) => void;
+  onInsertPrompt?: (prompt: string) => void;
+};
+
+const PROMPT_PURPOSE_OPTIONS: Array<{ value: ChecklistListPromptPurpose; label: string }> = [
+  { value: 'build', label: 'Create or build' },
+  { value: 'research', label: 'Find or research' },
+  { value: 'review', label: 'Review or improve' },
+  { value: 'write', label: 'Write or summarize' },
+  { value: 'custom', label: 'Custom' },
+];
+
+export function ChecklistListPromptButton({
+  list,
+  workItemTitle,
+  agentId,
+  className,
+  resolveAssigneeNames,
+  onSavePromptAsNote,
+  onInsertPrompt,
+}: ChecklistListPromptButtonProps) {
+  const api = getAccomplish();
+  const [open, setOpen] = useState(false);
+  const [purpose, setPurpose] = useState<ChecklistListPromptPurpose>('build');
+  const [customPurpose, setCustomPurpose] = useState('');
+  const [selectionMode, setSelectionMode] = useState<'all' | 'specific'>('all');
+  const [includeCompleted, setIncludeCompleted] = useState(false);
+  const [includeContext, setIncludeContext] = useState(true);
+  const [includeWorkItemName, setIncludeWorkItemName] = useState(false);
+  const [includeListName, setIncludeListName] = useState(false);
+  const [includeAssignee, setIncludeAssignee] = useState(false);
+  const [includeDueDate, setIncludeDueDate] = useState(false);
+  const [extraInstruction, setExtraInstruction] = useState('');
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [generatedPrompt, setGeneratedPrompt] = useState('');
+  const [noteTitle, setNoteTitle] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [activePromptTarget, setActivePromptTarget] = useState<PromptInsertionTarget | null>(() => getActivePromptInsertionTarget());
+
+  const availableItems = useMemo(
+    () => list.items.filter((item) => includeCompleted || !item.completed),
+    [includeCompleted, list.items]
+  );
+
+  const selectedItemCount = selectionMode === 'all'
+    ? availableItems.length
+    : availableItems.filter((item) => selectedIds.includes(item.id)).length;
+  const canGeneratePrompt = selectedItemCount > 0 || Boolean(String(list.context || '').trim());
+
+  useEffect(() => {
+    if (!open) return;
+    const incompleteIds = list.items.filter((item) => !item.completed).map((item) => item.id);
+    setSelectedIds(incompleteIds);
+    setIncludeCompleted(false);
+    setSelectionMode('all');
+    setIncludeContext(true);
+    setIncludeWorkItemName(false);
+    setIncludeListName(false);
+    setIncludeAssignee(false);
+    setIncludeDueDate(false);
+    setExtraInstruction('');
+    setPurpose('build');
+    setCustomPurpose('');
+    setGeneratedPrompt('');
+    setNoteTitle(`Prompt - ${list.name || 'Checklist'}`);
+    setError(null);
+    setNotice(null);
+  }, [list.id, list.items, list.name, open]);
+
+  useEffect(() => {
+    if (includeCompleted) return;
+    const incompleteIds = new Set(list.items.filter((item) => !item.completed).map((item) => item.id));
+    setSelectedIds((current) => current.filter((id) => incompleteIds.has(id)));
+  }, [includeCompleted, list.items]);
+
+  useEffect(() => subscribePromptInsertionTarget(setActivePromptTarget), []);
+
+  const generate = async () => {
+    const itemsToSend = (selectionMode === 'all'
+      ? availableItems
+      : availableItems.filter((item) => selectedIds.includes(item.id))
+    ).filter((item) => item.text.trim());
+
+    if (itemsToSend.length === 0 && !String(list.context || '').trim()) {
+      setError('Select at least one list item or add list context first.');
+      return;
+    }
+
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const payload: ChecklistListPromptGenerateRequest = {
+        agentId: agentId || undefined,
+        purpose,
+        customPurpose: purpose === 'custom' ? customPurpose : undefined,
+        workItemTitle: workItemTitle || undefined,
+        listName: list.name || undefined,
+        listContext: includeContext ? list.context : undefined,
+        extraInstruction: extraInstruction.trim() || undefined,
+        includeWorkItemName,
+        includeListName,
+        includeListContext: includeContext,
+        includeAssignee,
+        includeDueDate,
+        includeCompletedItems: includeCompleted,
+        items: itemsToSend.map((item) => ({
+          id: item.id,
+          text: item.text,
+          completed: item.completed,
+          dueDate: item.dueDate,
+          assigneeNames: includeAssignee ? resolveAssigneeNames?.(item.assigneeIds) : undefined,
+        })),
+      };
+      let result;
+      try {
+        result = await api.generateChecklistListPrompt(payload);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (!message.includes("No handler registered for 'settings-assistant:list-prompt:generate'")) {
+          throw err;
+        }
+        const fallbackQuestion = [
+          'Generate one directly usable prompt from this workboard checklist list.',
+          'This is not a skill configuration request. Return only the prompt text.',
+          'The user will paste the prompt into Chat mode or Build mode so an AI can create, find, research, review, write, or build the requested output.',
+          ...(payload.extraInstruction
+            ? [
+              '',
+              'User extra instruction (required):',
+              payload.extraInstruction,
+              '',
+              'Apply the user extra instruction directly to the generated prompt. Do not ignore it or merely restate it.',
+            ]
+            : []),
+          '',
+          'Prompt request data (JSON):',
+          JSON.stringify(payload, null, 2),
+        ].join('\n');
+        const fallback = await api.askUserSkillAssistant({
+          question: fallbackQuestion,
+          mode: 'general',
+          agentId: agentId || undefined,
+        });
+        result = {
+          ok: Boolean(fallback.ok && fallback.answer.trim()),
+          prompt: fallback.answer.trim(),
+          model: fallback.model,
+          error: fallback.error,
+        };
+      }
+      if (!result.ok || !result.prompt.trim()) {
+        throw new Error(result.error || 'The Settings Assistant did not return a prompt.');
+      }
+      setGeneratedPrompt(result.prompt);
+      setNotice('Prompt generated.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to generate prompt.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copyGeneratedPrompt = async () => {
+    const text = generatedPrompt.trim();
+    if (!text) return;
+    await navigator.clipboard.writeText(text);
+    setNotice('Copied.');
+  };
+
+  const saveGeneratedPromptAsNote = () => {
+    const text = generatedPrompt.trim();
+    if (!text || !onSavePromptAsNote) return;
+    onSavePromptAsNote(noteTitle.trim() || `Prompt - ${list.name || 'Checklist'}`, text);
+    setNotice('Saved as note.');
+  };
+
+  const insertGeneratedPrompt = () => {
+    const text = generatedPrompt.trim();
+    if (!text) return;
+    if (onInsertPrompt) {
+      onInsertPrompt(text);
+      setNotice('Inserted into prompt.');
+      return;
+    }
+    if (insertIntoActivePrompt(text)) {
+      setNotice(`Inserted into ${activePromptTarget?.label || 'prompt'}.`);
+    } else {
+      setError('No active Chat or Build prompt input is available.');
+    }
+  };
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className={cn(
+            'h-7 w-7 shrink-0 rounded bg-muted p-0 text-muted-foreground hover:text-foreground',
+            className
+          )}
+          title="Generate a prompt from this list."
+          aria-label="Generate prompt from this checklist list"
+        >
+          <MessageSquareText className="h-3 w-3" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        side="top"
+        sideOffset={8}
+        collisionPadding={24}
+        sticky="always"
+        hideWhenDetached={false}
+        onOpenAutoFocus={(event) => event.preventDefault()}
+        className="w-[min(560px,calc(100vw-2rem))] overflow-hidden p-0"
+        style={{
+          zIndex: 2147483647,
+          maxHeight: 'min(720px, var(--radix-popover-content-available-height, calc(100vh - 2rem)))',
+        }}
+      >
+        <div
+          className="flex flex-col overflow-hidden text-xs"
+          style={{ maxHeight: 'min(720px, var(--radix-popover-content-available-height, calc(100vh - 2rem)))' }}
+        >
+          <div className="shrink-0 border-b border-border/70 bg-popover px-3 py-2.5">
+            <div className="font-semibold text-foreground">Generate prompt</div>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">
+              Uses the Settings Assistant AI to turn this list into a prompt you can run.
+            </p>
+          </div>
+
+          <div className="grid min-h-0 flex-1 gap-3 overflow-y-auto p-3">
+          <div className="grid gap-2 sm:grid-cols-2">
+            <label className="grid gap-1">
+              <span className="text-[11px] font-medium text-muted-foreground">Prompt type</span>
+              <select
+                value={purpose}
+                onChange={(event) => setPurpose(event.target.value as ChecklistListPromptPurpose)}
+                className="h-8 w-full min-w-0 rounded-md border border-input bg-background px-2 text-xs"
+              >
+                {PROMPT_PURPOSE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </label>
+            {purpose === 'custom' ? (
+              <label className="grid gap-1">
+                <span className="text-[11px] font-medium text-muted-foreground">Custom type</span>
+                <input
+                  value={customPurpose}
+                  onChange={(event) => setCustomPurpose(event.target.value)}
+                  className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                  placeholder="e.g. compare options"
+                />
+              </label>
+            ) : null}
+          </div>
+
+          <div className="grid gap-1 rounded-md border border-border/70 bg-muted/20 p-2">
+            <label className="flex items-center gap-2">
+              <input type="radio" checked={selectionMode === 'all'} onChange={() => setSelectionMode('all')} />
+              <span>Use all available list items</span>
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="radio" checked={selectionMode === 'specific'} onChange={() => setSelectionMode('specific')} />
+              <span>Choose specific list items</span>
+            </label>
+            <label className="mt-1 flex items-center gap-2">
+              <input type="checkbox" checked={includeCompleted} onChange={(event) => setIncludeCompleted(event.target.checked)} />
+              <span>Include completed items</span>
+            </label>
+            <div className="text-[11px] text-muted-foreground">
+              {selectedItemCount} item{selectedItemCount === 1 ? '' : 's'} will be sent to the assistant.
+            </div>
+          </div>
+
+          {selectionMode === 'specific' ? (
+            <div className="grid max-h-40 gap-1 overflow-y-auto rounded-md border border-border/70 bg-background p-2">
+              {availableItems.length === 0 ? (
+                <div className="text-[11px] text-muted-foreground">No available items. Enable completed items or add new list items.</div>
+              ) : availableItems.map((item) => (
+                <label key={item.id} className="flex cursor-pointer items-start gap-2 rounded px-1.5 py-1 hover:bg-muted">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={selectedIds.includes(item.id)}
+                    onChange={(event) => {
+                      setSelectedIds((current) => (
+                        event.target.checked
+                          ? Array.from(new Set([...current, item.id]))
+                          : current.filter((id) => id !== item.id)
+                      ));
+                    }}
+                  />
+                  <span className={cn('min-w-0 flex-1 whitespace-pre-wrap break-words', item.completed && 'text-muted-foreground line-through')}>
+                    {item.text}
+                  </span>
+                </label>
+              ))}
+            </div>
+          ) : null}
+
+          <div className="grid gap-1 rounded-md border border-border/70 bg-muted/20 p-2">
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={includeContext} onChange={(event) => setIncludeContext(event.target.checked)} />
+              <span>Use list context</span>
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={includeWorkItemName} onChange={(event) => setIncludeWorkItemName(event.target.checked)} />
+              <span>Include work item name</span>
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={includeListName} onChange={(event) => setIncludeListName(event.target.checked)} />
+              <span>Include list name</span>
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={includeAssignee} onChange={(event) => setIncludeAssignee(event.target.checked)} />
+              <span>Include assignees</span>
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={includeDueDate} onChange={(event) => setIncludeDueDate(event.target.checked)} />
+              <span>Include due dates</span>
+            </label>
+          </div>
+
+          <label className="grid gap-1">
+            <span className="text-[11px] font-medium text-muted-foreground">Extra instruction for prompt generation</span>
+            <textarea
+              value={extraInstruction}
+              onChange={(event) => setExtraInstruction(event.target.value)}
+              className="min-h-20 resize-y rounded-md border border-input bg-background px-2 py-2 text-xs leading-relaxed"
+              placeholder="Optional. Tell the assistant how to shape the generated prompt, for example: make it concise, target a React component, include acceptance criteria, or ask the AI to compare options."
+            />
+          </label>
+
+          {generatedPrompt ? (
+            <div className="grid gap-2">
+              <label className="grid gap-1">
+                <span className="text-[11px] font-medium text-muted-foreground">Generated prompt</span>
+                <textarea
+                  value={generatedPrompt}
+                  onChange={(event) => setGeneratedPrompt(event.target.value)}
+                  className="min-h-48 resize-y rounded-md border border-input bg-background px-2 py-2 text-xs leading-relaxed"
+                />
+              </label>
+              {onSavePromptAsNote ? (
+                <label className="grid gap-1">
+                  <span className="text-[11px] font-medium text-muted-foreground">Note title</span>
+                  <input
+                    value={noteTitle}
+                    onChange={(event) => setNoteTitle(event.target.value)}
+                    className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                  placeholder="Note title"
+                />
+              </label>
+              ) : null}
+            </div>
+          ) : null}
+
+          {error ? (
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-[11px] text-destructive">{error}</div>
+          ) : null}
+          {notice ? (
+            <div className="rounded-md border border-primary/30 bg-primary/10 px-2 py-1.5 text-[11px] text-primary">{notice}</div>
+          ) : null}
+          </div>
+
+          <div className="shrink-0 border-t border-border/70 bg-popover px-3 py-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <Button type="button" size="sm" className="h-8 justify-center text-xs" onClick={() => void generate()} disabled={busy || !canGeneratePrompt}>
+                {busy ? 'Generating...' : generatedPrompt ? 'Regenerate prompt' : 'Generate prompt'}
+              </Button>
+              {generatedPrompt ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button type="button" variant="outline" size="sm" className="h-8 px-2 text-xs" onClick={() => void copyGeneratedPrompt()}>
+                    <ClipboardCopy className="mr-1.5 h-3.5 w-3.5" />
+                    Copy
+                  </Button>
+                  {(onInsertPrompt || activePromptTarget) ? (
+                    <Button type="button" variant="outline" size="sm" className="h-8 px-2 text-xs" onClick={insertGeneratedPrompt}>
+                      {activePromptTarget?.mode === 'build' ? 'Insert into Build prompt' : activePromptTarget?.mode === 'chat' ? 'Insert into Chat prompt' : 'Insert into prompt'}
+                    </Button>
+                  ) : null}
+                  {onSavePromptAsNote ? (
+                    <Button type="button" variant="outline" size="sm" className="h-8 px-2 text-xs" onClick={saveGeneratedPromptAsNote}>
+                      Save as note
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+export function ChecklistListProgressBadge({ progress }: { progress: { done: number; total: number; percent: number } }) {
+  return (
+    <span
+      className="inline-flex h-7 shrink-0 items-center rounded-md border border-border/70 bg-muted/50 px-2 text-[10px] font-medium text-muted-foreground"
+      title={`${progress.percent}% complete - ${progress.done}/${progress.total} item${progress.total === 1 ? '' : 's'}`}
+    >
+      {progress.percent}% · {progress.done}/{progress.total}
+    </span>
+  );
+}
+
+type NotePromptButtonProps = {
+  note: UsageProjectWorkItemNote;
+  workItemTitle?: string;
+  agentId?: string | null;
+  onInsertPrompt?: (prompt: string) => void;
+  onSavePromptAsNote?: (title: string, prompt: string) => void;
+  className?: string;
+};
+
+export function NotePromptButton({
+  note,
+  workItemTitle,
+  agentId,
+  onInsertPrompt,
+  onSavePromptAsNote,
+  className,
+}: NotePromptButtonProps) {
+  const api = getAccomplish();
+  const [open, setOpen] = useState(false);
+  const [purpose, setPurpose] = useState<ChecklistListPromptPurpose>('build');
+  const [customPurpose, setCustomPurpose] = useState('');
+  const [includeWorkItemName, setIncludeWorkItemName] = useState(false);
+  const [includeNoteTitle, setIncludeNoteTitle] = useState(true);
+  const [extraInstruction, setExtraInstruction] = useState('');
+  const [generatedPrompt, setGeneratedPrompt] = useState('');
+  const [noteSaveTitle, setNoteSaveTitle] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [activePromptTarget, setActivePromptTarget] = useState<PromptInsertionTarget | null>(() => getActivePromptInsertionTarget());
+
+  const noteHtml = useMemo(() => richNoteHtml(note), [note.html, note.id, note.text]);
+  const noteText = useMemo(() => {
+    const plain = String(note.text || '').trim();
+    return plain || richNotePlainText(noteHtml).trim();
+  }, [note.text, noteHtml]);
+  const canGeneratePrompt = Boolean(noteText || noteHtml);
+
+  useEffect(() => {
+    if (!open) return;
+    setPurpose('build');
+    setCustomPurpose('');
+    setIncludeWorkItemName(false);
+    setIncludeNoteTitle(true);
+    setExtraInstruction('');
+    setGeneratedPrompt('');
+    setNoteSaveTitle(`Prompt - ${note.title || 'Note'}`);
+    setError(null);
+    setNotice(null);
+  }, [note.id, open]);
+
+  useEffect(() => subscribePromptInsertionTarget(setActivePromptTarget), []);
+
+  const generate = async () => {
+    if (!canGeneratePrompt) {
+      setError('Add note content before generating a prompt.');
+      return;
+    }
+
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const payload: WorkItemNotePromptGenerateRequest = {
+        agentId: agentId || undefined,
+        purpose,
+        customPurpose: purpose === 'custom' ? customPurpose : undefined,
+        workItemTitle: workItemTitle || undefined,
+        noteTitle: note.title || undefined,
+        noteText,
+        noteHtml,
+        extraInstruction: extraInstruction.trim() || undefined,
+        includeWorkItemName,
+        includeNoteTitle,
+      };
+      let result;
+      try {
+        result = await api.generateWorkItemNotePrompt(payload);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (!message.includes("No handler registered for 'settings-assistant:note-prompt:generate'")) {
+          throw err;
+        }
+        const fallbackQuestion = [
+          'Generate one directly usable prompt from this project work item note.',
+          'This is not a skill configuration request. Return only the prompt text.',
+          'The user will paste the prompt into Chat mode or Build mode. Infer what the AI should do from the note.',
+          ...(payload.extraInstruction
+            ? [
+              '',
+              'HIGH-PRIORITY USER EXTRA INSTRUCTION:',
+              payload.extraInstruction,
+              '',
+              'This is mandatory. Shape the generated prompt so it follows the high-priority user extra instruction.',
+              'If the note content and the extra instruction seem to pull in different directions, follow the extra instruction and adapt the note content around it.',
+            ]
+            : []),
+          '',
+          'Note prompt request data (JSON):',
+          JSON.stringify(payload, null, 2),
+          ...(payload.extraInstruction
+            ? [
+              '',
+              'Final compliance check before answering:',
+              `- Does the generated prompt clearly follow this extra instruction: "${payload.extraInstruction}"?`,
+              '- If not, rewrite the generated prompt before returning it.',
+            ]
+            : []),
+        ].join('\n');
+        const fallback = await api.askUserSkillAssistant({
+          question: fallbackQuestion,
+          mode: 'general',
+          agentId: agentId || undefined,
+        });
+        result = {
+          ok: Boolean(fallback.ok && fallback.answer.trim()),
+          prompt: fallback.answer.trim(),
+          model: fallback.model,
+          error: fallback.error,
+        };
+      }
+      if (!result.ok || !result.prompt.trim()) {
+        throw new Error(result.error || 'The Settings Assistant did not return a prompt.');
+      }
+      setGeneratedPrompt(result.prompt);
+      setNotice('Prompt generated.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to generate prompt.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copyGeneratedPrompt = async () => {
+    const text = generatedPrompt.trim();
+    if (!text) return;
+    await navigator.clipboard.writeText(text);
+    setNotice('Copied.');
+  };
+
+  const insertGeneratedPrompt = () => {
+    const text = generatedPrompt.trim();
+    if (!text) return;
+    if (onInsertPrompt) {
+      onInsertPrompt(text);
+      setNotice('Inserted into prompt.');
+      return;
+    }
+    if (insertIntoActivePrompt(text)) {
+      setNotice(`Inserted into ${activePromptTarget?.label || 'prompt'}.`);
+    } else {
+      setError('No active Chat or Build prompt input is available.');
+    }
+  };
+
+  const saveGeneratedPromptAsNote = () => {
+    const text = generatedPrompt.trim();
+    if (!text || !onSavePromptAsNote) return;
+    onSavePromptAsNote(noteSaveTitle.trim() || `Prompt - ${note.title || 'Note'}`, text);
+    setNotice('Saved as note.');
+  };
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className={cn('h-7 w-7 shrink-0 rounded bg-muted p-0 text-muted-foreground hover:text-foreground', className)}
+          title="Generate a prompt from this note."
+          aria-label="Generate prompt from this note"
+        >
+          <MessageSquareText className="h-3 w-3" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        side="top"
+        sideOffset={8}
+        collisionPadding={24}
+        sticky="always"
+        hideWhenDetached={false}
+        onOpenAutoFocus={(event) => event.preventDefault()}
+        className="w-[min(560px,calc(100vw-2rem))] overflow-hidden p-0"
+        style={{
+          zIndex: 2147483647,
+          maxHeight: 'min(720px, var(--radix-popover-content-available-height, calc(100vh - 2rem)))',
+        }}
+      >
+        <div
+          className="flex flex-col overflow-hidden text-xs"
+          style={{ maxHeight: 'min(720px, var(--radix-popover-content-available-height, calc(100vh - 2rem)))' }}
+        >
+          <div className="shrink-0 border-b border-border/70 bg-popover px-3 py-2.5">
+            <div className="font-semibold text-foreground">Generate prompt from note</div>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">
+              Uses the Settings Assistant AI to infer a runnable prompt from this note.
+            </p>
+          </div>
+
+          <div className="grid min-h-0 flex-1 gap-3 overflow-y-auto p-3">
+            <div className="grid gap-2 sm:grid-cols-2">
+              <label className="grid gap-1">
+                <span className="text-[11px] font-medium text-muted-foreground">Prompt type</span>
+                <select
+                  value={purpose}
+                  onChange={(event) => setPurpose(event.target.value as ChecklistListPromptPurpose)}
+                  className="h-8 w-full min-w-0 rounded-md border border-input bg-background px-2 text-xs"
+                >
+                  {PROMPT_PURPOSE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </label>
+              {purpose === 'custom' ? (
+                <label className="grid gap-1">
+                  <span className="text-[11px] font-medium text-muted-foreground">Custom type</span>
+                  <input
+                    value={customPurpose}
+                    onChange={(event) => setCustomPurpose(event.target.value)}
+                    className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                    placeholder="e.g. turn into acceptance criteria"
+                  />
+                </label>
+              ) : null}
+            </div>
+
+            <div className="grid gap-1 rounded-md border border-border/70 bg-muted/20 p-2">
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={includeNoteTitle} onChange={(event) => setIncludeNoteTitle(event.target.checked)} />
+                <span>Include note title</span>
+              </label>
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={includeWorkItemName} onChange={(event) => setIncludeWorkItemName(event.target.checked)} />
+                <span>Include work item name</span>
+              </label>
+            </div>
+
+            <label className="grid gap-1">
+              <span className="text-[11px] font-medium text-muted-foreground">Extra instruction for prompt generation</span>
+              <textarea
+                value={extraInstruction}
+                onChange={(event) => setExtraInstruction(event.target.value)}
+                className="min-h-20 resize-y rounded-md border border-input bg-background px-2 py-2 text-xs leading-relaxed"
+                placeholder="Optional. Tell the assistant how to infer the prompt from this note, for example: make it a Build task, ask for a client-ready summary, or include acceptance criteria."
+              />
+            </label>
+
+            <div className="rounded-md border border-border/70 bg-muted/20 p-2">
+              <div className="mb-1 text-[11px] font-medium text-muted-foreground">Note preview</div>
+              <div className="max-h-24 overflow-y-auto whitespace-pre-wrap text-[11px] text-muted-foreground">
+                {noteText || 'No note text.'}
+              </div>
+            </div>
+
+            {generatedPrompt ? (
+              <div className="grid gap-2">
+                <label className="grid gap-1">
+                  <span className="text-[11px] font-medium text-muted-foreground">Generated prompt</span>
+                  <textarea
+                    value={generatedPrompt}
+                    onChange={(event) => setGeneratedPrompt(event.target.value)}
+                    className="min-h-48 resize-y rounded-md border border-input bg-background px-2 py-2 text-xs leading-relaxed"
+                  />
+                </label>
+                {onSavePromptAsNote ? (
+                  <label className="grid gap-1">
+                    <span className="text-[11px] font-medium text-muted-foreground">New note title</span>
+                    <input
+                      value={noteSaveTitle}
+                      onChange={(event) => setNoteSaveTitle(event.target.value)}
+                      className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                      placeholder="Generated prompt note title"
+                    />
+                  </label>
+                ) : null}
+              </div>
+            ) : null}
+
+            {error ? (
+              <div className="rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-[11px] text-destructive">{error}</div>
+            ) : null}
+            {notice ? (
+              <div className="rounded-md border border-primary/30 bg-primary/10 px-2 py-1.5 text-[11px] text-primary">{notice}</div>
+            ) : null}
+          </div>
+
+          <div className="shrink-0 border-t border-border/70 bg-popover px-3 py-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <Button type="button" size="sm" className="h-8 justify-center text-xs" onClick={() => void generate()} disabled={busy || !canGeneratePrompt}>
+                {busy ? 'Generating...' : generatedPrompt ? 'Regenerate prompt' : 'Generate prompt'}
+              </Button>
+              {generatedPrompt ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button type="button" variant="outline" size="sm" className="h-8 px-2 text-xs" onClick={() => void copyGeneratedPrompt()}>
+                    <ClipboardCopy className="mr-1.5 h-3.5 w-3.5" />
+                    Copy
+                  </Button>
+                  {(onInsertPrompt || activePromptTarget) ? (
+                    <Button type="button" variant="outline" size="sm" className="h-8 px-2 text-xs" onClick={insertGeneratedPrompt}>
+                      {activePromptTarget?.mode === 'build' ? 'Insert into Build prompt' : activePromptTarget?.mode === 'chat' ? 'Insert into Chat prompt' : 'Insert into prompt'}
+                    </Button>
+                  ) : null}
+                  {onSavePromptAsNote ? (
+                    <Button type="button" variant="outline" size="sm" className="h-8 px-2 text-xs" onClick={saveGeneratedPromptAsNote}>
+                      Save as note
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+type NoteToPromptButtonProps = {
+  note: UsageProjectWorkItemNote;
+  onInsertPrompt?: (prompt: string) => void;
+  className?: string;
+};
+
+export function NoteToPromptButton({ note, onInsertPrompt, className }: NoteToPromptButtonProps) {
+  const [activePromptTarget, setActivePromptTarget] = useState<PromptInsertionTarget | null>(() => getActivePromptInsertionTarget());
+  const [inserted, setInserted] = useState(false);
+  const noteHtml = useMemo(() => richNoteHtml(note), [note.html, note.id, note.text]);
+  const noteText = useMemo(() => {
+    const plain = String(note.text || '').trim();
+    return plain || richNotePlainText(noteHtml).trim();
+  }, [note.text, noteHtml]);
+  const notePromptText = useMemo(() => {
+    const title = String(note.title || '').trim();
+    if (title && noteText) return `${title}\n\n${noteText}`;
+    return title || noteText;
+  }, [note.title, noteText]);
+  const canInsert = Boolean(notePromptText && (onInsertPrompt || activePromptTarget));
+
+  useEffect(() => subscribePromptInsertionTarget(setActivePromptTarget), []);
+
+  const insertNoteIntoPrompt = () => {
+    const text = notePromptText.trim();
+    if (!text) return;
+    if (onInsertPrompt) {
+      onInsertPrompt(text);
+    } else {
+      insertIntoActivePrompt(text);
+    }
+    setInserted(true);
+    window.setTimeout(() => setInserted(false), 1400);
+  };
+
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className={cn('h-7 w-7 shrink-0 rounded bg-muted p-0 text-muted-foreground hover:text-foreground', inserted && 'border-primary/60 text-primary', className)}
+      title={canInsert ? `Copy note into ${activePromptTarget?.label || 'prompt'}` : 'Open a Chat or Build prompt to copy this note into it.'}
+      aria-label="Copy note into prompt"
+      disabled={!canInsert}
+      onClick={insertNoteIntoPrompt}
+    >
+      <ArrowRight className="h-3 w-3" />
+    </Button>
+  );
 }
 
 function itemChecklistProgress(item: UsageProjectWorkItem): { done: number; total: number; percent: number } {
@@ -599,6 +1660,286 @@ function richNotePlainText(html: string): string {
     .trim();
 }
 
+export type WorkboardListCsvCandidate = {
+  id: string;
+  workItemTitle: string;
+  list: UsageProjectWorkItemChecklistList;
+};
+
+export type WorkboardNoteCsvCandidate = {
+  id: string;
+  workItemTitle: string;
+  note: UsageProjectWorkItemNote;
+};
+
+function csvEscape(value: unknown): string {
+  const text = String(value ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function csvDocument(rows: unknown[][]): string {
+  return `\uFEFF${rows.map((row) => row.map(csvEscape).join(',')).join('\r\n')}`;
+}
+
+function csvFilenameTimestamp(): string {
+  const date = new Date();
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}_${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`;
+}
+
+function csvFileSlug(value: string): string {
+  return value
+    .trim()
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, ' ')
+    .replace(/\s+/g, '-')
+    .replace(/[^a-z0-9._-]/gi, '')
+    .replace(/-+/g, '-')
+    .replace(/^[.-]+|[.-]+$/g, '')
+    .slice(0, 32)
+    || 'workboard';
+}
+
+function noteTitleForCsv(note: UsageProjectWorkItemNote): string {
+  return String(note.title || '').trim() || 'Untitled note';
+}
+
+function listCandidateLabel(candidate: WorkboardListCsvCandidate): string {
+  return `${candidate.workItemTitle} / ${candidate.list.name || 'Checklist'}`;
+}
+
+function noteCandidateLabel(candidate: WorkboardNoteCsvCandidate): string {
+  return `${candidate.workItemTitle} / ${noteTitleForCsv(candidate.note)}`;
+}
+
+function buildListsCsv(
+  candidates: WorkboardListCsvCandidate[],
+  resolveAssigneeNames: (assigneeIds?: string[]) => string[]
+): string {
+  const rows: unknown[][] = [[
+    'Work item',
+    'List',
+    'List context',
+    'Item',
+    'Completed',
+    'Assignees',
+    'Due date',
+    'List created',
+    'List updated',
+    'Item created',
+    'Item updated',
+  ]];
+  for (const candidate of candidates) {
+    const list = candidate.list;
+    if (list.items.length === 0) {
+      rows.push([
+        candidate.workItemTitle,
+        list.name || 'Checklist',
+        list.context || '',
+        '',
+        '',
+        '',
+        '',
+        list.createdAt,
+        list.updatedAt || '',
+        '',
+        '',
+      ]);
+      continue;
+    }
+    for (const item of list.items) {
+      rows.push([
+        candidate.workItemTitle,
+        list.name || 'Checklist',
+        list.context || '',
+        item.text,
+        item.completed ? 'Yes' : 'No',
+        resolveAssigneeNames(item.assigneeIds).join('; '),
+        item.dueDate || '',
+        list.createdAt,
+        list.updatedAt || '',
+        item.createdAt,
+        item.updatedAt || '',
+      ]);
+    }
+  }
+  return csvDocument(rows);
+}
+
+function buildNotesCsv(candidates: WorkboardNoteCsvCandidate[]): string {
+  const noteTextForCsv = (note: UsageProjectWorkItemNote): string => {
+    const text = (richNotePlainText(richNoteHtml(note)) || note.text || '')
+      .replace(/\u00a0/g, ' ')
+      .replace(/\r\n?/g, '\n')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .join(' | ')
+      .replace(/[ \t]{2,}/g, ' ')
+      .trim();
+    return text;
+  };
+
+  const rows: unknown[][] = [[
+    'Work item',
+    'Note title',
+    'Note text',
+    'Created',
+    'Updated',
+  ]];
+  for (const candidate of candidates) {
+    const note = candidate.note;
+    rows.push([
+      candidate.workItemTitle,
+      noteTitleForCsv(note),
+      noteTextForCsv(note),
+      note.createdAt,
+      note.updatedAt || '',
+    ]);
+  }
+  return csvDocument(rows);
+}
+
+export function CsvExportPicker({
+  type,
+  candidates,
+  filenameScope,
+  resolveAssigneeNames,
+  className,
+}: {
+  type: 'lists' | 'notes';
+  candidates: Array<WorkboardListCsvCandidate | WorkboardNoteCsvCandidate>;
+  filenameScope: string;
+  resolveAssigneeNames?: (assigneeIds?: string[]) => string[];
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>(() => candidates.map((candidate) => candidate.id));
+  const [notice, setNotice] = useState('');
+  const availableIds = useMemo(() => new Set(candidates.map((candidate) => candidate.id)), [candidates]);
+  const selectedCandidates = candidates.filter((candidate) => selectedIds.includes(candidate.id));
+  const allSelected = candidates.length > 0 && selectedCandidates.length === candidates.length;
+  const noun = type === 'lists' ? 'lists' : 'notes';
+
+  useEffect(() => {
+    setSelectedIds((current) => {
+      const kept = current.filter((id) => availableIds.has(id));
+      const next = kept.length > 0 ? kept : candidates.map((candidate) => candidate.id);
+      return next.length === current.length && next.every((id, index) => id === current[index]) ? current : next;
+    });
+  }, [availableIds, candidates]);
+
+  const toggleAll = () => {
+    setSelectedIds(allSelected ? [] : candidates.map((candidate) => candidate.id));
+  };
+
+  const toggleId = (id: string) => {
+    setSelectedIds((current) => current.includes(id) ? current.filter((entry) => entry !== id) : [...current, id]);
+  };
+
+  const exportCsv = async () => {
+    if (selectedCandidates.length === 0) {
+      setNotice(`Choose at least one ${type === 'lists' ? 'list' : 'note'} to export.`);
+      return;
+    }
+    try {
+      const csv = type === 'lists'
+        ? buildListsCsv(selectedCandidates as WorkboardListCsvCandidate[], resolveAssigneeNames || (() => []))
+        : buildNotesCsv(selectedCandidates as WorkboardNoteCsvCandidate[]);
+      const result = await getAccomplish().saveTextToFileAs(csv, {
+        baseName: `${csvFileSlug(filenameScope)}-${noun}-${csvFilenameTimestamp()}`,
+        extension: 'csv',
+        title: `Export ${type === 'lists' ? 'lists' : 'notes'} CSV`,
+      });
+      if (result.cancelled) {
+        setNotice('Export cancelled.');
+        return;
+      }
+      setNotice(result.filePath ? `CSV saved: ${result.filePath}` : 'CSV saved.');
+      window.setTimeout(() => setNotice(''), 5000);
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : `Unable to export ${noun}.`);
+    }
+  };
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className={cn('h-8 gap-1.5 px-2 text-xs', className)}
+          disabled={candidates.length === 0}
+          title={candidates.length === 0 ? `No ${noun} to export.` : `Choose ${noun} to export as CSV.`}
+        >
+          <Download className="h-3.5 w-3.5" />
+          CSV
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-80 p-3" style={{ zIndex: 2147483647 }}>
+        <div className="grid gap-3">
+          <div>
+            <div className="text-xs font-semibold text-foreground">Export {type === 'lists' ? 'lists' : 'notes'} to CSV</div>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Choose which {noun} to include, then select where to save the CSV file.
+            </p>
+          </div>
+          <div className="flex items-center justify-between rounded-md border border-border bg-muted/30 px-2 py-1.5">
+            <label className="flex min-w-0 items-center gap-2 text-xs">
+              <input type="checkbox" checked={allSelected} onChange={toggleAll} />
+              <span>Select all</span>
+            </label>
+            <span className="text-[11px] text-muted-foreground">{selectedCandidates.length} of {candidates.length}</span>
+          </div>
+          <div className="max-h-56 space-y-1 overflow-y-auto pr-1">
+            {candidates.map((candidate) => {
+              const label = type === 'lists'
+                ? listCandidateLabel(candidate as WorkboardListCsvCandidate)
+                : noteCandidateLabel(candidate as WorkboardNoteCsvCandidate);
+              const detail = type === 'lists'
+                ? `${(candidate as WorkboardListCsvCandidate).list.items.length} item${(candidate as WorkboardListCsvCandidate).list.items.length === 1 ? '' : 's'}`
+                : new Date((candidate as WorkboardNoteCsvCandidate).note.createdAt).toLocaleString();
+              return (
+                <label key={candidate.id} className="flex min-w-0 cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-muted/40">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={selectedIds.includes(candidate.id)}
+                    onChange={() => toggleId(candidate.id)}
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-medium text-foreground" title={label}>{label}</span>
+                    <span className="block text-[11px] text-muted-foreground">{detail}</span>
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <Button type="button" variant="outline" size="sm" className="h-8 px-2 text-xs" onClick={() => setOpen(false)}>
+              Close
+            </Button>
+            <Button type="button" size="sm" className="h-8 gap-1.5 px-2 text-xs" onClick={() => void exportCsv()} disabled={selectedCandidates.length === 0}>
+              <Download className="h-3.5 w-3.5" />
+              Export CSV
+            </Button>
+          </div>
+          {notice ? (
+            <div className={cn(
+              'rounded-md border px-2 py-1.5 text-[11px]',
+              /saved/i.test(notice)
+                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-100'
+                : 'border-amber-500/40 bg-amber-500/10 text-amber-100'
+            )}>
+              {notice}
+            </div>
+          ) : null}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function clipboardHtmlDocument(html: string): string {
   return `<!doctype html><html><head><meta charset="utf-8"></head><body>${sanitizeRichNoteHtml(html)}</body></html>`;
 }
@@ -619,6 +1960,33 @@ export function labelForDocumentTarget(value: string): string {
     }
   }
   return basenameForPath(trimmed) || 'Local document';
+}
+
+export function targetForDocumentLink(documentLink: UsageProjectWorkItemDocumentLink): string {
+  return documentLink.kind === 'url' ? documentLink.url || '' : documentLink.path || '';
+}
+
+export function attachDocumentLinkToActivePrompt(documentLink: UsageProjectWorkItemDocumentLink): { ok: boolean; message: string } {
+  const target = targetForDocumentLink(documentLink).trim();
+  const label = documentLink.label.trim() || labelForDocumentTarget(target);
+  if (!target) return { ok: false, message: 'This document does not have a saved path or link.' };
+
+  if (documentLink.kind === 'local') {
+    const attachmentTarget = getActivePromptAttachmentTarget();
+    if (!attachmentTarget) return { ok: false, message: 'Open a Chat or Build prompt first.' };
+    if (!attachFilesToActivePrompt([target])) {
+      return { ok: false, message: 'No active Chat or Build prompt is available.' };
+    }
+    return { ok: true, message: `Attached "${label}" to ${attachmentTarget.label}.` };
+  }
+
+  const insertionTarget = getActivePromptInsertionTarget();
+  if (!insertionTarget) return { ok: false, message: 'Open a Chat or Build prompt first.' };
+  const linkText = `[${label}](${target})`;
+  if (!insertIntoActivePrompt(linkText)) {
+    return { ok: false, message: 'No active Chat or Build prompt is available.' };
+  }
+  return { ok: true, message: `Inserted "${label}" into ${insertionTarget.label}.` };
 }
 
 const RICH_NOTE_EDITOR_CONTENT_CLASS = 'min-h-20 rounded-md border border-input bg-background px-2 py-2 text-xs outline-none focus:ring-2 focus:ring-ring [&_blockquote]:border-l-2 [&_blockquote]:border-primary/60 [&_blockquote]:pl-2 [&_blockquote]:text-muted-foreground [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_h1]:text-base [&_h1]:font-semibold [&_h2]:text-sm [&_h2]:font-semibold [&_h3]:text-sm [&_h3]:font-semibold [&_h4]:font-semibold [&_h5]:font-semibold [&_h6]:font-semibold [&_li]:ml-4 [&_ol]:list-decimal [&_p]:mb-1 [&_pre]:overflow-auto [&_pre]:rounded [&_pre]:border [&_pre]:border-border [&_pre]:bg-muted [&_pre]:p-2 [&_table]:my-2 [&_table]:w-full [&_table]:border-collapse [&_td]:min-w-20 [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1 [&_th]:min-w-20 [&_th]:border [&_th]:border-border [&_th]:bg-muted [&_th]:px-2 [&_th]:py-1 [&_th]:text-left [&_th]:font-semibold [&_ul]:list-disc';
@@ -668,10 +2036,18 @@ function findRichNoteSelectedTableCell(editor: HTMLElement, savedRange: Range | 
 
 export function RichWorkItemNoteEditor({
   note,
+  workItemTitle,
+  agentId,
+  onInsertPrompt,
+  onSavePromptAsNote,
   onChange,
   onDelete,
 }: {
   note: UsageProjectWorkItemNote;
+  workItemTitle?: string;
+  agentId?: string | null;
+  onInsertPrompt?: (prompt: string) => void;
+  onSavePromptAsNote?: (title: string, prompt: string) => void;
   onChange: (note: UsageProjectWorkItemNote) => void;
   onDelete: () => void;
 }) {
@@ -977,15 +2353,29 @@ export function RichWorkItemNoteEditor({
         <div className="flex shrink-0 flex-wrap items-start justify-between gap-3 border-b border-border p-3">
           <div className="min-w-0 flex-1">
             <label className="text-[10px] font-medium uppercase text-muted-foreground">Note title</label>
-            <input
-              value={noteTitle}
-              onChange={(event) => onChange({ ...note, title: event.target.value, updatedAt: nowIso() })}
-              className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
-              placeholder="Untitled note"
-            />
+            <WorkItemNameTooltip value={noteTitle || 'Untitled note'}>
+              <input
+                value={noteTitle}
+                onChange={(event) => onChange({ ...note, title: event.target.value, updatedAt: nowIso() })}
+                className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
+                placeholder="Untitled note"
+              />
+            </WorkItemNameTooltip>
             <div className="mt-1 text-[11px] text-muted-foreground">{formatDateTime(note.createdAt)}</div>
           </div>
           <div className="flex items-center gap-1.5">
+            <WorkItemOutlineColorPicker
+              value={note.outlineColor}
+              onChange={(outlineColor) => onChange({ ...note, outlineColor, updatedAt: nowIso() })}
+            />
+            <NotePromptButton
+              note={note}
+              workItemTitle={workItemTitle}
+              agentId={agentId}
+              onInsertPrompt={onInsertPrompt}
+              onSavePromptAsNote={onSavePromptAsNote}
+            />
+            <NoteToPromptButton note={note} onInsertPrompt={onInsertPrompt} />
             <Button type="button" variant="outline" size="sm" className="h-8 gap-1.5 px-2 text-xs" onClick={() => setToolbarOpen((open) => !open)}>
               {toolbarOpen ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
               Toolbar
@@ -1027,20 +2417,35 @@ export function RichWorkItemNoteEditor({
     : null;
 
   return (
-    <div className="rounded border border-border/50 p-2 text-xs">
+    <div className="rounded border border-border/50 p-2 text-xs" style={workItemOutlineStyle(note.outlineColor)}>
       <div className="sticky top-0 z-10 -mx-2 -mt-2 mb-2 rounded-t border-b border-border/40 bg-background/95 px-2 pb-2 pt-2 backdrop-blur">
         <div className="mb-2 grid gap-1">
           <label className="text-[10px] font-medium uppercase text-muted-foreground">Note title</label>
-          <input
-            value={noteTitle}
-            onChange={(event) => onChange({ ...note, title: event.target.value, updatedAt: nowIso() })}
-            className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground"
-            placeholder="Untitled note"
-          />
+          <WorkItemNameTooltip value={noteTitle || 'Untitled note'}>
+            <input
+              value={noteTitle}
+              onChange={(event) => onChange({ ...note, title: event.target.value, updatedAt: nowIso() })}
+              className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground"
+              placeholder="Untitled note"
+            />
+          </WorkItemNameTooltip>
         </div>
         <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted-foreground">
           <span>{formatDateTime(note.createdAt)}</span>
           <div className="flex items-center gap-1.5">
+            <WorkItemOutlineColorPicker
+              value={note.outlineColor}
+              onChange={(outlineColor) => onChange({ ...note, outlineColor, updatedAt: nowIso() })}
+              className="h-7 w-7"
+            />
+            <NotePromptButton
+              note={note}
+              workItemTitle={workItemTitle}
+              agentId={agentId}
+              onInsertPrompt={onInsertPrompt}
+              onSavePromptAsNote={onSavePromptAsNote}
+            />
+            <NoteToPromptButton note={note} onInsertPrompt={onInsertPrompt} />
             <Button type="button" variant="outline" size="sm" className="h-7 gap-1.5 px-2 text-[11px]" onClick={() => setToolbarOpen((open) => !open)}>
               {toolbarOpen ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
               Toolbar
@@ -1080,6 +2485,7 @@ export function RichWorkItemNoteEditor({
 
 type DrawingTool = 'select' | UsageProjectWorkItemDrawingElementKind;
 type DrawingResizeHandle = 'nw' | 'ne' | 'sw' | 'se' | 'start' | 'end';
+type DrawingAttachNotice = { kind: 'success' | 'error'; text: string };
 const DRAWING_LINE_STYLES: UsageProjectWorkItemDrawingLineStyle[] = ['solid', 'dashed', 'dotted'];
 const DRAWING_STROKE_WIDTH_PRESETS = [
   { label: 'Thin', value: 1 },
@@ -1094,13 +2500,14 @@ function drawingStrokeDasharray(style?: UsageProjectWorkItemDrawingLineStyle, st
   return undefined;
 }
 
-export function createWorkItemDrawing(title = 'Drawing'): UsageProjectWorkItemDrawing {
+export function createWorkItemDrawing(title = 'Drawing', outlineColor?: string): UsageProjectWorkItemDrawing {
   return {
     id: localId(),
     title,
     width: 640,
     height: 360,
     elements: [],
+    outlineColor,
     createdAt: nowIso(),
   };
 }
@@ -1198,6 +2605,170 @@ function exportDrawingSvg(drawing: UsageProjectWorkItemDrawing) {
   URL.revokeObjectURL(url);
 }
 
+function drawingStrokeDashSegments(style?: UsageProjectWorkItemDrawingLineStyle, strokeWidth = 2): number[] {
+  const dash = drawingStrokeDasharray(style, strokeWidth);
+  return dash ? dash.split(' ').map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0) : [];
+}
+
+function roundedRectPath(context: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number) {
+  const safeRadius = Math.min(Math.max(0, radius), Math.abs(width) / 2, Math.abs(height) / 2);
+  context.moveTo(x + safeRadius, y);
+  context.lineTo(x + width - safeRadius, y);
+  context.quadraticCurveTo(x + width, y, x + width, y + safeRadius);
+  context.lineTo(x + width, y + height - safeRadius);
+  context.quadraticCurveTo(x + width, y + height, x + width - safeRadius, y + height);
+  context.lineTo(x + safeRadius, y + height);
+  context.quadraticCurveTo(x, y + height, x, y + height - safeRadius);
+  context.lineTo(x, y + safeRadius);
+  context.quadraticCurveTo(x, y, x + safeRadius, y);
+}
+
+function hasVisibleStroke(element: UsageProjectWorkItemDrawingElement): boolean {
+  return element.stroke !== 'transparent' && element.strokeWidth > 0;
+}
+
+function hasVisibleFill(element: UsageProjectWorkItemDrawingElement): boolean {
+  return element.fill !== 'transparent' && (element.fillOpacity ?? 1) > 0;
+}
+
+function paintDrawingPath(
+  context: CanvasRenderingContext2D,
+  element: UsageProjectWorkItemDrawingElement,
+  buildPath: () => void
+) {
+  const canFill = hasVisibleFill(element);
+  const canStroke = hasVisibleStroke(element);
+  if (!canFill && !canStroke) return;
+  context.save();
+  context.beginPath();
+  buildPath();
+  if (canFill) {
+    context.globalAlpha = Math.max(0, Math.min(1, element.fillOpacity ?? 1));
+    context.fillStyle = element.fill;
+    context.fill();
+    context.globalAlpha = 1;
+  }
+  if (canStroke) {
+    context.strokeStyle = element.stroke;
+    context.lineWidth = element.strokeWidth;
+    context.lineJoin = 'round';
+    context.lineCap = 'round';
+    context.setLineDash(drawingStrokeDashSegments(element.strokeStyle, element.strokeWidth));
+    context.stroke();
+  }
+  context.restore();
+}
+
+function paintDrawingLine(context: CanvasRenderingContext2D, element: UsageProjectWorkItemDrawingElement) {
+  if (!hasVisibleStroke(element)) return;
+  context.save();
+  context.strokeStyle = element.stroke;
+  context.lineWidth = element.strokeWidth;
+  context.lineCap = 'round';
+  context.lineJoin = 'round';
+  context.setLineDash(drawingStrokeDashSegments(element.strokeStyle, element.strokeWidth));
+  context.beginPath();
+  context.moveTo(element.x1, element.y1);
+  context.lineTo(element.x2, element.y2);
+  context.stroke();
+  context.restore();
+
+  if (element.kind !== 'arrow') return;
+  const angle = Math.atan2(element.y2 - element.y1, element.x2 - element.x1);
+  const headLength = Math.max(10, element.strokeWidth * 4);
+  context.save();
+  context.fillStyle = element.stroke;
+  context.beginPath();
+  context.moveTo(element.x2, element.y2);
+  context.lineTo(
+    element.x2 - headLength * Math.cos(angle - Math.PI / 6),
+    element.y2 - headLength * Math.sin(angle - Math.PI / 6)
+  );
+  context.lineTo(
+    element.x2 - headLength * Math.cos(angle + Math.PI / 6),
+    element.y2 - headLength * Math.sin(angle + Math.PI / 6)
+  );
+  context.closePath();
+  context.fill();
+  context.restore();
+}
+
+function paintDrawingText(context: CanvasRenderingContext2D, element: UsageProjectWorkItemDrawingElement) {
+  const box = elementBox(element);
+  const fontSize = Math.max(8, element.fontSize || 24);
+  if (hasVisibleStroke(element)) {
+    paintDrawingPath(context, { ...element, fill: 'transparent' }, () => roundedRectPath(context, box.left, box.top, box.width, box.height, 6));
+  }
+
+  const text = String(element.text || '').trim();
+  if (!text) return;
+  context.save();
+  context.beginPath();
+  context.rect(box.left + 6, box.top + 4, Math.max(1, box.width - 12), Math.max(1, box.height - 8));
+  context.clip();
+  context.font = `${fontSize}px Arial, sans-serif`;
+  context.textBaseline = 'top';
+  context.fillStyle = element.fill && element.fill !== 'transparent' ? element.fill : '#111827';
+  context.globalAlpha = Math.max(0, Math.min(1, element.fillOpacity ?? 1));
+  const lineHeight = fontSize * 1.2;
+  const lines = text.split(/\r?\n/);
+  lines.forEach((line, index) => {
+    context.fillText(line, box.left + 8, box.top + 6 + index * lineHeight, Math.max(1, box.width - 16));
+  });
+  context.restore();
+}
+
+async function drawingPngDataUrl(drawing: UsageProjectWorkItemDrawing): Promise<string> {
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(drawing.width));
+  canvas.height = Math.max(1, Math.round(drawing.height));
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Unable to create PNG canvas.');
+
+  context.fillStyle = '#ffffff';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+
+  drawing.elements.forEach((element) => {
+    if (element.kind === 'rectangle') {
+      const box = elementBox(element);
+      paintDrawingPath(context, element, () => roundedRectPath(context, box.left, box.top, box.width, box.height, 8));
+      return;
+    }
+    if (element.kind === 'ellipse') {
+      const box = elementBox(element);
+      paintDrawingPath(context, element, () => {
+        context.ellipse(
+          box.left + box.width / 2,
+          box.top + box.height / 2,
+          Math.max(0.5, box.width / 2),
+          Math.max(0.5, box.height / 2),
+          0,
+          0,
+          Math.PI * 2
+        );
+      });
+      return;
+    }
+    if (element.kind === 'triangle') {
+      const box = elementBox(element);
+      paintDrawingPath(context, element, () => {
+        context.moveTo(box.left + box.width / 2, box.top);
+        context.lineTo(box.right, box.bottom);
+        context.lineTo(box.left, box.bottom);
+        context.closePath();
+      });
+      return;
+    }
+    if (element.kind === 'text') {
+      paintDrawingText(context, element);
+      return;
+    }
+    paintDrawingLine(context, element);
+  });
+
+  return canvas.toDataURL('image/png');
+}
+
 function duplicateDrawingElement(element: UsageProjectWorkItemDrawingElement, offset: number): UsageProjectWorkItemDrawingElement {
   return {
     ...element,
@@ -1244,10 +2815,14 @@ export function DrawingEditor({
   const [textSizeInput, setTextSizeInput] = useState('24');
   const [popoutPortalTarget, setPopoutPortalTarget] = useState<HTMLElement | null>(null);
   const [elementClipboard, setElementClipboard] = useState<UsageProjectWorkItemDrawingElement | null>(null);
+  const [activeAttachmentTarget, setActiveAttachmentTarget] = useState<PromptInsertionTarget | null>(() => getActivePromptAttachmentTarget());
+  const [attachingPng, setAttachingPng] = useState(false);
+  const [attachNotice, setAttachNotice] = useState<DrawingAttachNotice | null>(null);
   const drawingRef = useRef(sourceDrawing);
   const elementPasteCountRef = useRef(0);
   const deferredDrawingCommitFrameRef = useRef<number | null>(null);
   const deferredDrawingCommitTimeoutRef = useRef<number | null>(null);
+  const attachNoticeTimeoutRef = useRef<number | null>(null);
 
   const selectedElement = drawing.elements.find((element) => element.id === selectedElementId) || null;
   const activeStroke = selectedElement?.stroke && selectedElement.stroke !== 'transparent' ? selectedElement.stroke : stroke;
@@ -1311,6 +2886,10 @@ export function DrawingEditor({
       window.clearTimeout(deferredDrawingCommitTimeoutRef.current);
       deferredDrawingCommitTimeoutRef.current = null;
     }
+    if (attachNoticeTimeoutRef.current !== null) {
+      window.clearTimeout(attachNoticeTimeoutRef.current);
+      attachNoticeTimeoutRef.current = null;
+    }
   }, []);
 
   useEffect(() => {
@@ -1346,6 +2925,8 @@ export function DrawingEditor({
     }
     setTextSizeInput(String(selectedElement.fontSize || 24));
   }, [selectedElement?.fontSize, selectedElement?.id, selectedElement?.kind]);
+
+  useEffect(() => subscribePromptAttachmentTarget(setActiveAttachmentTarget), []);
 
   const pointForEvent = (event: React.PointerEvent<SVGSVGElement | SVGElement>) => {
     const svg = svgRef.current;
@@ -1405,6 +2986,41 @@ export function DrawingEditor({
     const nextHeight = Number(nextValue);
     if (nextValue && Number.isFinite(nextHeight) && nextHeight >= 200) {
       updateSurfaceSize({ height: nextHeight });
+    }
+  };
+
+  const showAttachNotice = useCallback((notice: DrawingAttachNotice, duration = 3200) => {
+    setAttachNotice(notice);
+    if (attachNoticeTimeoutRef.current !== null) {
+      window.clearTimeout(attachNoticeTimeoutRef.current);
+    }
+    attachNoticeTimeoutRef.current = window.setTimeout(() => {
+      attachNoticeTimeoutRef.current = null;
+      setAttachNotice(null);
+    }, duration);
+  }, []);
+
+  const attachDrawingPngToPrompt = async () => {
+    if (!activeAttachmentTarget) {
+      showAttachNotice({ kind: 'error', text: 'Open a Chat or Build prompt first.' });
+      return;
+    }
+    setAttachingPng(true);
+    setAttachNotice(null);
+    try {
+      const currentDrawing = drawingRef.current;
+      const dataUrl = await drawingPngDataUrl(currentDrawing);
+      const title = currentDrawing.title.trim().replace(/[^\w.-]+/g, '_') || 'drawing';
+      const result = await getAccomplish().saveDataUrlToFile(dataUrl, `${title}-drawing`);
+      if (!result.filePath) throw new Error('Unable to save drawing PNG.');
+      if (!attachFilesToActivePrompt([result.filePath])) {
+        throw new Error('No active Chat or Build prompt is available.');
+      }
+      showAttachNotice({ kind: 'success', text: `PNG attached to ${activeAttachmentTarget.label}.` });
+    } catch (err) {
+      showAttachNotice({ kind: 'error', text: err instanceof Error ? err.message : 'Unable to attach drawing.' }, 4200);
+    } finally {
+      setAttachingPng(false);
     }
   };
 
@@ -1998,16 +3614,44 @@ export function DrawingEditor({
     </svg>
   );
 
+  const attachButtonLabel = attachingPng ? 'Attaching...' : attachNotice?.kind === 'success' ? 'Attached' : 'Attach PNG';
+  const attachButtonClass = cn(
+    'h-8 gap-1 px-2 text-xs transition-colors',
+    attachNotice?.kind === 'success' && 'border-emerald-500/70 bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/20',
+    attachNotice?.kind === 'error' && 'border-red-500/70 bg-red-500/15 text-red-200 hover:bg-red-500/20'
+  );
+  const renderAttachNotice = (className?: string) => attachNotice ? (
+    <div
+      className={cn(
+        'flex items-center gap-2 rounded-md border px-2.5 py-2 text-xs font-medium shadow-sm',
+        attachNotice.kind === 'success'
+          ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-100'
+          : 'border-red-500/50 bg-red-500/15 text-red-100',
+        className
+      )}
+      role="status"
+    >
+      {attachNotice.kind === 'success' ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : <X className="h-3.5 w-3.5 shrink-0" />}
+      <span>{attachNotice.text}</span>
+    </div>
+  ) : null;
+
   return (
-    <div ref={rootRef} className="rounded-md border border-border/60 bg-card/50 p-2">
+    <div ref={rootRef} className="rounded-md border border-border/60 bg-card/50 p-2" style={workItemOutlineStyle(drawing.outlineColor)}>
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <input
-          value={drawing.title}
-          onChange={(event) => commitDrawing({ ...drawingRef.current, title: event.target.value, updatedAt: nowIso() })}
-          className="h-8 min-w-[180px] flex-1 rounded-md border border-input bg-background px-2 text-xs font-medium"
-          placeholder="Drawing title"
-        />
+        <WorkItemNameTooltip value={drawing.title || 'Drawing'}>
+          <input
+            value={drawing.title}
+            onChange={(event) => commitDrawing({ ...drawingRef.current, title: event.target.value, updatedAt: nowIso() })}
+            className="h-8 min-w-[180px] flex-1 rounded-md border border-input bg-background px-2 text-xs font-medium"
+            placeholder="Drawing title"
+          />
+        </WorkItemNameTooltip>
         <div className="flex items-center gap-1">
+          <WorkItemOutlineColorPicker
+            value={drawing.outlineColor}
+            onChange={(outlineColor) => commitDrawing({ ...drawingRef.current, outlineColor, updatedAt: nowIso() })}
+          />
           <Button type="button" variant="outline" size="sm" className="h-8 gap-1 px-2 text-xs" onClick={() => setPopoutOpen(true)}>
             <Maximize2 className="h-3.5 w-3.5" />
             Pop out
@@ -2015,6 +3659,18 @@ export function DrawingEditor({
           <Button type="button" variant="outline" size="sm" className="h-8 gap-1 px-2 text-xs" onClick={() => exportDrawingSvg(drawing)}>
             <Download className="h-3.5 w-3.5" />
             Export
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className={attachButtonClass}
+            onClick={() => void attachDrawingPngToPrompt()}
+            disabled={attachingPng}
+            title={activeAttachmentTarget ? `Attach this drawing as a PNG to ${activeAttachmentTarget.label}.` : 'Open a Chat or Build prompt to attach this drawing as a PNG.'}
+          >
+            <Paperclip className="h-3.5 w-3.5" />
+            {attachButtonLabel}
           </Button>
           <Button type="button" variant="outline" size="sm" className="h-8 px-2" onClick={onDelete}>
             <Trash2 className="h-3.5 w-3.5" />
@@ -2034,6 +3690,7 @@ export function DrawingEditor({
       <div className="mt-2 text-[11px] text-muted-foreground">
         Choose a tool, click the canvas to add it, then use Move to drag items or pull handles to resize. Pop out for zoom and a larger workspace.
       </div>
+      {renderAttachNotice('mt-2')}
       {popoutOpen && popoutPortalTarget ? createPortal(
         <div
           className="bg-black/60 p-3"
@@ -2054,7 +3711,9 @@ export function DrawingEditor({
             <div className="shrink-0 border-b border-border bg-card px-4 py-3 shadow-lg">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="min-w-0">
-                  <div className="truncate text-sm font-semibold text-foreground">{drawing.title || 'Drawing'}</div>
+                  <WorkItemNameTooltip value={drawing.title || 'Drawing'}>
+                    <div className="truncate text-sm font-semibold text-foreground">{drawing.title || 'Drawing'}</div>
+                  </WorkItemNameTooltip>
                   <div className="mt-0.5 text-xs text-muted-foreground">Pop-out drawing workspace</div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -2073,6 +3732,18 @@ export function DrawingEditor({
                     <Download className="h-3.5 w-3.5" />
                     Export
                   </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className={attachButtonClass}
+                    onClick={() => void attachDrawingPngToPrompt()}
+                    disabled={attachingPng}
+                    title={activeAttachmentTarget ? `Attach this drawing as a PNG to ${activeAttachmentTarget.label}.` : 'Open a Chat or Build prompt to attach this drawing as a PNG.'}
+                  >
+                    <Paperclip className="h-3.5 w-3.5" />
+                    {attachButtonLabel}
+                  </Button>
                   <Button type="button" variant="outline" size="sm" className="h-8 gap-1 px-2 text-xs" onClick={() => setPopoutOpen(false)}>
                     <Minimize2 className="h-3.5 w-3.5" />
                     Close
@@ -2080,6 +3751,7 @@ export function DrawingEditor({
                 </div>
               </div>
               <div className="mt-3">{renderDrawingToolbar()}</div>
+              {renderAttachNotice('mt-2')}
             </div>
             <div className="min-h-0 flex-1 overflow-auto bg-muted/30 p-6">
               <div className="inline-block min-w-full">
@@ -2131,8 +3803,11 @@ export default function ProjectWorkboardTab({
   const [fullScreenOpen, setFullScreenOpen] = useState(false);
   const [overlayPortalElement, setOverlayPortalElement] = useState<HTMLDivElement | null>(null);
   const [expandedChecklistMeta, setExpandedChecklistMeta] = useState<Record<string, boolean>>({});
+  const [collapsedChecklistLists, setCollapsedChecklistLists] = useState<Record<string, boolean>>(() => readChecklistListCollapseState());
   const [editingDocument, setEditingDocument] = useState<DocumentEditDraft | null>(null);
+  const [documentPromptNotice, setDocumentPromptNotice] = useState<DocumentPromptNotice | null>(null);
   const draftSaveNoticeTimerRef = useRef<number | null>(null);
+  const documentPromptNoticeTimerRef = useRef<number | null>(null);
 
   const api = getAccomplish();
 
@@ -2155,6 +3830,30 @@ export default function ProjectWorkboardTab({
     for (const assignee of assignees) map.set(assignee.id, assignee.name);
     return map;
   }, [assignees]);
+
+  const resolveCsvAssigneeNames = useCallback((assigneeIds?: string[]) => (
+    (assigneeIds || []).map((id) => assigneeNameById.get(id) || '').filter(Boolean)
+  ), [assigneeNameById]);
+
+  const draftListCsvCandidates = useMemo<WorkboardListCsvCandidate[]>(() => (
+    draft
+      ? draft.checklistLists.map((list) => ({
+        id: list.id,
+        workItemTitle: draft.title.trim() || 'Untitled work item',
+        list,
+      }))
+      : []
+  ), [draft?.checklistLists, draft?.title]);
+
+  const draftNoteCsvCandidates = useMemo<WorkboardNoteCsvCandidate[]>(() => (
+    draft
+      ? draft.notes.map((note) => ({
+        id: note.id,
+        workItemTitle: draft.title.trim() || 'Untitled work item',
+        note,
+      }))
+      : []
+  ), [draft?.notes, draft?.title]);
 
   const loadWorkboard = useCallback(async () => {
     setLoading(true);
@@ -2187,6 +3886,9 @@ export default function ProjectWorkboardTab({
   useEffect(() => () => {
     if (draftSaveNoticeTimerRef.current !== null) {
       window.clearTimeout(draftSaveNoticeTimerRef.current);
+    }
+    if (documentPromptNoticeTimerRef.current !== null) {
+      window.clearTimeout(documentPromptNoticeTimerRef.current);
     }
   }, []);
 
@@ -2245,6 +3947,17 @@ export default function ProjectWorkboardTab({
       setDraftSaveNotice('');
       draftSaveNoticeTimerRef.current = null;
     }, 5000);
+  };
+
+  const showDocumentPromptNotice = (notice: DocumentPromptNotice) => {
+    setDocumentPromptNotice(notice);
+    if (documentPromptNoticeTimerRef.current !== null) {
+      window.clearTimeout(documentPromptNoticeTimerRef.current);
+    }
+    documentPromptNoticeTimerRef.current = window.setTimeout(() => {
+      setDocumentPromptNotice(null);
+      documentPromptNoticeTimerRef.current = null;
+    }, notice.kind === 'success' ? 3200 : 4400);
   };
 
   const saveDraft = async (closeAfterSave = false) => {
@@ -2429,6 +4142,15 @@ export default function ProjectWorkboardTab({
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
+  };
+
+  const attachDocumentToPrompt = (documentLink: UsageProjectWorkItemDocumentLink) => {
+    const result = attachDocumentLinkToActivePrompt(documentLink);
+    showDocumentPromptNotice({
+      documentId: documentLink.id,
+      kind: result.ok ? 'success' : 'error',
+      text: result.message,
+    });
   };
 
   const archiveItem = async (item: UsageProjectWorkItem, archived = true) => {
@@ -2618,6 +4340,16 @@ export default function ProjectWorkboardTab({
   };
 
   const checklistMetaKey = (listId: string, itemId: string) => `${listId}:${itemId}`;
+
+  const toggleChecklistListCollapsed = (collapseKey: string) => {
+    setCollapsedChecklistLists((current) => {
+      const next = { ...current };
+      if (next[collapseKey]) delete next[collapseKey];
+      else next[collapseKey] = true;
+      writeChecklistListCollapseState(next);
+      return next;
+    });
+  };
 
   const toggleChecklistItemMeta = (listId: string, itemId: string) => {
     const key = checklistMetaKey(listId, itemId);
@@ -3388,7 +5120,13 @@ export default function ProjectWorkboardTab({
             <div className="rounded-md border border-border/70 bg-background p-3">
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2 text-xs font-semibold text-foreground"><CheckCircle2 className="h-3.5 w-3.5" /> Lists</div>
-                <div className="flex min-w-[220px] flex-1 gap-2 sm:flex-none">
+                <div className="flex min-w-[260px] flex-1 flex-wrap justify-end gap-2 sm:flex-none">
+                  <CsvExportPicker
+                    type="lists"
+                    candidates={draftListCsvCandidates}
+                    filenameScope={`${project.name}-${draft.title || 'work-item'}`}
+                    resolveAssigneeNames={resolveCsvAssigneeNames}
+                  />
                   <input
                     value={draft.newListName}
                     onChange={(event) => setDraft({ ...draft, newListName: event.target.value })}
@@ -3414,18 +5152,51 @@ export default function ProjectWorkboardTab({
                 ) : draft.checklistLists.map((list) => {
                   const listMetaOpen = list.items.length > 0 && list.items.every((item) => expandedChecklistMeta[checklistMetaKey(list.id, item.id)]);
                   const listProgress = checklistProgress(list.items);
+                  const collapseKey = checklistListCollapseKey(project.id, draft.id, list.id);
+                  const listCollapsed = collapsedChecklistLists[collapseKey] === true;
                   return (
-                  <div key={list.id} className="rounded-md border border-border/70 bg-card/50 p-2">
+                  <div key={list.id} className="rounded-md border border-border/70 bg-card/50 p-2" style={workItemOutlineStyle(list.outlineColor)}>
                     <div className="mb-2 flex items-center gap-2">
                       <input
                         value={list.name}
                         onChange={(event) => updateDraftChecklistList(list.id, (current) => ({ ...current, name: event.target.value, updatedAt: nowIso() }))}
                         className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 text-xs font-medium"
                         placeholder="List name"
+                        title={list.name || 'Checklist'}
                       />
-                      <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                        {listProgress.done}/{listProgress.total}
-                      </span>
+                      <ChecklistListProgressBadge progress={listProgress} />
+                      <ChecklistListPromptButton
+                        list={list}
+                        workItemTitle={draft.title}
+                        resolveAssigneeNames={(assigneeIds) => (assigneeIds || [])
+                          .map((id) => assigneeNameById.get(id) || '')
+                          .filter(Boolean)}
+                        onSavePromptAsNote={(title, prompt) => {
+                          const note: UsageProjectWorkItemNote = {
+                            id: localId(),
+                            title,
+                            text: prompt,
+                            html: plainTextToNoteHtml(prompt),
+                            createdAt: nowIso(),
+                          };
+                          setDraft((current) => current ? ({ ...current, notes: [note, ...(current.notes || [])] }) : current);
+                        }}
+                      />
+                      <WorkItemOutlineColorPicker
+                        value={list.outlineColor}
+                        onChange={(outlineColor) => updateDraftChecklistList(list.id, (current) => ({ ...current, outlineColor, updatedAt: nowIso() }))}
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 px-2"
+                        title={listCollapsed ? 'Expand list' : 'Collapse list'}
+                        aria-label={listCollapsed ? 'Expand list' : 'Collapse list'}
+                        onClick={() => toggleChecklistListCollapsed(collapseKey)}
+                      >
+                        {listCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                      </Button>
                       <Button
                         type="button"
                         variant="outline"
@@ -3446,10 +5217,18 @@ export default function ProjectWorkboardTab({
                         <span>{listProgress.percent}% complete</span>
                         <span>{listProgress.done}/{listProgress.total} item{listProgress.total === 1 ? '' : 's'}</span>
                       </div>
-                      <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-                        <div className="h-full rounded-full bg-primary" style={{ width: `${listProgress.percent}%` }} />
+                      <div className="flex items-center gap-2">
+                        <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-muted">
+                          <div className="h-full rounded-full bg-primary" style={{ width: `${listProgress.percent}%` }} />
+                        </div>
+                        <ChecklistListContextButton
+                          value={list.context}
+                          onSave={(context) => updateDraftChecklistList(list.id, (current) => ({ ...current, context, updatedAt: nowIso() }))}
+                        />
                       </div>
                     </div>
+                    {!listCollapsed ? (
+                    <>
                     <div className="space-y-1.5">
                       {list.items.length === 0 ? (
                         <div className="rounded border border-dashed border-border/70 px-2 py-2 text-[11px] text-muted-foreground">
@@ -3467,16 +5246,20 @@ export default function ProjectWorkboardTab({
                                 checked={entry.completed}
                                 onChange={(event) => updateDraftChecklistItem(list.id, entry.id, { completed: event.target.checked })}
                               />
-                              <div className="flex min-w-0 flex-1 items-center rounded-md border border-input bg-background">
-                                <input
+                              <div className="flex min-w-0 flex-1 items-stretch rounded-md border border-input bg-background">
+                                <AutoGrowingTextarea
                                   value={entry.text}
                                   onChange={(event) => updateDraftChecklistItem(list.id, entry.id, { text: event.target.value })}
-                                  className={cn('h-8 min-w-0 flex-1 bg-transparent px-2 text-xs outline-none', entry.completed && 'text-muted-foreground line-through')}
+                                  className={cn(
+                                    'min-h-8 min-w-0 flex-1 resize-none bg-transparent px-2 py-1.5 text-xs leading-relaxed outline-none',
+                                    'whitespace-pre-wrap break-words',
+                                    entry.completed && 'text-muted-foreground line-through'
+                                  )}
                                   placeholder="List item"
                                 />
                                 <button
                                   type="button"
-                                  className={cn('flex h-8 w-8 items-center justify-center border-l border-border/60 text-muted-foreground hover:text-foreground', entry.assigneeIds?.length && 'text-primary')}
+                                  className={cn('flex min-h-8 w-8 shrink-0 items-center justify-center border-l border-border/60 text-muted-foreground hover:text-foreground', entry.assigneeIds?.length && 'text-primary')}
                                   title={`Assignee: ${assigneeName}`}
                                   aria-label={`Assignee: ${assigneeName}`}
                                   onClick={() => toggleChecklistItemMeta(list.id, entry.id)}
@@ -3485,7 +5268,7 @@ export default function ProjectWorkboardTab({
                                 </button>
                                 <button
                                   type="button"
-                                  className={cn('flex h-8 w-8 items-center justify-center border-l border-border/60 text-muted-foreground hover:text-foreground', entry.dueDate && 'text-primary')}
+                                  className={cn('flex min-h-8 w-8 shrink-0 items-center justify-center border-l border-border/60 text-muted-foreground hover:text-foreground', entry.dueDate && 'text-primary')}
                                   title={`Due date: ${dueDateLabel}`}
                                   aria-label={`Due date: ${dueDateLabel}`}
                                   onClick={() => toggleChecklistItemMeta(list.id, entry.id)}
@@ -3494,7 +5277,7 @@ export default function ProjectWorkboardTab({
                                 </button>
                                 <button
                                   type="button"
-                                  className="flex h-8 w-8 items-center justify-center border-l border-border/60 text-muted-foreground hover:text-destructive"
+                                  className="flex min-h-8 w-8 shrink-0 items-center justify-center border-l border-border/60 text-muted-foreground hover:text-destructive"
                                   title="Delete list item"
                                   aria-label="Delete list item"
                                   onClick={() => removeDraftChecklistItem(list.id, entry.id)}
@@ -3534,7 +5317,7 @@ export default function ProjectWorkboardTab({
                       })}
                     </div>
                     <div className="mt-2 flex gap-2">
-                      <input
+                      <AutoGrowingTextarea
                         value={draft.newChecklistTextByListId[list.id] || ''}
                         onChange={(event) => setDraft({
                           ...draft,
@@ -3544,12 +5327,12 @@ export default function ProjectWorkboardTab({
                           },
                         })}
                         onKeyDown={(event) => {
-                          if (event.key === 'Enter') {
+                          if (event.key === 'Enter' && !event.shiftKey) {
                             event.preventDefault();
                             addDraftChecklistItem(list.id);
                           }
                         }}
-                        className="h-8 flex-1 rounded-md border border-input bg-background px-2 text-xs"
+                        className="min-h-8 flex-1 resize-none rounded-md border border-input bg-background px-2 py-1.5 text-xs leading-relaxed whitespace-pre-wrap break-words"
                         placeholder={`Add item to ${list.name || 'list'}`}
                       />
                       <Button
@@ -3562,6 +5345,8 @@ export default function ProjectWorkboardTab({
                         Add item
                       </Button>
                     </div>
+                    </>
+                    ) : null}
                   </div>
                   );
                 })}
@@ -3576,12 +5361,34 @@ export default function ProjectWorkboardTab({
             </div>
 
             <div className="rounded-md border border-border/70 bg-background p-3">
-              <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-foreground"><Tag className="h-3.5 w-3.5" /> Notes</div>
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-xs font-semibold text-foreground"><Tag className="h-3.5 w-3.5" /> Notes</div>
+                <CsvExportPicker
+                  type="notes"
+                  candidates={draftNoteCsvCandidates}
+                  filenameScope={`${project.name}-${draft.title || 'work-item'}`}
+                />
+              </div>
               <div className="max-h-72 space-y-2 overflow-y-auto">
                 {draft.notes.length === 0 ? <div className="text-xs text-muted-foreground">No notes yet.</div> : draft.notes.map((note) => (
                   <RichWorkItemNoteEditor
                     key={note.id}
                     note={note}
+                    workItemTitle={draft.title}
+                    onSavePromptAsNote={(title, prompt) => {
+                      const text = prompt.trim();
+                      if (!text) return;
+                      const newNote: UsageProjectWorkItemNote = {
+                        id: localId(),
+                        title: title.trim() || 'Generated prompt',
+                        text,
+                        html: plainTextToNoteHtml(text),
+                        createdAt: nowIso(),
+                      };
+                      setDraft((current) => current
+                        ? { ...current, notes: [newNote, ...current.notes] }
+                        : current);
+                    }}
                     onChange={(nextNote) => setDraft((current) => current
                       ? { ...current, notes: current.notes.map((entry) => entry.id === note.id ? nextNote : entry) }
                       : current)}
@@ -3710,19 +5517,23 @@ export default function ProjectWorkboardTab({
                   </div>
                 ) : draft.documents.map((documentLink) => {
                   const isEditingDocument = editingDocument?.id === documentLink.id;
+                  const documentTarget = targetForDocumentLink(documentLink);
+                  const promptNotice = documentPromptNotice?.documentId === documentLink.id ? documentPromptNotice : null;
                   return (
-                  <div key={documentLink.id} className="rounded-md border border-border/60 bg-card/50 p-2 text-xs">
+                  <div key={documentLink.id} className="rounded-md border border-border/60 bg-card/50 p-2 text-xs" style={workItemOutlineStyle(documentLink.outlineColor)}>
                     {isEditingDocument ? (
                       <div className="grid gap-2">
                         <div className="grid gap-2 sm:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
                           <label className="grid gap-1">
                             <span className="text-[10px] font-medium uppercase text-muted-foreground">Label</span>
-                            <input
-                              value={editingDocument.label}
-                              onChange={(event) => setEditingDocument({ ...editingDocument, label: event.target.value })}
-                              className="h-8 rounded-md border border-input bg-background px-2 text-xs"
-                              placeholder="Document label"
-                            />
+                            <WorkItemNameTooltip value={editingDocument.label || 'Untitled document'}>
+                              <input
+                                value={editingDocument.label}
+                                onChange={(event) => setEditingDocument({ ...editingDocument, label: event.target.value })}
+                                className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                                placeholder="Document label"
+                              />
+                            </WorkItemNameTooltip>
                           </label>
                           {documentLink.kind === 'url' ? (
                             <label className="grid gap-1">
@@ -3773,15 +5584,42 @@ export default function ProjectWorkboardTab({
                         <div className="min-w-0">
                           <div className="flex items-center gap-1.5 font-medium text-foreground">
                             {documentLink.kind === 'url' ? <Link className="h-3.5 w-3.5" /> : <FileText className="h-3.5 w-3.5" />}
-                            <span className="truncate">{documentLink.label}</span>
+                            <WorkItemNameTooltip value={documentLink.label || 'Untitled document'}>
+                              <span className="truncate">{documentLink.label || 'Untitled document'}</span>
+                            </WorkItemNameTooltip>
                           </div>
-                          <div className="mt-1 truncate text-[11px] text-muted-foreground" title={documentLink.kind === 'url' ? documentLink.url : documentLink.path}>
-                            {documentLink.kind === 'url' ? documentLink.url : documentLink.path}
+                          <div className="mt-1 truncate text-[11px] text-muted-foreground" title={documentTarget}>
+                            {documentTarget}
                           </div>
                         </div>
                         <div className="flex shrink-0 items-center gap-1">
+                          <WorkItemOutlineColorPicker
+                            value={documentLink.outlineColor}
+                            onChange={(outlineColor) => setDraft({
+                              ...draft,
+                              documents: draft.documents.map((entry) => entry.id === documentLink.id ? { ...entry, outlineColor } : entry),
+                            })}
+                            className="h-7 w-7"
+                          />
                           <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-[11px]" onClick={() => void openDocumentLink(documentLink)}>
                             Open
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className={cn(
+                              'h-7 gap-1 px-2 text-[11px]',
+                              promptNotice?.kind === 'success' && 'border-emerald-500/60 bg-emerald-500/10 text-emerald-200',
+                              promptNotice?.kind === 'error' && 'border-red-500/60 bg-red-500/10 text-red-200'
+                            )}
+                            onClick={() => attachDocumentToPrompt(documentLink)}
+                            title={documentLink.kind === 'local'
+                              ? 'Attach this local document file to the active Chat or Build prompt.'
+                              : 'Insert this document link into the active Chat or Build prompt.'}
+                          >
+                            {promptNotice?.kind === 'success' ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Paperclip className="h-3.5 w-3.5" />}
+                            {promptNotice?.kind === 'success' ? 'Attached' : 'Attach'}
                           </Button>
                           <Button
                             type="button"
@@ -3808,6 +5646,17 @@ export default function ProjectWorkboardTab({
                         </div>
                       </div>
                     )}
+                    {promptNotice ? (
+                      <div className={cn(
+                        'mt-2 flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-[11px]',
+                        promptNotice.kind === 'success'
+                          ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-100'
+                          : 'border-red-500/40 bg-red-500/10 text-red-100'
+                      )}>
+                        {promptNotice.kind === 'success' ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : <X className="h-3.5 w-3.5 shrink-0" />}
+                        <span>{promptNotice.text}</span>
+                      </div>
+                    ) : null}
                   </div>
                   );
                 })}

@@ -50,6 +50,14 @@ Use this section when you want users to send messages to an agent through a bot,
 
 Runtime mode depends on connector type and deployment.
 
+## Thinking Models
+
+Agents that use thinking/reasoning models can receive connector messages the same way as normal Chat Mode tasks.
+
+Reasoning text should be separated from the final reply when the provider exposes it. Messaging replies should send the final answer, not raw thinking tags.
+
+If a connector says a task is already running or queued, wait for the current connector task to finish before sending another command to the same agent/thread.
+
 ## Bridge-Required Connectors
 
 Some connectors require public HTTPS webhook accessibility and bridge endpoints. Use the settings badges/tooltips and per-connector instructions to configure these correctly.
@@ -60,8 +68,10 @@ Some connectors require public HTTPS webhook accessibility and bridge endpoints.
 - If the service requires webhooks, confirm the app has a reachable HTTPS/public endpoint.
 - If unknown users can message the bot, tighten allowlist controls.
 - If commands are ignored, check the command prefix and connector metadata.
+- If a thinking model does not reply, check whether the connector task is still running or queued and whether the selected agent/provider supports the model's response format.
 
 ## Related Sections
 
 - [Automations](./automations.md)
 - [Agents](./agents.md)
+- [Activity Timeline And Recovery](../activity-timeline-and-recovery.md)

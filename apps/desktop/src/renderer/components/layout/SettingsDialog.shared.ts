@@ -496,7 +496,7 @@ export interface DoctorCheck {
   message: string;
 }
 
-export const REQUIRED_SKILLS = ['dev-browser', 'file-permission'];
+export const REQUIRED_SKILLS = ['dev-browser', 'file-permission', 'build-runtime-tools'];
 
 export const NODE_BADGE_COLORS = [
   '#1d4ed8',

@@ -33,6 +33,10 @@ export interface TaskConfig {
   attachedFiles?: string[];
   /** Hint: task likely needs browser automation tooling */
   requiresBrowser?: boolean;
+  /** Internal hint: this task is running from Build mode and may use Build runtime tools. */
+  buildMode?: boolean;
+  /** Build mode workspace path relative to the agent workspace root. */
+  buildWorkspaceRelativePath?: string;
   /** Runtime speed preference for OpenCode model routing */
   speedMode?: 'fast' | 'balanced' | 'deep';
   /** Per-session/task privacy mode */

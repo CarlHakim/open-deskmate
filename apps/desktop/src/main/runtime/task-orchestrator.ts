@@ -162,6 +162,9 @@ export interface DispatchTaskOptions {
     workingDirectory?: string;
     attachedFiles?: string[];
     privacyMode?: 'normal' | 'incognito';
+    requiresBrowser?: boolean;
+    buildMode?: boolean;
+    buildWorkspaceRelativePath?: string;
   };
   internal?: {
     suppressAgenticLoop?: boolean;
@@ -401,6 +404,9 @@ export async function resumeTaskSession(
       workingDirectory: options?.resume?.workingDirectory,
       attachedFiles: options?.resume?.attachedFiles,
       privacyMode: options?.resume?.privacyMode ?? existingTask?.privacyMode,
+      requiresBrowser: options?.resume?.requiresBrowser,
+      buildMode: options?.resume?.buildMode,
+      buildWorkspaceRelativePath: options?.resume?.buildWorkspaceRelativePath,
     },
   });
   if (!hookResult.ok) {

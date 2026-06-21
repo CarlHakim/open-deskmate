@@ -49,6 +49,7 @@ import type {
   BuildStartRequest,
   BuildWorkspaceFingerprint,
   BuildWorkspaceDiff,
+  BuildWorkspaceDiffFileContent,
   BuildWorkspaceBaselineCaptureResult,
   BuildWorkspaceBaselineResolveResult,
   BuildWorkspaceFileContent,
@@ -66,6 +67,7 @@ import type {
   GatewayRunRecord,
   GatewaySessionRecord,
   PermissionResponse,
+  ModelConfig,
   ProviderConfig,
   TaskConfig,
   AutomationDraftRequest,
@@ -92,6 +94,10 @@ import type {
   UsageProjectWorkItem,
   UsageProjectWorkItemInput,
   UsageProjectWorkItemUpdate,
+  ChecklistListPromptGenerateRequest,
+  ChecklistListPromptGenerateResponse,
+  WorkItemNotePromptGenerateRequest,
+  WorkItemNotePromptGenerateResponse,
   UsagePricingAutofillRequest,
   UsagePricingAutofillResult,
   UsagePricingSettings,
@@ -189,9 +195,15 @@ const accomplishAPI = {
     taskId?: string,
     attachedFiles?: string[],
     privacyMode?: 'normal' | 'incognito',
-    usageProjectId?: string | null
+    usageProjectId?: string | null,
+    options?: {
+      workingDirectory?: string;
+      requiresBrowser?: boolean;
+      buildMode?: boolean;
+      buildWorkspaceRelativePath?: string;
+    }
   ): Promise<unknown> =>
-    ipcRenderer.invoke('session:resume', sessionId, prompt, taskId, attachedFiles, privacyMode, usageProjectId),
+    ipcRenderer.invoke('session:resume', sessionId, prompt, taskId, attachedFiles, privacyMode, usageProjectId, options),
 
   // Proactive assistant (runs only when user clicks the button)
   planNextJobs: (agentId?: string): Promise<unknown> =>
@@ -660,7 +672,9 @@ const accomplishAPI = {
     ipcRenderer.invoke('build-mode:files:paste', payload),
   getBuildWorkspaceDiff: (payload: { agentId: string; relativePath?: string; maxChars?: number; baselineId?: string }): Promise<BuildWorkspaceDiff> =>
     ipcRenderer.invoke('build-mode:workspace:diff', payload),
-  getBuildGitSummary: (payload: { agentId: string; relativePath?: string }): Promise<BuildGitSummary> =>
+  getBuildWorkspaceDiffFileContent: (payload: { agentId: string; relativePath?: string; filePath: string; baselineId?: string }): Promise<BuildWorkspaceDiffFileContent> =>
+    ipcRenderer.invoke('build-mode:workspace:diff-file', payload),
+  getBuildGitSummary: (payload: { agentId: string; relativePath?: string; lightweight?: boolean }): Promise<BuildGitSummary> =>
     ipcRenderer.invoke('build-mode:git:summary', payload),
   getBuildGitMismatchSummary: (payload: { agentId: string; relativePath?: string }): Promise<BuildGitMismatchSummary> =>
     ipcRenderer.invoke('build-mode:git:mismatch:summary', payload),
@@ -801,6 +815,12 @@ const accomplishAPI = {
     ipcRenderer.invoke('model-providers:list'),
   listCustomModelProviders: (): Promise<ProviderConfig[]> =>
     ipcRenderer.invoke('model-providers:custom:list'),
+  listBuiltinProviderModelOverrides: (): Promise<Record<string, ModelConfig[]>> =>
+    ipcRenderer.invoke('model-providers:builtin-models:list'),
+  upsertBuiltinProviderModel: (payload: { providerId: string; model: ModelConfig }): Promise<ModelConfig> =>
+    ipcRenderer.invoke('model-providers:builtin-models:upsert', payload),
+  deleteBuiltinProviderModel: (payload: { providerId: string; modelId: string }): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('model-providers:builtin-models:delete', payload),
   upsertCustomModelProvider: (provider: ProviderConfig): Promise<ProviderConfig> =>
     ipcRenderer.invoke('model-providers:upsert', provider),
   deleteCustomModelProvider: (providerId: string): Promise<{ ok: boolean }> =>
@@ -873,6 +893,10 @@ const accomplishAPI = {
     draftContent?: string;
   }): Promise<unknown> =>
     ipcRenderer.invoke('user-skills:assistant:ask', payload),
+  generateChecklistListPrompt: (payload: ChecklistListPromptGenerateRequest): Promise<ChecklistListPromptGenerateResponse> =>
+    ipcRenderer.invoke('settings-assistant:list-prompt:generate', payload),
+  generateWorkItemNotePrompt: (payload: WorkItemNotePromptGenerateRequest): Promise<WorkItemNotePromptGenerateResponse> =>
+    ipcRenderer.invoke('settings-assistant:note-prompt:generate', payload),
 
   // Automations
   listSchedules: (): Promise<unknown[]> =>

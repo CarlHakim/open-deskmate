@@ -1,8 +1,24 @@
 import { DEFAULT_PROVIDERS, type ProviderConfig } from '@accomplish/shared';
 import { getOllamaConfig } from '../store/appSettings';
-import { listCustomModelProviders } from '../store/modelProviders';
+import { listBuiltinProviderModelOverrides, listCustomModelProviders } from '../store/modelProviders';
+
+function mergeBuiltinProviderModelOverrides(provider: ProviderConfig): ProviderConfig {
+  const overrides = listBuiltinProviderModelOverrides()[provider.id] ?? [];
+  if (overrides.length === 0) return provider;
+  const models = [...provider.models];
+  for (const model of overrides) {
+    const index = models.findIndex((entry) => entry.id === model.id || entry.fullId === model.fullId);
+    if (index >= 0) {
+      models[index] = model;
+    } else {
+      models.push(model);
+    }
+  }
+  return { ...provider, models };
+}
 
 export function listModelProviders(): ProviderConfig[] {
+  const builtinProviders = DEFAULT_PROVIDERS.map(mergeBuiltinProviderModelOverrides);
   const ollamaConfig = getOllamaConfig();
   const ollamaProvider: ProviderConfig[] = ollamaConfig?.enabled
     ? [{
@@ -21,7 +37,7 @@ export function listModelProviders(): ProviderConfig[] {
       }]
     : [];
   const custom = listCustomModelProviders();
-  return [...DEFAULT_PROVIDERS, ...ollamaProvider, ...custom];
+  return [...builtinProviders, ...ollamaProvider, ...custom];
 }
 
 export function getModelProvider(providerId: string): ProviderConfig | undefined {

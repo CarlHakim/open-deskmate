@@ -554,6 +554,12 @@ export class TaskManager {
     config: TaskConfig,
     callbacks: TaskCallbacks
   ): Promise<Task> {
+    const needsBrowser = detectTaskNeedsBrowser(config);
+    const runtimeConfig: TaskConfig = {
+      ...config,
+      requiresBrowser: needsBrowser,
+    };
+
     // Create a new adapter instance for this task
     const adapter = new OpenCodeAdapter(taskId);
 
@@ -617,7 +623,7 @@ export class TaskManager {
     const managedTask: ManagedTask = {
       taskId,
       adapter,
-      config,
+      config: runtimeConfig,
       callbacks,
       cleanup,
       createdAt: new Date(),
@@ -629,8 +635,8 @@ export class TaskManager {
     // Create task object immediately so UI can navigate
     const task: Task = {
       id: taskId,
-      prompt: config.prompt,
-      agentId: config.agentId,
+      prompt: runtimeConfig.prompt,
+      agentId: runtimeConfig.agentId,
       status: 'running',
       messages: [],
       createdAt: new Date().toISOString(),
@@ -643,7 +649,6 @@ export class TaskManager {
     (async () => {
       try {
         // Ensure browser stack only when the task actually needs web automation.
-        const needsBrowser = detectTaskNeedsBrowser(config);
         if (needsBrowser) {
           await ensureDevBrowserServer(callbacks.onProgress);
         } else {
@@ -651,7 +656,7 @@ export class TaskManager {
         }
 
         // Now start the agent
-        await adapter.startTask({ ...config, taskId });
+        await adapter.startTask({ ...runtimeConfig, taskId });
       } catch (error) {
         // Cleanup on failure and process queue
         callbacks.onError(error instanceof Error ? error : new Error(String(error)));

@@ -47,6 +47,8 @@ You can:
 - Add rectangles, ellipses, triangles, and text.
 - Move, resize, duplicate, select, and delete items.
 - Change stroke color, fill color, transparency, line style, and thickness.
+- Choose line thickness levels such as Thin, Regular, Thick, and Heavy.
+- Turn outline or fill on and off.
 - Undo and redo.
 - Zoom in and out.
 - Open fullscreen.
@@ -58,6 +60,8 @@ You can:
 - Attach the screenshot to the current Build prompt.
 - Export it to a chosen location.
 - Save it to a project work item as a document link.
+
+When exporting or saving to project work, choose the location or project/work item before saving. Screenshot files can then be attached to the current prompt or kept as project documents.
 
 ## Tips
 
@@ -77,3 +81,4 @@ You can:
 - [Build Mode](./build-mode.md)
 - [Workboard](./workboard.md)
 - [Saving Answers And Exports](./saving-answers-and-exports.md)
+- [Build Smoke Testing](./build-smoke-testing.md)

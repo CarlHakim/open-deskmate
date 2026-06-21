@@ -3,15 +3,18 @@ import type { ModelConfig, ProviderConfig } from '@accomplish/shared';
 
 interface ModelProvidersStoreSchema {
   customProviders: ProviderConfig[];
+  builtinProviderModels: Record<string, ModelConfig[]>;
 }
 
 const BUILTIN_PROVIDER_IDS = new Set(['anthropic', 'openai', 'google', 'xai', 'ollama', 'custom']);
+const BUILTIN_EXTENDABLE_PROVIDER_IDS = new Set(['anthropic', 'openai', 'google', 'xai']);
 const PROVIDER_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 const modelProvidersStore = new Store<ModelProvidersStoreSchema>({
   name: 'model-providers',
   defaults: {
     customProviders: [],
+    builtinProviderModels: {},
   },
 });
 
@@ -44,8 +47,32 @@ function normalizeModel(providerId: string, model: ModelConfig): ModelConfig {
   };
 }
 
+function assertExtendableBuiltinProviderId(providerId: string): void {
+  if (!BUILTIN_EXTENDABLE_PROVIDER_IDS.has(providerId)) {
+    throw new Error(`Provider id "${providerId}" does not support additional built-in models`);
+  }
+}
+
 export function listCustomModelProviders(): ProviderConfig[] {
   return modelProvidersStore.get('customProviders') ?? [];
+}
+
+export function listBuiltinProviderModelOverrides(): Record<string, ModelConfig[]> {
+  const stored = modelProvidersStore.get('builtinProviderModels') ?? {};
+  const normalized: Record<string, ModelConfig[]> = {};
+  for (const [providerIdRaw, modelsRaw] of Object.entries(stored)) {
+    const providerId = sanitizeProviderId(providerIdRaw);
+    if (!BUILTIN_EXTENDABLE_PROVIDER_IDS.has(providerId) || !Array.isArray(modelsRaw)) continue;
+    normalized[providerId] = modelsRaw
+      .map((model) => normalizeModel(providerId, model))
+      .filter((model) => model.id.length > 0 && model.fullId.length > 0);
+  }
+  return normalized;
+}
+
+export function listBuiltinProviderModels(providerId: string): ModelConfig[] {
+  const id = sanitizeProviderId(providerId);
+  return listBuiltinProviderModelOverrides()[id] ?? [];
 }
 
 export function getCustomModelProvider(providerId: string): ProviderConfig | undefined {
@@ -104,6 +131,50 @@ export function upsertCustomModelProvider(config: ProviderConfig): ProviderConfi
   }
   modelProvidersStore.set('customProviders', next);
   return next.find((provider) => provider.id === providerId) as ProviderConfig;
+}
+
+export function upsertBuiltinProviderModel(providerIdInput: string, model: ModelConfig): ModelConfig {
+  const providerId = sanitizeProviderId(providerIdInput);
+  assertExtendableBuiltinProviderId(providerId);
+
+  const normalized = normalizeModel(providerId, model);
+  if (!normalized.id || !normalized.fullId) {
+    throw new Error('Model id is required');
+  }
+
+  const existing = listBuiltinProviderModelOverrides();
+  const currentModels = [...(existing[providerId] ?? [])];
+  const index = currentModels.findIndex((entry) => entry.id === normalized.id || entry.fullId === normalized.fullId);
+  if (index >= 0) {
+    currentModels[index] = normalized;
+  } else {
+    currentModels.push(normalized);
+  }
+
+  const next = {
+    ...existing,
+    [providerId]: currentModels,
+  };
+  modelProvidersStore.set('builtinProviderModels', next);
+  return normalized;
+}
+
+export function deleteBuiltinProviderModel(providerIdInput: string, modelIdInput: string): boolean {
+  const providerId = sanitizeProviderId(providerIdInput);
+  assertExtendableBuiltinProviderId(providerId);
+  const modelId = sanitizeModelId(modelIdInput);
+  const existing = listBuiltinProviderModelOverrides();
+  const currentModels = existing[providerId] ?? [];
+  const nextModels = currentModels.filter((model) => model.id !== modelId && model.fullId !== modelId);
+  if (nextModels.length === currentModels.length) {
+    return false;
+  }
+
+  const next = { ...existing };
+  if (nextModels.length > 0) next[providerId] = nextModels;
+  else delete next[providerId];
+  modelProvidersStore.set('builtinProviderModels', next);
+  return true;
 }
 
 export function replaceCustomModelProviders(providers: ProviderConfig[]): ProviderConfig[] {

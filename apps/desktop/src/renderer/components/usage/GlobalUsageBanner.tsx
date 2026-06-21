@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { UsagePeriod, UsageSummary } from '@accomplish/shared';
 import { getAccomplish } from '../../lib/accomplish';
 import { cn } from '../../lib/utils';
+import { useTopBarControlsStore } from '../../stores/topBarControlsStore';
 import { UsageDetailsDialog } from './UsageDetailsDialog';
 
 function formatInt(n: number): string {
@@ -25,6 +26,7 @@ export function GlobalUsageBanner() {
   const [summary, setSummary] = useState<UsageSummary | null>(null);
   const [openDetails, setOpenDetails] = useState(false);
   const [loading, setLoading] = useState(false);
+  const topBarActions = useTopBarControlsStore((state) => state.actions);
 
   const hasPricing = Boolean(summary?.currency) && summary?.cost != null;
 
@@ -76,8 +78,8 @@ export function GlobalUsageBanner() {
         )}
         aria-label="Open usage estimate details"
       >
-        <div className="px-4 py-2 flex items-center gap-3">
-          <div className="flex items-center gap-1 rounded-lg bg-muted p-1">
+        <div className="flex min-h-[48px] items-center gap-3 px-4 py-1.5">
+          <div className="flex shrink-0 items-center gap-1 rounded-lg bg-muted p-1">
             {PERIODS.map((p) => (
               <button
                 key={p.id}
@@ -112,7 +114,18 @@ export function GlobalUsageBanner() {
             <div className="text-[11px] text-muted-foreground truncate">{subtitle}</div>
           </div>
 
-          <div className="text-xs text-muted-foreground">Details</div>
+          {!topBarActions ? (
+            <div className="hidden shrink-0 text-xs text-muted-foreground sm:block">Details</div>
+          ) : null}
+          {topBarActions ? (
+            <div
+              className="flex min-w-0 shrink items-center justify-end"
+              onClick={(event) => event.stopPropagation()}
+              onKeyDown={(event) => event.stopPropagation()}
+            >
+              {topBarActions}
+            </div>
+          ) : null}
         </div>
       </div>
 

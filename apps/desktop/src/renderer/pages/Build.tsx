@@ -1,7 +1,7 @@
 'use client';
 
 import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ComponentProps, MouseEvent as ReactMouseEvent, ReactElement, ReactNode } from 'react';
+import type { ComponentProps, MouseEvent as ReactMouseEvent, ReactElement, ReactNode, UIEvent as ReactUIEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
@@ -42,6 +42,7 @@ import type {
   BuildTaskSessionListItem,
   BuildWorkspaceFingerprint,
   BuildWorkspaceDiff,
+  BuildWorkspaceDiffFileContent,
   BuildQualityCheckRun,
   ContextWindowEstimateResponse,
   ProviderConfig,
@@ -127,10 +128,12 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { cn } from '@/lib/utils';
 import { useAgentStore } from '@/stores/agentStore';
 import { getAccomplish } from '@/lib/accomplish';
+import { registerPromptAttachmentTarget, registerPromptInsertionTarget } from '@/lib/prompt-insertion';
 import ModeSwitch from '@/components/layout/ModeSwitch';
 import SavedPromptsDialog from '@/components/layout/SavedPromptsDialog';
 import ContextWindowIndicator from '@/components/chat/ContextWindowIndicator';
 import ContextInspector from '@/components/chat/ContextInspector';
+import PromptNavigator, { createPromptPreview, type PromptNavigatorEntry } from '@/components/chat/PromptNavigator';
 import { UsageProjectSelector } from '@/components/usage/UsageProjectSelector';
 import BuildProjectWorkPopup from '@/components/build/BuildProjectWorkPopup';
 import { useSavedPromptsStore } from '@/stores/savedPromptsStore';
@@ -157,8 +160,11 @@ import {
   normalizeSelectedModel,
   SELECTED_MODEL_CHANGED_EVENT,
 } from '@/lib/selected-model-events';
+import { buildAiTestsInstruction } from '@/lib/build-ai-tests-instruction';
+import { useTopBarControls } from '@/stores/topBarControlsStore';
 
 const TERMINAL_TASK_STATES = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
+const BUILD_PROMPT_NAVIGATOR_STORAGE_KEY = 'opendeskmate:prompt-navigator:build-visible';
 
 const PROVIDER_LABELS: Record<string, string> = {
   anthropic: 'Anthropic',
@@ -188,6 +194,8 @@ const BUILD_TERMINAL_PANEL_MIN_WIDTH = 280;
 const BUILD_RUNTIME_LOGS_PANEL_DEFAULT_WIDTH = 340;
 const BUILD_RUNTIME_LOGS_PANEL_MIN_WIDTH = 260;
 const BUILD_DIFF_PANEL_MIN_WIDTH = 320;
+const BUILD_RUNNING_GIT_SUMMARY_REFRESH_INTERVAL_MS = 3000;
+const BUILD_RUNNING_GIT_DIFF_MAX_CHARS = 80_000;
 const BUILD_LOWER_PANEL_GRID_GAP = 12;
 const BUILD_RUNTIME_GET_WORKSPACE_SWITCH_ERROR = "Error invoking remote method 'build-mode:runtime:get': Error: Cannot switch workspace path while process is running. Stop runtime first.";
 const BUILD_HOVER_TOOLTIP_ATTR = 'data-build-hover-tooltip';
@@ -1548,6 +1556,20 @@ interface BuildChangedFileSummary {
   deletedLines: number;
 }
 
+type BuildDiffLineKind = 'context' | 'added' | 'deleted' | 'empty';
+
+interface BuildSideBySideDiffLine {
+  lineNumber?: number;
+  text: string;
+  kind: BuildDiffLineKind;
+}
+
+interface BuildSideBySideDiffRow {
+  id: string;
+  before: BuildSideBySideDiffLine;
+  after: BuildSideBySideDiffLine;
+}
+
 interface BuildChangedFilesSummaryResult {
   files: BuildChangedFileSummary[];
   totalAddedLines: number;
@@ -1672,6 +1694,534 @@ function computeLineDiffStats(beforeContent: string | undefined, afterContent: s
   };
 }
 
+function createDiffLine(
+  lineNumber: number | undefined,
+  text: string,
+  kind: BuildDiffLineKind
+): BuildSideBySideDiffLine {
+  return { lineNumber, text, kind };
+}
+
+function createEmptyDiffLine(): BuildSideBySideDiffLine {
+  return { text: '', kind: 'empty' };
+}
+
+function buildSideBySideDiffRowsFromContents(
+  beforeContent: string | undefined,
+  afterContent: string | undefined
+): BuildSideBySideDiffRow[] {
+  const beforeLines = splitContentLinesForDiff(beforeContent);
+  const afterLines = splitContentLinesForDiff(afterContent);
+  if (beforeLines.length === 0 && afterLines.length === 0) return [];
+
+  const fallbackRows = () => {
+    const rows: BuildSideBySideDiffRow[] = [];
+    const maxRows = Math.max(beforeLines.length, afterLines.length);
+    for (let index = 0; index < maxRows; index += 1) {
+      const beforeText = beforeLines[index];
+      const afterText = afterLines[index];
+      if (beforeText !== undefined && afterText !== undefined && beforeText === afterText) {
+        rows.push({
+          id: `same-${index}`,
+          before: createDiffLine(index + 1, beforeText, 'context'),
+          after: createDiffLine(index + 1, afterText, 'context'),
+        });
+      } else {
+        rows.push({
+          id: `changed-${index}`,
+          before: beforeText !== undefined ? createDiffLine(index + 1, beforeText, 'deleted') : createEmptyDiffLine(),
+          after: afterText !== undefined ? createDiffLine(index + 1, afterText, 'added') : createEmptyDiffLine(),
+        });
+      }
+    }
+    return rows;
+  };
+
+  const comparisonSize = beforeLines.length * afterLines.length;
+  if (comparisonSize > 250_000) {
+    return fallbackRows();
+  }
+
+  const dp = Array.from({ length: beforeLines.length + 1 }, () => new Array<number>(afterLines.length + 1).fill(0));
+  for (let beforeIndex = beforeLines.length - 1; beforeIndex >= 0; beforeIndex -= 1) {
+    for (let afterIndex = afterLines.length - 1; afterIndex >= 0; afterIndex -= 1) {
+      dp[beforeIndex][afterIndex] = beforeLines[beforeIndex] === afterLines[afterIndex]
+        ? dp[beforeIndex + 1][afterIndex + 1] + 1
+        : Math.max(dp[beforeIndex + 1][afterIndex], dp[beforeIndex][afterIndex + 1]);
+    }
+  }
+
+  type DiffOperation =
+    | { kind: 'equal'; beforeLineNumber: number; afterLineNumber: number; text: string }
+    | { kind: 'delete'; beforeLineNumber: number; text: string }
+    | { kind: 'insert'; afterLineNumber: number; text: string };
+
+  const operations: DiffOperation[] = [];
+  let beforeIndex = 0;
+  let afterIndex = 0;
+  while (beforeIndex < beforeLines.length && afterIndex < afterLines.length) {
+    if (beforeLines[beforeIndex] === afterLines[afterIndex]) {
+      operations.push({
+        kind: 'equal',
+        beforeLineNumber: beforeIndex + 1,
+        afterLineNumber: afterIndex + 1,
+        text: beforeLines[beforeIndex],
+      });
+      beforeIndex += 1;
+      afterIndex += 1;
+    } else if (dp[beforeIndex + 1][afterIndex] >= dp[beforeIndex][afterIndex + 1]) {
+      operations.push({ kind: 'delete', beforeLineNumber: beforeIndex + 1, text: beforeLines[beforeIndex] });
+      beforeIndex += 1;
+    } else {
+      operations.push({ kind: 'insert', afterLineNumber: afterIndex + 1, text: afterLines[afterIndex] });
+      afterIndex += 1;
+    }
+  }
+  while (beforeIndex < beforeLines.length) {
+    operations.push({ kind: 'delete', beforeLineNumber: beforeIndex + 1, text: beforeLines[beforeIndex] });
+    beforeIndex += 1;
+  }
+  while (afterIndex < afterLines.length) {
+    operations.push({ kind: 'insert', afterLineNumber: afterIndex + 1, text: afterLines[afterIndex] });
+    afterIndex += 1;
+  }
+
+  const rows: BuildSideBySideDiffRow[] = [];
+  let operationIndex = 0;
+  while (operationIndex < operations.length) {
+    const operation = operations[operationIndex];
+    if (operation.kind === 'equal') {
+      rows.push({
+        id: `equal-${operation.beforeLineNumber}-${operation.afterLineNumber}`,
+        before: createDiffLine(operation.beforeLineNumber, operation.text, 'context'),
+        after: createDiffLine(operation.afterLineNumber, operation.text, 'context'),
+      });
+      operationIndex += 1;
+      continue;
+    }
+
+    const deletions: Extract<DiffOperation, { kind: 'delete' }>[] = [];
+    const insertions: Extract<DiffOperation, { kind: 'insert' }>[] = [];
+    while (operationIndex < operations.length && operations[operationIndex].kind !== 'equal') {
+      const next = operations[operationIndex];
+      if (next.kind === 'delete') deletions.push(next);
+      if (next.kind === 'insert') insertions.push(next);
+      operationIndex += 1;
+    }
+
+    const maxChangedRows = Math.max(deletions.length, insertions.length);
+    for (let index = 0; index < maxChangedRows; index += 1) {
+      const deletedLine = deletions[index];
+      const insertedLine = insertions[index];
+      rows.push({
+        id: `changed-${deletedLine?.beforeLineNumber ?? 'x'}-${insertedLine?.afterLineNumber ?? 'x'}-${index}`,
+        before: deletedLine ? createDiffLine(deletedLine.beforeLineNumber, deletedLine.text, 'deleted') : createEmptyDiffLine(),
+        after: insertedLine ? createDiffLine(insertedLine.afterLineNumber, insertedLine.text, 'added') : createEmptyDiffLine(),
+      });
+    }
+  }
+
+  return rows;
+}
+
+function extractPatchSectionForPath(patch: string | undefined, relativePath?: string | null): string {
+  const normalizedTarget = normalizeDiffPathForSummary(relativePath || '');
+  if (!patch || !normalizedTarget) return '';
+
+  const lines = patch.split(/\r?\n/);
+  const sections: string[][] = [];
+  let currentSection: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith('diff --git ') || line.startsWith('diff --synthetic ')) {
+      if (currentSection.length > 0) sections.push(currentSection);
+      currentSection = [line];
+    } else if (currentSection.length > 0) {
+      currentSection.push(line);
+    }
+  }
+  if (currentSection.length > 0) sections.push(currentSection);
+
+  const section = sections.find((candidate) => {
+    const headerPath = extractDiffHeaderPath(candidate[0]);
+    if (headerPath === normalizedTarget) return true;
+    return candidate.some((line) => {
+      if (!line.startsWith('+++ ') && !line.startsWith('--- ')) return false;
+      return normalizeDiffPathForSummary(line.slice(4)) === normalizedTarget;
+    });
+  });
+
+  return section?.join('\n') || '';
+}
+
+function buildSideBySideDiffRowsFromPatchSection(patchSection: string): BuildSideBySideDiffRow[] {
+  if (!patchSection.trim()) return [];
+  const rows: BuildSideBySideDiffRow[] = [];
+  let beforeLineNumber = 0;
+  let afterLineNumber = 0;
+
+  for (const line of patchSection.split(/\r?\n/)) {
+    const hunkMatch = /^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/.exec(line);
+    if (hunkMatch) {
+      beforeLineNumber = Number(hunkMatch[1]);
+      afterLineNumber = Number(hunkMatch[2]);
+      rows.push({
+        id: `hunk-${beforeLineNumber}-${afterLineNumber}`,
+        before: createDiffLine(undefined, line, 'context'),
+        after: createDiffLine(undefined, line, 'context'),
+      });
+      continue;
+    }
+
+    if (!line || line.startsWith('diff --') || line.startsWith('index ') || line.startsWith('--- ') || line.startsWith('+++ ')) {
+      continue;
+    }
+    if (line.startsWith('\\ No newline')) {
+      continue;
+    }
+
+    if (line.startsWith('-')) {
+      rows.push({
+        id: `delete-${beforeLineNumber}-${rows.length}`,
+        before: createDiffLine(beforeLineNumber, line.slice(1), 'deleted'),
+        after: createEmptyDiffLine(),
+      });
+      beforeLineNumber += 1;
+    } else if (line.startsWith('+')) {
+      rows.push({
+        id: `insert-${afterLineNumber}-${rows.length}`,
+        before: createEmptyDiffLine(),
+        after: createDiffLine(afterLineNumber, line.slice(1), 'added'),
+      });
+      afterLineNumber += 1;
+    } else {
+      const text = line.startsWith(' ') ? line.slice(1) : line;
+      rows.push({
+        id: `context-${beforeLineNumber}-${afterLineNumber}-${rows.length}`,
+        before: createDiffLine(beforeLineNumber, text, 'context'),
+        after: createDiffLine(afterLineNumber, text, 'context'),
+      });
+      beforeLineNumber += 1;
+      afterLineNumber += 1;
+    }
+  }
+
+  return rows;
+}
+
+interface BuildSideBySideDiffViewerProps {
+  filePath?: string | null;
+  beforeContent?: string;
+  afterContent?: string;
+  beforeUnavailableReason?: string;
+  afterUnavailableReason?: string;
+  beforeTruncated?: boolean;
+  afterTruncated?: boolean;
+  patchSection?: string;
+  fullscreen?: boolean;
+  loading?: boolean;
+  error?: string | null;
+}
+
+function getDiffLineClasses(line: BuildSideBySideDiffLine): string {
+  if (line.kind === 'added') return 'border-l-emerald-500/70 bg-emerald-500/10';
+  if (line.kind === 'deleted') return 'border-l-red-500/70 bg-red-500/10';
+  if (line.kind === 'empty') return 'border-l-transparent bg-muted/20 text-muted-foreground/50';
+  return 'border-l-transparent hover:bg-muted/20';
+}
+
+function renderDiffLine(line: BuildSideBySideDiffLine, key: string): ReactElement {
+  return (
+    <div
+      key={key}
+      className={cn(
+        'grid min-w-max grid-cols-[3.5rem_minmax(max-content,1fr)] border-l-2 text-[11px] leading-5',
+        getDiffLineClasses(line)
+      )}
+    >
+      <span className="select-none border-r border-border/40 bg-background/35 px-2 text-right font-mono text-[10px] text-muted-foreground/70">
+        {line.lineNumber ?? ''}
+      </span>
+      <code className="px-2 font-mono whitespace-pre text-foreground">
+        {line.text || ' '}
+      </code>
+    </div>
+  );
+}
+
+function BuildSideBySideDiffViewer({
+  filePath,
+  beforeContent,
+  afterContent,
+  beforeUnavailableReason,
+  afterUnavailableReason,
+  beforeTruncated,
+  afterTruncated,
+  patchSection,
+  fullscreen = false,
+  loading = false,
+  error,
+}: BuildSideBySideDiffViewerProps): ReactElement {
+  const beforePaneRef = useRef<HTMLDivElement | null>(null);
+  const afterPaneRef = useRef<HTMLDivElement | null>(null);
+  const minimapRef = useRef<HTMLDivElement | null>(null);
+  const syncingScrollRef = useRef(false);
+  const [scrollLocked, setScrollLocked] = useState(true);
+  const [viewport, setViewport] = useState({ top: 0, height: 100 });
+  const hasFullContent = beforeContent !== undefined || afterContent !== undefined;
+  const rows = useMemo(
+    () => (hasFullContent
+      ? buildSideBySideDiffRowsFromContents(beforeContent, afterContent)
+      : buildSideBySideDiffRowsFromPatchSection(patchSection || '')),
+    [afterContent, beforeContent, hasFullContent, patchSection]
+  );
+  const addedLines = useMemo(() => rows.filter((row) => row.after.kind === 'added').length, [rows]);
+  const deletedLines = useMemo(() => rows.filter((row) => row.before.kind === 'deleted').length, [rows]);
+  const minimapMarkers = useMemo(() => {
+    if (rows.length === 0) return [];
+    const binCount = Math.min(220, Math.max(1, rows.length));
+    const bins = new Map<number, { added: boolean; deleted: boolean }>();
+    rows.forEach((row, index) => {
+      const added = row.after.kind === 'added';
+      const deleted = row.before.kind === 'deleted';
+      if (!added && !deleted) return;
+      const bin = Math.min(binCount - 1, Math.floor((index / rows.length) * binCount));
+      const current = bins.get(bin) || { added: false, deleted: false };
+      bins.set(bin, { added: current.added || added, deleted: current.deleted || deleted });
+    });
+    return Array.from(bins.entries()).map(([bin, marker]) => ({
+      bin,
+      top: `${(bin / binCount) * 100}%`,
+      height: `${Math.max(0.8, 100 / binCount)}%`,
+      kind: marker.added && marker.deleted ? 'mixed' : marker.added ? 'added' : 'deleted',
+    }));
+  }, [rows]);
+
+  const updateViewportFromElement = useCallback((element: HTMLDivElement) => {
+    const scrollHeight = Math.max(1, element.scrollHeight);
+    const clientHeight = Math.max(1, element.clientHeight);
+    if (scrollHeight <= clientHeight) {
+      setViewport((current) => (current.top === 0 && current.height === 100 ? current : { top: 0, height: 100 }));
+      return;
+    }
+    const height = Math.max(7, Math.min(100, (clientHeight / scrollHeight) * 100));
+    const scrollable = Math.max(1, scrollHeight - clientHeight);
+    const top = Math.min(100 - height, (element.scrollTop / scrollable) * (100 - height));
+    setViewport((current) => (
+      Math.abs(current.top - top) < 0.3 && Math.abs(current.height - height) < 0.3
+        ? current
+        : { top, height }
+    ));
+  }, []);
+
+  useEffect(() => {
+    const pane = afterPaneRef.current || beforePaneRef.current;
+    if (pane) updateViewportFromElement(pane);
+  }, [rows.length, updateViewportFromElement]);
+
+  const handlePaneScroll = useCallback((event: ReactUIEvent<HTMLDivElement>, side: 'before' | 'after') => {
+    const source = event.currentTarget;
+    updateViewportFromElement(source);
+    if (!scrollLocked || syncingScrollRef.current) return;
+    const target = side === 'before' ? afterPaneRef.current : beforePaneRef.current;
+    if (!target) return;
+    syncingScrollRef.current = true;
+    target.scrollTop = source.scrollTop;
+    window.requestAnimationFrame(() => {
+      syncingScrollRef.current = false;
+    });
+  }, [scrollLocked, updateViewportFromElement]);
+
+  const scrollToRatio = useCallback((ratio: number) => {
+    const clampedRatio = Math.max(0, Math.min(1, ratio));
+    for (const pane of [beforePaneRef.current, afterPaneRef.current]) {
+      if (!pane) continue;
+      pane.scrollTop = clampedRatio * Math.max(0, pane.scrollHeight - pane.clientHeight);
+      updateViewportFromElement(pane);
+    }
+  }, [updateViewportFromElement]);
+
+  const handleMinimapClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    const rect = minimapRef.current?.getBoundingClientRect();
+    if (!rect || rect.height <= 0) return;
+    scrollToRatio((event.clientY - rect.top) / rect.height);
+  }, [scrollToRatio]);
+
+  const renderPane = (side: 'before' | 'after') => {
+    const unavailableReason = side === 'before' ? beforeUnavailableReason : afterUnavailableReason;
+    const content = side === 'before' ? beforeContent : afterContent;
+    const ref = side === 'before' ? beforePaneRef : afterPaneRef;
+    return (
+      <div className="min-w-0 min-h-0 flex flex-col">
+        <div className="flex h-7 shrink-0 items-center justify-between border-b border-border/50 px-2 text-[10px] font-medium uppercase text-muted-foreground">
+          <span>{side === 'before' ? 'Before' : 'After'}</span>
+          {content === undefined && unavailableReason ? (
+            <span className="truncate normal-case" title={unavailableReason}>{unavailableReason}</span>
+          ) : null}
+        </div>
+        <div
+          ref={ref}
+          className={cn(
+            'min-h-0 flex-1 overflow-auto bg-background/55',
+            fullscreen ? 'max-h-none' : 'max-h-[58vh]'
+          )}
+          onScroll={(event) => handlePaneScroll(event, side)}
+        >
+          <div className="min-w-full py-1">
+            {rows.length > 0 ? rows.map((row) => renderDiffLine(side === 'before' ? row.before : row.after, `${side}-${row.id}`)) : (
+              <div className="p-3 text-[11px] text-muted-foreground">
+                {unavailableReason || 'No file content available for this side.'}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+  const truncatedPreviewStillVisible = Boolean(
+    (beforeTruncated && beforeContent === undefined)
+    || (afterTruncated && afterContent === undefined)
+  );
+
+  return (
+    <div className={cn('min-h-0 rounded-md border border-border/60 bg-muted/10', fullscreen ? 'flex h-full flex-col' : 'flex flex-col')}>
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border/60 px-2 py-1.5">
+        <div className="min-w-0">
+          <div className="truncate text-[11px] font-medium text-foreground" title={filePath || undefined}>
+            {filePath || 'Select a changed file'}
+          </div>
+          <div className="flex flex-wrap gap-2 text-[10px] text-muted-foreground">
+            <span>{hasFullContent ? 'Full file view' : 'Patch view'}</span>
+            <span><span className="text-emerald-500">+{addedLines}</span> <span className="text-red-500">-{deletedLines}</span></span>
+            <span
+              className="inline-flex items-center gap-1.5"
+              title="Mini preview colors: green means added lines, red means deleted lines, orange means additions and deletions in the same area, and blank means unchanged lines."
+            >
+              <span className="h-2 w-2 rounded-sm bg-emerald-500" />
+              <span className="h-2 w-2 rounded-sm bg-red-500" />
+              <span className="h-2 w-2 rounded-sm bg-amber-500" />
+              <span>mini preview</span>
+            </span>
+            {truncatedPreviewStillVisible ? (
+              <span
+                className="text-amber-500"
+                title="The full file could not be loaded for at least one side, so this side is still using a shortened preview."
+              >
+                Large file preview truncated
+              </span>
+            ) : null}
+            {error ? <span className="text-destructive">{error}</span> : null}
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5">
+          {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" /> : null}
+          <Button
+            type="button"
+            size="sm"
+            variant={scrollLocked ? 'secondary' : 'outline'}
+            className="h-7 gap-1 px-2 text-[10px]"
+            onClick={() => setScrollLocked((current) => !current)}
+            title={scrollLocked ? 'Before and after panes scroll together.' : 'Before and after panes scroll independently.'}
+          >
+            {scrollLocked ? <Lock className="h-3 w-3" /> : <ChevronsUpDown className="h-3 w-3" />}
+            {scrollLocked ? 'Locked' : 'Unlocked'}
+          </Button>
+        </div>
+      </div>
+      <div className={cn('grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_minmax(0,1fr)_48px]', fullscreen ? 'h-full' : '')}>
+        {renderPane('before')}
+        {renderPane('after')}
+        <div
+          ref={minimapRef}
+          className="relative cursor-pointer border-l border-border/60 bg-background/50"
+          onClick={handleMinimapClick}
+          title="Mini preview. Green means added lines, red means deleted lines, orange means additions and deletions in the same area, and blank means unchanged lines. Click to jump through the selected file."
+        >
+          {minimapMarkers.map((marker) => (
+            <div
+              key={`${marker.bin}-${marker.kind}`}
+              className={cn(
+                'absolute left-2 right-2 rounded-sm',
+                marker.kind === 'added'
+                  ? 'bg-emerald-500'
+                  : marker.kind === 'deleted'
+                    ? 'bg-red-500'
+                    : 'bg-amber-500'
+              )}
+              style={{ top: marker.top, height: marker.height }}
+            />
+          ))}
+          <div
+            className="absolute left-0 right-0 rounded-sm border border-primary/80 bg-primary/15"
+            style={{ top: `${viewport.top}%`, height: `${viewport.height}%` }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function getUnifiedDiffLineClasses(line: string): string {
+  if (line.startsWith('+') && !line.startsWith('+++')) {
+    return 'border-l-emerald-500/70 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300';
+  }
+  if (line.startsWith('-') && !line.startsWith('---')) {
+    return 'border-l-red-500/70 bg-red-500/10 text-red-700 dark:text-red-300';
+  }
+  if (line.startsWith('@@')) {
+    return 'border-l-primary/60 bg-primary/10 text-primary';
+  }
+  if (line.startsWith('diff --')) {
+    return 'border-l-transparent bg-muted/20 font-semibold text-foreground';
+  }
+  if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('index ')) {
+    return 'border-l-transparent text-muted-foreground';
+  }
+  return 'border-l-transparent text-foreground';
+}
+
+function BuildUnifiedDiffViewer({
+  patch,
+  fullscreen = false,
+  compact = false,
+}: {
+  patch?: string;
+  fullscreen?: boolean;
+  compact?: boolean;
+}): ReactElement {
+  const lines = useMemo(() => (patch || '').split(/\r?\n/), [patch]);
+  if (!patch?.trim()) {
+    return (
+      <div className={cn(
+        'overflow-auto rounded-md border border-border/60 bg-muted/30 p-2 text-[11px] leading-relaxed text-muted-foreground',
+        fullscreen ? 'h-full max-h-none' : compact ? 'max-h-36' : 'max-h-[60vh]'
+      )}>
+        No patch available.
+      </div>
+    );
+  }
+
+  return (
+    <div className={cn(
+      'overflow-auto rounded-md border border-border/60 bg-muted/30 font-mono text-[11px] leading-relaxed',
+      fullscreen ? 'h-full max-h-none' : compact ? 'max-h-36' : 'max-h-[60vh]'
+    )}>
+      <div className="min-w-max py-1">
+        {lines.map((line, index) => (
+          <div
+            key={`unified-diff-line-${index}`}
+            className={cn('grid grid-cols-[3.5rem_minmax(max-content,1fr)] border-l-2', getUnifiedDiffLineClasses(line))}
+          >
+            <span className="select-none border-r border-border/40 bg-background/35 px-2 text-right text-[10px] text-muted-foreground/70">
+              {index + 1}
+            </span>
+            <code className="px-2 whitespace-pre">{line || ' '}</code>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function extractPatchLineStats(patch: string | undefined): Map<string, { addedLines: number; deletedLines: number }> {
   const stats = new Map<string, { addedLines: number; deletedLines: number }>();
   let currentPath = '';
@@ -1721,12 +2271,38 @@ function extractPatchLineStats(patch: string | undefined): Map<string, { addedLi
   return stats;
 }
 
-function buildChangedFilesSummary(diff: BuildWorkspaceDiff | null): {
+function mapGitStatusToBuildChangeType(
+  status?: BuildGitSummary['files'][number]['status']
+): BuildChangedFileSummary['changeType'] {
+  if (status === 'added' || status === 'untracked' || status === 'copied') return 'added';
+  if (status === 'deleted') return 'deleted';
+  return 'modified';
+}
+
+function buildChangedFilesSummaryFromGitSummary(gitSummary: BuildGitSummary | null | undefined): BuildChangedFilesSummaryResult {
+  if (!gitSummary?.files?.length) {
+    return { files: [], totalAddedLines: 0, totalDeletedLines: 0 };
+  }
+  const files = gitSummary.files.map((file) => ({
+    relativePath: file.relativePath,
+    changeType: mapGitStatusToBuildChangeType(file.status),
+    addedLines: file.addedLines,
+    deletedLines: file.deletedLines,
+  }));
+  return {
+    files,
+    totalAddedLines: gitSummary.totalAddedLines,
+    totalDeletedLines: gitSummary.totalDeletedLines,
+  };
+}
+
+function buildChangedFilesSummary(diff: BuildWorkspaceDiff | null, gitSummary?: BuildGitSummary | null): {
   files: BuildChangedFileSummary[];
   totalAddedLines: number;
   totalDeletedLines: number;
 } {
-  if (!diff) return { files: [], totalAddedLines: 0, totalDeletedLines: 0 };
+  const gitChangedSummary = buildChangedFilesSummaryFromGitSummary(gitSummary);
+  if (!diff) return gitChangedSummary;
 
   const patchStats = extractPatchLineStats(diff.patch);
   const filesFromDiff = diff.files || [];
@@ -1764,10 +2340,29 @@ function buildChangedFilesSummary(diff: BuildWorkspaceDiff | null): {
       deletedLines: stats.deletedLines,
     }));
 
-  return {
+  const diffChangedSummary = {
     files,
     totalAddedLines: files.reduce((sum, file) => sum + file.addedLines, 0),
     totalDeletedLines: files.reduce((sum, file) => sum + file.deletedLines, 0),
+  };
+
+  if (gitChangedSummary.files.length === 0) return diffChangedSummary;
+  if (diff.mode === 'git' || diffChangedSummary.files.length === 0 || gitChangedSummary.files.length > diffChangedSummary.files.length) {
+    return gitChangedSummary;
+  }
+
+  const gitStatsByPath = new Map(gitChangedSummary.files.map((file) => [normalizeDiffPathForSummary(file.relativePath), file]));
+  const filesWithGitLineStats = diffChangedSummary.files.map((file) => {
+    const gitFile = gitStatsByPath.get(normalizeDiffPathForSummary(file.relativePath));
+    return gitFile
+      ? { ...file, addedLines: gitFile.addedLines, deletedLines: gitFile.deletedLines }
+      : file;
+  });
+
+  return {
+    files: filesWithGitLineStats,
+    totalAddedLines: filesWithGitLineStats.reduce((sum, file) => sum + file.addedLines, 0),
+    totalDeletedLines: filesWithGitLineStats.reduce((sum, file) => sum + file.deletedLines, 0),
   };
 }
 
@@ -1829,9 +2424,10 @@ function appendBuildChangedFilesSummaryMessage(
   params: {
     runId: string;
     diff: BuildWorkspaceDiff | null;
+    gitSummary?: BuildGitSummary | null;
   }
 ): TaskMessage[] {
-  const summary = buildChangedFilesSummary(params.diff);
+  const summary = buildChangedFilesSummary(params.diff, params.gitSummary);
   if (summary.files.length === 0) return messages;
   if (messages.some((message) => parseBuildChangedFilesSummaryMessage(message)?.runId === params.runId)) {
     return messages;
@@ -2299,6 +2895,19 @@ function formatBuildAssistantPanelMessageType(message: TaskMessage): string {
   return message.type;
 }
 
+function extractBuildPromptNavigatorText(message: TaskMessage): string {
+  const content = String(message.content || '').trim();
+  if (!content) return '';
+  if (!isBuildModeGoalPanelMessage(message)) return content;
+
+  const lines = content.split(/\r?\n/);
+  const workspaceLineIndex = lines.findIndex((line, index) => (
+    index > 0 && line.trim().startsWith('Workspace:')
+  ));
+  const goalLines = lines.slice(1, workspaceLineIndex > 1 ? workspaceLineIndex : undefined);
+  return goalLines.join('\n').trim() || lines[1]?.trim() || content;
+}
+
 function getCollapsedToolMessageContent(content: string): { preview: string; truncated: boolean } {
   const normalized = String(content || '').trim();
   if (!normalized) {
@@ -2445,6 +3054,10 @@ function collectAssistantMessages(messages: TaskMessage[]): TaskMessage[] {
   ));
 }
 
+function hasVisibleBuildUserPromptMessage(messages: TaskMessage[]): boolean {
+  return messages.some((message) => message.type === 'user' && !isBuildModeGoalPanelMessage(message));
+}
+
 function isLocalBuildGoalMessage(message: TaskMessage): boolean {
   return message.type === 'user' && message.id.startsWith('local-build-goal-');
 }
@@ -2468,6 +3081,48 @@ function toTimestampMs(value: string | undefined): number {
   if (!value) return 0;
   const parsed = new Date(value).getTime();
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function areTaskAttachmentsEquivalent(a: TaskMessage['attachments'], b: TaskMessage['attachments']): boolean {
+  if (a === b) return true;
+  if (!a || !b) return !a && !b;
+  if (a.length !== b.length) return false;
+  return a.every((attachment, index) => {
+    const other = b[index];
+    return attachment.type === other?.type
+      && attachment.data === other?.data
+      && attachment.label === other?.label;
+  });
+}
+
+function areTaskMessagesRenderEquivalent(a: TaskMessage, b: TaskMessage): boolean {
+  return a.id === b.id
+    && a.type === b.type
+    && a.content === b.content
+    && a.toolName === b.toolName
+    && a.timestamp === b.timestamp
+    && areTaskAttachmentsEquivalent(a.attachments, b.attachments);
+}
+
+function preserveEquivalentTaskMessageReferences(existing: TaskMessage[], incoming: TaskMessage[]): TaskMessage[] {
+  if (incoming.length === 0) return incoming;
+  const existingById = new Map(existing.map((message) => [message.id, message]));
+  let changed = incoming.length !== existing.length;
+  const next = incoming.map((message, index) => {
+    const existingMessage = existingById.get(message.id);
+    if (existingMessage && areTaskMessagesRenderEquivalent(existingMessage, message)) {
+      if (existing[index] !== existingMessage) changed = true;
+      return existingMessage;
+    }
+    changed = true;
+    return message;
+  });
+
+  if (!changed && existing.every((message, index) => message === next[index])) {
+    return existing;
+  }
+
+  return next;
 }
 
 function mergeIncomingWithLocalBuildGoalMessages(existing: TaskMessage[], incoming: TaskMessage[]): TaskMessage[] {
@@ -2508,7 +3163,7 @@ function mergeIncomingWithLocalBuildGoalMessages(existing: TaskMessage[], incomi
     if (delta !== 0) return delta;
     return a.id.localeCompare(b.id);
   });
-  return deduped;
+  return preserveEquivalentTaskMessageReferences(existing, deduped);
 }
 
 function createDefaultEnvProfile(): BuildEnvProfile {
@@ -3298,14 +3953,17 @@ type BuildPromptComposerProps = {
   agentId?: string | null;
   workspace?: string | null;
   usageProjectId?: string | null;
+  askAiToRunTests: boolean;
   showWorkingFolder?: boolean;
   showProposedDiffPopupButton?: boolean;
   promptsCount: number;
   onDraftChange?: (value: string) => void;
   onUsageProjectChange?: (projectId: string | null) => void;
+  onAskAiToRunTestsChange: (enabled: boolean) => void;
   onRun: (value: string) => void;
   onStop: () => void;
   onAttachFiles: () => void;
+  onAddAttachedFiles: (files: string[]) => void;
   onRemoveFile: (filePath: string) => void;
   onOpenSavedPrompts: (mode: 'select' | 'manage') => void;
   onSaveCurrentPrompt: (value: string) => void;
@@ -3950,14 +4608,17 @@ const BuildPromptComposer = memo(function BuildPromptComposer({
   agentId,
   workspace,
   usageProjectId,
+  askAiToRunTests,
   showWorkingFolder = false,
   showProposedDiffPopupButton = false,
   promptsCount,
   onDraftChange,
   onUsageProjectChange,
+  onAskAiToRunTestsChange,
   onRun,
   onStop,
   onAttachFiles,
+  onAddAttachedFiles,
   onRemoveFile,
   onOpenSavedPrompts,
   onSaveCurrentPrompt,
@@ -4013,6 +4674,22 @@ const BuildPromptComposer = memo(function BuildPromptComposer({
       textareaRef.current.setSelectionRange(cursor, cursor);
     }
   }, [onDraftChange]);
+
+  useEffect(() => registerPromptInsertionTarget(
+    { mode: 'build', label: 'Build prompt' },
+    (text) => {
+      const insertion = text.trim();
+      if (!insertion) return;
+      resetPromptHistoryNavigation();
+      const current = (textareaRef.current?.value ?? draftRef.current).trim();
+      setDraftValue(current ? `${current}\n\n${insertion}` : insertion);
+    }
+  ), [resetPromptHistoryNavigation, setDraftValue]);
+
+  useEffect(() => registerPromptAttachmentTarget(
+    { mode: 'build', label: 'Build prompt' },
+    onAddAttachedFiles
+  ), [onAddAttachedFiles]);
 
   const recallPromptHistory = useCallback((direction: 'older' | 'newer') => {
     const entries = promptHistoryEntriesRef.current;
@@ -4223,7 +4900,23 @@ const BuildPromptComposer = memo(function BuildPromptComposer({
           ))}
         </div>
       ) : null}
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <BuildPresetFieldHelp
+          helpTitle="Ask AI to run tests"
+          helpDescription="When on, Build mode adds one instruction to the AI prompt asking it to add or update tests for code changes, run relevant checks, and fix issues until they pass. When off, no extra testing instruction is added."
+        >
+          <label className="inline-flex h-9 items-center gap-2 rounded-md border border-border/70 bg-background px-2 text-xs font-medium text-foreground">
+            <input
+              type="checkbox"
+              checked={askAiToRunTests}
+              onChange={(event) => onAskAiToRunTestsChange(event.target.checked)}
+              disabled={aiBusy}
+              aria-label="Ask AI to run tests"
+            />
+            <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-primary" />
+            <span>Ask AI to run tests</span>
+          </label>
+        </BuildPresetFieldHelp>
         <Button
           onClick={handleRun}
           disabled={aiBusy || !canRun}
@@ -4290,6 +4983,21 @@ const BuildPromptComposer = memo(function BuildPromptComposer({
             <FolderOpen className="h-4 w-4" />
           </Button>
         </BuildTooltip>
+        <UsageProjectSelector
+          mode="build"
+          value={usageProjectId ?? null}
+          onChange={onUsageProjectChange}
+          compact
+          disabled={aiBusy}
+          className="shrink-0"
+        />
+        <ContextInspector
+          stats={contextStats}
+          agentId={agentId}
+          workspace={workspace}
+          attachedFiles={attachedFiles}
+          usageProjectId={usageProjectId}
+        />
         {showWorkingFolder && workingFolderLabel ? (
           <div
             className="ml-1 flex min-w-0 max-w-[min(520px,45vw)] items-center gap-1.5 rounded-md border border-border/60 bg-muted/20 px-2 py-1 text-xs text-muted-foreground"
@@ -4330,14 +5038,6 @@ const BuildPromptComposer = memo(function BuildPromptComposer({
       </div>
       <div className="flex flex-wrap items-start gap-2">
         <ContextWindowIndicator stats={contextStats} className="mb-0" />
-        <ContextInspector
-          stats={contextStats}
-          agentId={agentId}
-          workspace={workspace}
-          attachedFiles={attachedFiles}
-          usageProjectId={usageProjectId}
-        />
-        <UsageProjectSelector mode="build" value={usageProjectId ?? null} onChange={onUsageProjectChange} compact disabled={aiBusy} />
         {autoRepairBusy ? <span className="pt-1 text-xs text-muted-foreground">Auto-repair queued…</span> : null}
         {savedPromptFlash ? <span className="pt-1 text-xs text-emerald-600 dark:text-emerald-300">Saved prompt</span> : null}
       </div>
@@ -4352,17 +5052,23 @@ const BuildPromptComposer = memo(function BuildPromptComposer({
   && prev.contextStats === next.contextStats
   && prev.agentId === next.agentId
   && prev.workspace === next.workspace
+  && prev.usageProjectId === next.usageProjectId
+  && prev.askAiToRunTests === next.askAiToRunTests
   && prev.showWorkingFolder === next.showWorkingFolder
   && prev.showProposedDiffPopupButton === next.showProposedDiffPopupButton
   && prev.promptsCount === next.promptsCount
   && prev.onRun === next.onRun
   && prev.onStop === next.onStop
   && prev.onAttachFiles === next.onAttachFiles
+  && prev.onAddAttachedFiles === next.onAddAttachedFiles
   && prev.onRemoveFile === next.onRemoveFile
   && prev.onOpenSavedPrompts === next.onOpenSavedPrompts
   && prev.onSaveCurrentPrompt === next.onSaveCurrentPrompt
   && prev.onOpenProjectWork === next.onOpenProjectWork
   && prev.onOpenProposedDiffPopup === next.onOpenProposedDiffPopup
+  && prev.onDraftChange === next.onDraftChange
+  && prev.onUsageProjectChange === next.onUsageProjectChange
+  && prev.onAskAiToRunTestsChange === next.onAskAiToRunTestsChange
   && prev.slashCommands === next.slashCommands
   && prev.attachedFiles.length === next.attachedFiles.length
   && prev.attachedFiles.every((entry, index) => entry === next.attachedFiles[index])
@@ -4476,6 +5182,88 @@ function areBuildSnapshotsEquivalent(a: BuildSessionSnapshot | null, b: BuildSes
     && a.runtime.autoRepairRequestedAt === b.runtime.autoRepairRequestedAt;
 }
 
+function areBuildWorkspaceDiffFilesEquivalent(
+  a: BuildWorkspaceDiff['files'],
+  b: BuildWorkspaceDiff['files']
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return !a && !b;
+  if (a.length !== b.length) return false;
+  return a.every((file, index) => {
+    const other = b[index];
+    return file.relativePath === other?.relativePath
+      && file.changeType === other?.changeType
+      && file.beforeContent === other?.beforeContent
+      && file.afterContent === other?.afterContent
+      && file.beforeTruncated === other?.beforeTruncated
+      && file.afterTruncated === other?.afterTruncated;
+  });
+}
+
+function areBuildWorkspaceDiffsEquivalent(a: BuildWorkspaceDiff | null, b: BuildWorkspaceDiff | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return !a && !b;
+  return a.available === b.available
+    && a.summary === b.summary
+    && a.patch === b.patch
+    && a.truncated === b.truncated
+    && a.mode === b.mode
+    && a.baselineId === b.baselineId
+    && a.needsApproval === b.needsApproval
+    && areBuildWorkspaceDiffFilesEquivalent(a.files, b.files);
+}
+
+function areGeneratedBuildObjectsEquivalent<T extends { generatedAt?: string }>(a: T | null, b: T | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return !a && !b;
+  return JSON.stringify({ ...a, generatedAt: '' }) === JSON.stringify({ ...b, generatedAt: '' });
+}
+
+function mergeLiveBuildGitSummary(current: BuildGitSummary | null, live: BuildGitSummary): BuildGitSummary {
+  if (
+    !current
+    || current.workspaceRoot !== live.workspaceRoot
+    || current.workspaceRelativePath !== live.workspaceRelativePath
+    || current.isRepository !== live.isRepository
+  ) {
+    return live;
+  }
+
+  return {
+    ...current,
+    generatedAt: live.generatedAt,
+    available: live.available,
+    isRepository: live.isRepository,
+    git: live.git,
+    branch: live.branch ?? current.branch,
+    commit: live.commit ?? current.commit,
+    shortCommit: live.shortCommit ?? current.shortCommit,
+    remoteName: live.remoteName ?? current.remoteName,
+    remoteUrl: live.remoteUrl ?? current.remoteUrl,
+    remoteProvider: live.remoteProvider ?? current.remoteProvider,
+    repositoryHost: live.repositoryHost ?? current.repositoryHost,
+    repositoryOwner: live.repositoryOwner ?? current.repositoryOwner,
+    repositoryName: live.repositoryName ?? current.repositoryName,
+    repositoryWebUrl: live.repositoryWebUrl ?? current.repositoryWebUrl,
+    upstream: live.upstream ?? current.upstream,
+    ahead: live.ahead,
+    behind: live.behind,
+    syncStatus: live.syncStatus,
+    syncDetail: live.syncDetail,
+    conflictedCount: live.conflictedCount,
+    dirty: live.dirty,
+    hasChanges: live.hasChanges,
+    changedFileCount: live.changedFileCount,
+    stagedCount: live.stagedCount,
+    unstagedCount: live.unstagedCount,
+    untrackedCount: live.untrackedCount,
+    totalAddedLines: live.totalAddedLines,
+    totalDeletedLines: live.totalDeletedLines,
+    files: live.files,
+    nextAction: live.nextAction,
+  };
+}
+
 function areBuildTerminalSnapshotsEquivalent(a: BuildTerminalSnapshot | null, b: BuildTerminalSnapshot | null): boolean {
   if (a === b) return true;
   if (!a || !b) return !a && !b;
@@ -4525,6 +5313,7 @@ export default function BuildPage() {
   const [presetTypecheckCommandInput, setPresetTypecheckCommandInput] = useState('');
   const [presetLintCommandInput, setPresetLintCommandInput] = useState('');
   const [presetTestCommandInput, setPresetTestCommandInput] = useState('');
+  const [askAiToRunTests, setAskAiToRunTests] = useState(false);
   const [presetUsageProjectIdInput, setPresetUsageProjectIdInput] = useState<string | null>(null);
   const [presetUsageProjectDirty, setPresetUsageProjectDirty] = useState(false);
   const [presetEnvProfiles, setPresetEnvProfiles] = useState<BuildEnvProfile[]>([createDefaultEnvProfile()]);
@@ -4564,6 +5353,9 @@ export default function BuildPage() {
   const [buildDiffEnforcementMode, setBuildDiffEnforcementMode] = useState<BuildDiffEnforcementMode>('preview-only');
   const [pendingDiffBaselineId, setPendingDiffBaselineId] = useState<string | null>(null);
   const [selectedDiffFilePath, setSelectedDiffFilePath] = useState<string | null>(null);
+  const [selectedDiffFileContent, setSelectedDiffFileContent] = useState<BuildWorkspaceDiffFileContent | null>(null);
+  const [selectedDiffFileContentBusy, setSelectedDiffFileContentBusy] = useState(false);
+  const [selectedDiffFileContentError, setSelectedDiffFileContentError] = useState<string | null>(null);
   const [diffPanelHost, setDiffPanelHost] = useState<HTMLDivElement | null>(null);
   const [resolvingDiffDecision, setResolvingDiffDecision] = useState<'approve' | 'reject' | null>(null);
   const [gitSummary, setGitSummary] = useState<BuildGitSummary | null>(null);
@@ -4631,6 +5423,7 @@ export default function BuildPage() {
   const [showGitHelpTips, setShowGitHelpTips] = useState(() => window.localStorage.getItem('opendeskmate:build-git-help-tips') !== 'off');
   const [gitInitDialogOpen, setGitInitDialogOpen] = useState(false);
   const [gitReviewDialogOpen, setGitReviewDialogOpen] = useState(false);
+  const [gitReviewDialogFullscreen, setGitReviewDialogFullscreen] = useState(false);
   const [gitReviewTab, setGitReviewTab] = useState<'overview' | 'files' | 'diff' | 'git' | 'sources'>('overview');
   const [diffPanelWidth, setDiffPanelWidth] = useState(0);
   const [workspaceFingerprint, setWorkspaceFingerprint] = useState<BuildWorkspaceFingerprint | null>(null);
@@ -4649,6 +5442,7 @@ export default function BuildPage() {
   const [buildHistorySessionStateReady, setBuildHistorySessionStateReady] = useState(false);
   const [aiTaskId, setAiTaskId] = useState<string | null>(null);
   const [aiMessages, setAiMessages] = useState<TaskMessage[]>([]);
+  const [activeBuildPromptNavigatorId, setActiveBuildPromptNavigatorId] = useState<string | null>(null);
   const [qualityCheckRun, setQualityCheckRun] = useState<BuildQualityCheckRun | null>(null);
   const [qualityChecksBusy, setQualityChecksBusy] = useState(false);
   const [dismissedQualityCheckSuggestionKey, setDismissedQualityCheckSuggestionKey] = useState<string | null>(null);
@@ -4831,6 +5625,8 @@ export default function BuildPage() {
     moved: boolean;
   } | null>(null);
   const diffPanelRef = useRef<HTMLDivElement | null>(null);
+  const activeRunDiffBaselineIdRef = useRef<string | null>(null);
+  const lastRunningGitSummaryRefreshAtRef = useRef(0);
   const workspaceTreeRequestIdRef = useRef(0);
   const buildLowerPanelHeightRef = useRef(buildLowerPanelHeight);
   const workspacePanelWidthRef = useRef(workspacePanelWidth);
@@ -4964,6 +5760,72 @@ export default function BuildPage() {
   }, [loadUsageProjects]);
 
   const assistantMessages = useMemo(() => collectAssistantMessages(aiMessages), [aiMessages]);
+  const buildPromptNavigatorEntries = useMemo<PromptNavigatorEntry[]>(() => {
+    const cleanEntries = assistantMessages
+      .flatMap((message, index): PromptNavigatorEntry[] => {
+        if (message.type !== 'user' || isBuildModeGoalPanelMessage(message)) return [];
+        const content = extractBuildPromptNavigatorText(message);
+        return [{
+          id: message.id,
+          messageIndex: index,
+          preview: createPromptPreview(content),
+          fullText: content,
+          timestamp: message.timestamp,
+        }];
+      });
+
+    if (cleanEntries.length > 0) return cleanEntries;
+
+    return assistantMessages
+      .flatMap((message, index): PromptNavigatorEntry[] => {
+        if (!isBuildModeGoalPanelMessage(message)) return [];
+        const content = extractBuildPromptNavigatorText(message);
+        return [{
+          id: message.id,
+          messageIndex: index,
+          preview: createPromptPreview(content),
+          fullText: content,
+          timestamp: message.timestamp,
+        }];
+      });
+  }, [assistantMessages]);
+
+  useEffect(() => {
+    if (buildPromptNavigatorEntries.length === 0) {
+      setActiveBuildPromptNavigatorId(null);
+      return;
+    }
+    setActiveBuildPromptNavigatorId((current) => (
+      current && buildPromptNavigatorEntries.some((entry) => entry.id === current)
+        ? current
+        : buildPromptNavigatorEntries[0]?.id ?? null
+    ));
+  }, [buildPromptNavigatorEntries]);
+
+  const handleBuildPromptNavigatorRangeChanged = useCallback((range: { startIndex: number; endIndex: number }) => {
+    if (buildPromptNavigatorEntries.length === 0) return;
+    const midpoint = (range.startIndex + range.endIndex) / 2;
+    let activeEntry = buildPromptNavigatorEntries[0];
+    for (const entry of buildPromptNavigatorEntries) {
+      if (entry.messageIndex <= midpoint) {
+        activeEntry = entry;
+      } else {
+        break;
+      }
+    }
+    setActiveBuildPromptNavigatorId((current) => current === activeEntry.id ? current : activeEntry.id);
+  }, [buildPromptNavigatorEntries]);
+
+  const handleBuildPromptNavigatorJump = useCallback((entry: PromptNavigatorEntry) => {
+    setActiveBuildPromptNavigatorId(entry.id);
+    assistantNearBottomRef.current = false;
+    setAssistantNearBottom(false);
+    assistantMessagesVirtuosoRef.current?.scrollToIndex({
+      index: entry.messageIndex,
+      align: 'start',
+      behavior: 'smooth',
+    });
+  }, []);
 
   const scrollAssistantMessagesToBottom = useCallback((behavior: 'auto' | 'smooth' = 'smooth') => {
     if (assistantMessages.length === 0) return;
@@ -5559,7 +6421,72 @@ export default function BuildPage() {
 
   const currentDiffSignature = useMemo(() => getBuildReviewDiffSignature(diff), [diff]);
   const changedDiffFiles = diff?.files || [];
-  const changedFilesSummary = useMemo(() => buildChangedFilesSummary(diff), [diff]);
+  const changedFilesSummary = useMemo(() => buildChangedFilesSummary(diff, gitSummary), [diff, gitSummary]);
+  const reviewFilesForGitPanel = useMemo(() => (
+    gitSummary?.files.length
+      ? gitSummary.files
+      : changedFilesSummary.files.map((file) => ({
+        relativePath: file.relativePath,
+        status: file.changeType || 'modified',
+        indexStatus: '',
+        workingTreeStatus: '',
+        staged: false,
+        unstaged: true,
+        untracked: false,
+        addedLines: file.addedLines,
+        deletedLines: file.deletedLines,
+      }))
+  ), [changedFilesSummary.files, gitSummary?.files]);
+  const selectedReviewFilePath = useMemo(() => {
+    if (selectedDiffFilePath && reviewFilesForGitPanel.some((file) => file.relativePath === selectedDiffFilePath)) {
+      return selectedDiffFilePath;
+    }
+    if (selectedDiffFile?.relativePath && reviewFilesForGitPanel.some((file) => file.relativePath === selectedDiffFile.relativePath)) {
+      return selectedDiffFile.relativePath;
+    }
+    return reviewFilesForGitPanel[0]?.relativePath ?? null;
+  }, [reviewFilesForGitPanel, selectedDiffFile?.relativePath, selectedDiffFilePath]);
+  useEffect(() => {
+    if (!activeAgentId || !selectedReviewFilePath) {
+      setSelectedDiffFileContent(null);
+      setSelectedDiffFileContentBusy(false);
+      setSelectedDiffFileContentError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setSelectedDiffFileContentBusy(true);
+    setSelectedDiffFileContentError(null);
+    const baselineId = pendingDiffBaselineId || diff?.baselineId || undefined;
+
+    accomplish.getBuildWorkspaceDiffFileContent({
+      agentId: activeAgentId,
+      relativePath: workspaceRelativePath,
+      filePath: selectedReviewFilePath,
+      baselineId,
+    }).then((result) => {
+      if (cancelled) return;
+      setSelectedDiffFileContent(result);
+    }).catch((err) => {
+      if (cancelled) return;
+      setSelectedDiffFileContent(null);
+      setSelectedDiffFileContentError(err instanceof Error ? err.message : String(err));
+    }).finally(() => {
+      if (cancelled) return;
+      setSelectedDiffFileContentBusy(false);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    accomplish,
+    activeAgentId,
+    diff?.baselineId,
+    pendingDiffBaselineId,
+    selectedReviewFilePath,
+    workspaceRelativePath,
+  ]);
   const effectiveChangedFileCount = gitSummary?.changedFileCount || changedFilesSummary.files.length;
   const effectiveAddedLines = gitSummary?.totalAddedLines ?? changedFilesSummary.totalAddedLines;
   const effectiveDeletedLines = gitSummary?.totalDeletedLines ?? changedFilesSummary.totalDeletedLines;
@@ -5575,20 +6502,34 @@ export default function BuildPage() {
     && diff.baselineId === pendingDiffBaselineId
   );
   const liveChangedFilesOverview = useMemo(() => {
-    if (!hasCurrentRunSyntheticDiff) return null;
-    if (changedFilesSummary.files.length === 0) return null;
-    const singleFile = changedFilesSummary.files.length === 1 ? changedFilesSummary.files[0] : null;
-    return {
-      label: singleFile ? pathLeaf(singleFile.relativePath) : `${changedFilesSummary.files.length} files`,
-      title: singleFile
-        ? `Review changes in ${singleFile.relativePath}`
-        : `Review ${changedFilesSummary.files.length} changed files`,
-      reviewPath: singleFile?.relativePath,
-      fileCount: changedFilesSummary.files.length,
-      addedLines: changedFilesSummary.totalAddedLines,
-      deletedLines: changedFilesSummary.totalDeletedLines,
-    };
-  }, [changedFilesSummary, hasCurrentRunSyntheticDiff]);
+    if (hasCurrentRunSyntheticDiff && changedFilesSummary.files.length > 0) {
+      const singleFile = changedFilesSummary.files.length === 1 ? changedFilesSummary.files[0] : null;
+      return {
+        label: singleFile ? pathLeaf(singleFile.relativePath) : `${changedFilesSummary.files.length} files`,
+        title: singleFile
+          ? `Review changes in ${singleFile.relativePath}`
+          : `Review ${changedFilesSummary.files.length} changed files`,
+        reviewPath: singleFile?.relativePath,
+        fileCount: changedFilesSummary.files.length,
+        addedLines: changedFilesSummary.totalAddedLines,
+        deletedLines: changedFilesSummary.totalDeletedLines,
+      };
+    }
+    if (aiBusy && !pendingDiffBaselineId && gitSummary?.isRepository && gitSummary.changedFileCount > 0) {
+      const singleFile = gitSummary.files.length === 1 ? gitSummary.files[0] : null;
+      return {
+        label: singleFile ? pathLeaf(singleFile.relativePath) : `${gitSummary.changedFileCount} files`,
+        title: singleFile
+          ? `Review changes in ${singleFile.relativePath}`
+          : `Review ${gitSummary.changedFileCount} changed files`,
+        reviewPath: singleFile?.relativePath,
+        fileCount: gitSummary.changedFileCount,
+        addedLines: gitSummary.totalAddedLines,
+        deletedLines: gitSummary.totalDeletedLines,
+      };
+    }
+    return null;
+  }, [aiBusy, changedFilesSummary, gitSummary, hasCurrentRunSyntheticDiff, pendingDiffBaselineId]);
   const qualityChecksMatchCurrentDiff = Boolean(
     currentDiffSignature
     && qualityCheckRun?.diffSignature
@@ -6467,13 +7408,19 @@ export default function BuildPage() {
           });
         }
       }
-      if (collectAssistantMessages(restoredMessages).length === 0 && session.execution.goalPrompt) {
+      if (!hasVisibleBuildUserPromptMessage(restoredMessages) && session.execution.goalPrompt) {
         restoredMessages = [{
-          id: `local-build-history-goal-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+          id: `local-build-history-goal-${session.id}`,
           type: 'user',
           content: session.execution.goalPrompt,
           timestamp: session.createdAt || new Date().toISOString(),
-        }];
+        }, ...restoredMessages];
+        void accomplish.updateBuildTaskHistorySession({
+          sessionId: session.id,
+          messages: restoredMessages,
+        }).catch(() => {
+          // Best effort repair so older Build history sessions expose prompt navigation.
+        });
       }
       const restoredRuntimeLogs = session.execution.runtimeLogs || [];
       const visibleRestoredLogs = restoredRuntimeLogs.slice(-BUILD_RESTORED_RUNTIME_LOG_LIMIT);
@@ -6485,8 +7432,16 @@ export default function BuildPage() {
       startTransition(() => {
         setAiMessages(restoredMessages);
         setQualityCheckRun(session.execution.latestQualityCheckRun || null);
-        setDiff(session.execution.latestDiff || null);
-        setWorkspaceFingerprint(session.execution.latestFingerprint || null);
+        setDiff((current) => (
+          areBuildWorkspaceDiffsEquivalent(current, session.execution.latestDiff || null)
+            ? current
+            : (session.execution.latestDiff || null)
+        ));
+        setWorkspaceFingerprint((current) => (
+          areGeneratedBuildObjectsEquivalent(current, session.execution.latestFingerprint || null)
+            ? current
+            : (session.execution.latestFingerprint || null)
+        ));
         setLogs(visibleRestoredLogs);
         if (session.execution.latestSnapshot) {
           setSnapshot((current) => (
@@ -6508,6 +7463,7 @@ export default function BuildPage() {
       const latestRunStatus = latestRunTask?.status || latestRun?.status;
       if (latestRun?.taskId && latestRunStatus && !TERMINAL_TASK_STATES.has(latestRunStatus)) {
         setAiTaskId(latestRun.taskId);
+        lastRunningGitSummaryRefreshAtRef.current = 0;
         setAiBusy(true);
       } else {
         setAiTaskId(null);
@@ -6597,27 +7553,37 @@ export default function BuildPage() {
     }
   }, [accomplish, activeAgentId, workspaceRelativePath]);
 
-  const refreshDiff = useCallback(async () => {
+  const refreshDiff = useCallback(async (options?: { maxChars?: number; includeBaseline?: boolean; baselineId?: string | null }) => {
     if (!activeAgentId) return;
     try {
+      const baselineId = options?.baselineId !== undefined
+        ? options.baselineId || undefined
+        : (options?.includeBaseline === false ? undefined : pendingDiffBaselineId || undefined);
       const result = await accomplish.getBuildWorkspaceDiff({
         agentId: activeAgentId,
         relativePath: workspaceRelativePath,
-        baselineId: pendingDiffBaselineId || undefined,
+        baselineId,
+        maxChars: options?.maxChars,
       });
-      setDiff(result);
-      const files = result.files || [];
-      if (files.length === 0) {
-        setSelectedDiffFilePath(null);
-      } else if (!selectedDiffFilePath || !files.some((entry) => entry.relativePath === selectedDiffFilePath)) {
-        setSelectedDiffFilePath(files[0].relativePath);
+      if (options?.includeBaseline === false && result.available === false && result.mode === 'none') {
+        return;
+      }
+      setDiff((current) => (areBuildWorkspaceDiffsEquivalent(current, result) ? current : result));
+      if (Array.isArray(result.files)) {
+        const files = result.files;
+        if (files.length === 0) {
+          setSelectedDiffFilePath(null);
+        } else if (!selectedDiffFilePath || !files.some((entry) => entry.relativePath === selectedDiffFilePath)) {
+          setSelectedDiffFilePath(files[0].relativePath);
+        }
       }
 
       if (
-        buildDiffEnforcementMode === 'approval'
+        options?.includeBaseline !== false
+        && buildDiffEnforcementMode === 'approval'
         && pendingDiffBaselineId
         && result.mode === 'synthetic'
-        && files.length === 0
+        && (result.files || []).length === 0
         && !aiBusy
       ) {
         await accomplish.resolveBuildWorkspaceBaseline({
@@ -6628,7 +7594,8 @@ export default function BuildPage() {
         setPendingDiffBaselineId(null);
       }
     } catch {
-      setDiff(null);
+      if (options?.includeBaseline === false) return;
+      setDiff((current) => (current === null ? current : null));
     }
   }, [
     accomplish,
@@ -6640,7 +7607,7 @@ export default function BuildPage() {
     workspaceRelativePath,
   ]);
 
-  const refreshGitSummary = useCallback(async (showBusy = false) => {
+  const refreshGitSummary = useCallback(async (showBusy = false, options?: { lightweight?: boolean }) => {
     if (!activeAgentId) return;
     if (showBusy) {
       setGitSummaryBusy(true);
@@ -6649,10 +7616,16 @@ export default function BuildPage() {
       const result = await accomplish.getBuildGitSummary({
         agentId: activeAgentId,
         relativePath: workspaceRelativePath,
+        lightweight: options?.lightweight,
       });
-      setGitSummary(result);
+      setGitSummary((current) => {
+        const next = options?.lightweight ? mergeLiveBuildGitSummary(current, result) : result;
+        return areGeneratedBuildObjectsEquivalent(current, next) ? current : next;
+      });
     } catch (err) {
-      setGitSummary(null);
+      if (!options?.lightweight) {
+        setGitSummary((current) => (current === null ? current : null));
+      }
       if (showBusy) {
         setError(err instanceof Error ? err.message : String(err));
       }
@@ -6673,7 +7646,7 @@ export default function BuildPage() {
         agentId: activeAgentId,
         relativePath: workspaceRelativePath,
       });
-      setWorkspaceFingerprint(result);
+      setWorkspaceFingerprint((current) => (areGeneratedBuildObjectsEquivalent(current, result) ? current : result));
     } catch (err) {
       if (showBusy) {
         setError(err instanceof Error ? err.message : String(err));
@@ -7034,6 +8007,7 @@ export default function BuildPage() {
     }).catch(() => {
       // Best effort: if baseline already gone this can fail harmlessly.
     });
+    activeRunDiffBaselineIdRef.current = null;
     setPendingDiffBaselineId(null);
   }, [accomplish, activeAgentId, buildDiffEnforcementMode, pendingDiffBaselineId]);
 
@@ -7125,6 +8099,7 @@ export default function BuildPage() {
     setLogs([]);
     setLogCursor(0);
     setWorkspaceTree(null);
+    activeRunDiffBaselineIdRef.current = null;
     setPendingDiffBaselineId(null);
     setSelectedDiffFilePath(null);
     setWorkspaceFingerprint(null);
@@ -7424,32 +8399,61 @@ export default function BuildPage() {
             setActiveHistorySessionToken(task.sessionId);
           }
           if (!TERMINAL_TASK_STATES.has(task.status)) {
-            void refreshDiff();
+            const now = Date.now();
+            if (now - lastRunningGitSummaryRefreshAtRef.current > BUILD_RUNNING_GIT_SUMMARY_REFRESH_INTERVAL_MS) {
+              const activeRunBaselineId = activeRunDiffBaselineIdRef.current || pendingDiffBaselineId;
+              lastRunningGitSummaryRefreshAtRef.current = now;
+              void refreshGitSummary(false, { lightweight: true });
+              void refreshDiff({
+                maxChars: BUILD_RUNNING_GIT_DIFF_MAX_CHARS,
+                includeBaseline: activeRunBaselineId ? true : false,
+                baselineId: activeRunBaselineId || undefined,
+              });
+            }
           }
           if (TERMINAL_TASK_STATES.has(task.status)) {
             let completedMessages = mergedMessages;
             let completedDiff = diff;
+            const activeRunBaselineId = activeRunDiffBaselineIdRef.current || pendingDiffBaselineId;
             try {
-              const finalDiff = await accomplish.getBuildWorkspaceDiff({
-                agentId: activeAgentId,
-                relativePath: workspaceRelativePath,
-                baselineId: pendingDiffBaselineId || undefined,
-              });
+              const [finalDiff, finalGitSummary] = await Promise.all([
+                accomplish.getBuildWorkspaceDiff({
+                  agentId: activeAgentId,
+                  relativePath: workspaceRelativePath,
+                  baselineId: activeRunBaselineId || undefined,
+                }).catch(() => null),
+                accomplish.getBuildGitSummary({
+                  agentId: activeAgentId,
+                  relativePath: workspaceRelativePath,
+                  lightweight: true,
+                }).catch(() => null),
+              ]);
+              if (!finalDiff && !finalGitSummary) {
+                throw new Error('No final diff or Git summary was available.');
+              }
               if (cancelled) return;
-              completedDiff = finalDiff;
-              setDiff(finalDiff);
-              if (pendingDiffBaselineId && finalDiff.mode === 'synthetic' && finalDiff.baselineId === pendingDiffBaselineId) {
-                completedMessages = appendBuildChangedFilesSummaryMessage(mergedMessages, {
-                  runId: task.id,
-                  diff: finalDiff,
+              if (finalDiff) {
+                completedDiff = finalDiff;
+                setDiff(finalDiff);
+              }
+              if (finalGitSummary) {
+                setGitSummary((current) => {
+                  const next = mergeLiveBuildGitSummary(current, finalGitSummary);
+                  return areGeneratedBuildObjectsEquivalent(current, next) ? current : next;
                 });
               }
+              completedMessages = appendBuildChangedFilesSummaryMessage(mergedMessages, {
+                runId: task.id,
+                diff: finalDiff ?? completedDiff,
+                gitSummary: finalGitSummary,
+              });
               if (completedMessages !== mergedMessages) {
                 setAiMessages(completedMessages);
               }
             } catch {
               // If final diff capture fails, keep the assistant transcript without a changed-files card.
             }
+            activeRunDiffBaselineIdRef.current = null;
             setAiBusy(false);
             setAiTaskId(null);
             if (activeHistorySessionId) {
@@ -7503,6 +8507,7 @@ export default function BuildPage() {
     qualityCheckRun,
     refreshDiff,
     refreshFingerprint,
+    refreshGitSummary,
     refreshHistorySessions,
     refreshSnapshot,
     refreshTree,
@@ -7594,7 +8599,7 @@ export default function BuildPage() {
 
   // AI-first automatic repair loop when runtime errors are detected.
   useEffect(() => {
-    if (!autoRepairEnabled || autoRepairBusy || !snapshot || !activeAgentId) return;
+    if (!autoRepairEnabled || autoRepairBusy || aiBusy || !snapshot || !activeAgentId) return;
     if (buildDiffEnforcementMode === 'approval' && pendingDiffBaselineId && (diff?.files || []).length > 0) return;
     if (!snapshot.runtime.suggestedRepairPrompt || !snapshot.runtime.autoRepairRequestedAt) return;
 
@@ -7627,6 +8632,7 @@ export default function BuildPage() {
             agentId: activeAgentId,
             relativePath: workspaceRelativePath,
           });
+          activeRunDiffBaselineIdRef.current = baseline.baselineId;
           setPendingDiffBaselineId(baseline.baselineId);
           setSelectedDiffFilePath(null);
         }
@@ -7635,6 +8641,9 @@ export default function BuildPage() {
           agentId: activeAgentId,
           workingDirectory: snapshot.workspaceRoot,
           usageProjectId: selectedBuildProjectId ?? null,
+          requiresBrowser: true,
+          buildMode: true,
+          buildWorkspaceRelativePath: workspaceRelativePath || '.',
         });
         setAiTaskId(task.id);
         setAiMessages((current) => mergeIncomingWithLocalBuildGoalMessages(current, task.messages || []));
@@ -7648,6 +8657,7 @@ export default function BuildPage() {
   }, [
     accomplish,
     activeAgentId,
+    aiBusy,
     autoRepairBusy,
     autoRepairEnabled,
     buildDiffEnforcementMode,
@@ -8671,6 +9681,7 @@ export default function BuildPage() {
       if (!result.ok) {
         throw new Error(result.message || 'Failed to resolve pending diff baseline.');
       }
+      activeRunDiffBaselineIdRef.current = null;
       setPendingDiffBaselineId(null);
       setSelectedDiffFilePath(null);
       await Promise.all([refreshTree(), refreshDiff(), refreshGitSummary(), refreshSnapshot(), refreshFingerprint()]);
@@ -8690,15 +9701,17 @@ export default function BuildPage() {
   ]);
 
   const handleOpenChangedFilesReview = useCallback((relativePath?: string) => {
-    if (relativePath && changedDiffFiles.some((file) => file.relativePath === relativePath)) {
+    if (relativePath && reviewFilesForGitPanel.some((file) => file.relativePath === relativePath)) {
       setSelectedDiffFilePath(relativePath);
-    } else if (!selectedDiffFilePath && changedDiffFiles[0]) {
-      setSelectedDiffFilePath(changedDiffFiles[0].relativePath);
+    } else if (!selectedDiffFilePath && reviewFilesForGitPanel[0]) {
+      setSelectedDiffFilePath(reviewFilesForGitPanel[0].relativePath);
     }
+    setGitReviewTab(relativePath || reviewFilesForGitPanel.length > 0 ? 'files' : 'overview');
+    setGitReviewDialogOpen(true);
     window.requestAnimationFrame(() => {
       diffPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     });
-  }, [changedDiffFiles, selectedDiffFilePath]);
+  }, [reviewFilesForGitPanel, selectedDiffFilePath]);
 
   const openGitPrimaryActionDialog = useCallback(() => {
     if (!gitSummary) return;
@@ -9447,6 +10460,8 @@ export default function BuildPage() {
 
     setError(null);
     setAiBusy(true);
+    activeRunDiffBaselineIdRef.current = null;
+    lastRunningGitSummaryRefreshAtRef.current = 0;
     setDiff(null);
     setSelectedDiffFilePath(null);
     try {
@@ -9480,6 +10495,7 @@ export default function BuildPage() {
           agentId: activeAgentId,
           relativePath: workspaceRelativePath,
         });
+        activeRunDiffBaselineIdRef.current = baseline.baselineId;
         setPendingDiffBaselineId(baseline.baselineId);
         setSelectedDiffFilePath(null);
       } else if (pendingDiffBaselineId) {
@@ -9492,6 +10508,7 @@ export default function BuildPage() {
         } catch {
           // Ignore baseline cleanup failure in auto-apply mode.
         }
+        activeRunDiffBaselineIdRef.current = null;
         setPendingDiffBaselineId(null);
       }
 
@@ -9509,6 +10526,7 @@ export default function BuildPage() {
         setActiveHistorySessionId(created.id);
       }
 
+      const testsInstruction = buildAiTestsInstruction(askAiToRunTests);
       const compiledPrompt = [
         'Build Mode goal:',
         userGoalPrompt,
@@ -9518,7 +10536,9 @@ export default function BuildPage() {
         `Preset: ${selectedPreset?.name || 'none'}`,
         `Env profile: ${activeEnvProfile?.name || 'none'}`,
         'Process: plan, apply file edits, run checks, and summarize final diff.',
-      ].join('\n');
+        testsInstruction ? '' : null,
+        testsInstruction,
+      ].filter((line): line is string => typeof line === 'string').join('\n');
 
       let task: Task;
       if (activeHistorySessionToken && activeHistoryRunTaskId) {
@@ -9529,6 +10549,12 @@ export default function BuildPage() {
           promptAttachedFiles.length > 0 ? promptAttachedFiles : undefined,
           undefined,
           selectedBuildProjectId ?? null,
+          {
+            workingDirectory: snapshot.workspaceRoot,
+            requiresBrowser: true,
+            buildMode: true,
+            buildWorkspaceRelativePath: workspaceRelativePath || '.',
+          },
         );
       } else {
         task = await accomplish.startTask({
@@ -9537,6 +10563,9 @@ export default function BuildPage() {
           workingDirectory: snapshot.workspaceRoot,
           attachedFiles: promptAttachedFiles.length > 0 ? promptAttachedFiles : undefined,
           usageProjectId: selectedBuildProjectId ?? null,
+          requiresBrowser: true,
+          buildMode: true,
+          buildWorkspaceRelativePath: workspaceRelativePath || '.',
         });
       }
 
@@ -9582,6 +10611,7 @@ export default function BuildPage() {
     activeHistoryRunTaskId,
     activeHistorySessionId,
     activeHistorySessionToken,
+    askAiToRunTests,
     diff,
     goalPrompt,
     logs,
@@ -9641,22 +10671,11 @@ export default function BuildPage() {
     }
   }, [accomplish, activeAgentId, activeHistorySessionId, changedDiffFiles.length, currentDiffSignature, workspaceRelativePath]);
 
-  const renderBuildGitReviewContent = useCallback((options?: { compact?: boolean; inDialog?: boolean }) => {
+  const renderBuildGitReviewContent = useCallback((options?: { compact?: boolean; inDialog?: boolean; fullscreen?: boolean }) => {
     const compact = options?.compact === true;
     const inDialog = options?.inDialog === true;
-    const reviewFiles = gitSummary?.files.length
-      ? gitSummary.files
-      : changedFilesSummary.files.map((file) => ({
-        relativePath: file.relativePath,
-        status: file.changeType || 'modified',
-        indexStatus: '',
-        workingTreeStatus: '',
-        staged: false,
-        unstaged: true,
-        untracked: false,
-        addedLines: file.addedLines,
-        deletedLines: file.deletedLines,
-      }));
+    const fullscreen = options?.fullscreen === true;
+    const reviewFiles = reviewFilesForGitPanel;
     const tabs: Array<{ id: typeof gitReviewTab; label: string }> = [
       { id: 'overview', label: 'Overview' },
       { id: 'files', label: 'Files' },
@@ -10002,14 +11021,13 @@ export default function BuildPage() {
           {!compact && reviewFiles.length > 0 ? (
             <div className="overflow-hidden rounded-md border border-border/60 bg-muted/10">
               {reviewFiles.slice(0, inDialog ? 12 : 6).map((file) => {
-                const selectable = changedDiffFiles.some((entry) => entry.relativePath === file.relativePath);
                 return (
                   <button
                     key={`git-review-overview-${file.relativePath}`}
                     type="button"
                     className="flex w-full items-center justify-between gap-3 border-b border-border/40 px-2 py-1.5 text-left text-[11px] last:border-b-0 hover:bg-muted/40"
                     onClick={() => {
-                      if (selectable) setSelectedDiffFilePath(file.relativePath);
+                      setSelectedDiffFilePath(file.relativePath);
                       setGitReviewTab('files');
                     }}
                     title={file.relativePath}
@@ -10172,11 +11190,13 @@ export default function BuildPage() {
     );
 
     const files = (
-      <div className="grid min-h-0 grid-cols-1 gap-2 lg:grid-cols-[minmax(220px,280px)_1fr]">
-        <div className="max-h-[55vh] overflow-auto rounded-md border border-border/60 bg-muted/20 p-1">
+      <div className={cn('grid min-h-0 grid-cols-1 gap-2 lg:grid-cols-[minmax(220px,280px)_1fr]', fullscreen && 'h-full')}>
+        <div className={cn(
+          'overflow-auto rounded-md border border-border/60 bg-muted/20 p-1',
+          fullscreen ? 'h-full max-h-none' : 'max-h-[55vh]'
+        )}>
           {reviewFiles.length > 0 ? reviewFiles.map((file) => {
-            const selected = selectedDiffFile?.relativePath === file.relativePath;
-            const selectable = changedDiffFiles.some((entry) => entry.relativePath === file.relativePath);
+            const selected = selectedReviewFilePath === file.relativePath;
             const canDiscard = Boolean(gitSummary?.files.some((entry) => entry.relativePath === file.relativePath));
             return (
               <div
@@ -10189,7 +11209,7 @@ export default function BuildPage() {
                 <button
                   type="button"
                   onClick={() => {
-                    if (selectable) setSelectedDiffFilePath(file.relativePath);
+                    setSelectedDiffFilePath(file.relativePath);
                   }}
                   className="min-w-0 flex-1 text-left"
                   title={`${file.relativePath} · ${formatBuildGitFileStatus(file)}`}
@@ -10222,31 +11242,40 @@ export default function BuildPage() {
             <div className="px-2 py-1 text-[11px] text-muted-foreground">No changed files detected.</div>
           )}
         </div>
-        <div className="grid min-h-0 grid-cols-1 gap-2 2xl:grid-cols-2">
-          <div className="min-h-0">
-            <div className="mb-1 text-[11px] font-medium text-muted-foreground">Before</div>
-            <pre className="max-h-[55vh] overflow-auto rounded-md border border-border/60 bg-muted/20 p-2 text-[11px] leading-relaxed">
-              {selectedDiffFile?.beforeContent || '(new file or no preview available)'}
-            </pre>
-          </div>
-          <div className="min-h-0">
-            <div className="mb-1 text-[11px] font-medium text-muted-foreground">After</div>
-            <pre className="max-h-[55vh] overflow-auto rounded-md border border-border/60 bg-muted/20 p-2 text-[11px] leading-relaxed">
-              {selectedDiffFile?.afterContent || '(deleted file or no preview available)'}
-            </pre>
-          </div>
-        </div>
+        <BuildSideBySideDiffViewer
+          filePath={selectedReviewFilePath}
+          beforeContent={selectedDiffFileContent?.relativePath === selectedReviewFilePath
+            ? selectedDiffFileContent.beforeContent
+            : selectedDiffFile?.relativePath === selectedReviewFilePath
+              ? selectedDiffFile.beforeContent
+              : undefined}
+          afterContent={selectedDiffFileContent?.relativePath === selectedReviewFilePath
+            ? selectedDiffFileContent.afterContent
+            : selectedDiffFile?.relativePath === selectedReviewFilePath
+              ? selectedDiffFile.afterContent
+              : undefined}
+          beforeUnavailableReason={selectedDiffFileContent?.relativePath === selectedReviewFilePath
+            ? selectedDiffFileContent.beforeUnavailableReason
+            : undefined}
+          afterUnavailableReason={selectedDiffFileContent?.relativePath === selectedReviewFilePath
+            ? selectedDiffFileContent.afterUnavailableReason
+            : undefined}
+          beforeTruncated={selectedDiffFile?.relativePath === selectedReviewFilePath ? selectedDiffFile.beforeTruncated : false}
+          afterTruncated={selectedDiffFile?.relativePath === selectedReviewFilePath ? selectedDiffFile.afterTruncated : false}
+          patchSection={extractPatchSectionForPath(diff?.patch, selectedReviewFilePath)}
+          fullscreen={fullscreen}
+          loading={selectedDiffFileContentBusy}
+          error={selectedDiffFileContentError}
+        />
       </div>
     );
 
     const diffPreview = (
-      <pre className="max-h-[60vh] overflow-auto rounded-md border border-border/60 bg-muted/30 p-2 text-[11px] leading-relaxed">
-        {diff?.patch || 'No patch available.'}
-      </pre>
+      <BuildUnifiedDiffViewer patch={diff?.patch} fullscreen={fullscreen} />
     );
 
     const gitDetails = (
-      <div className="grid gap-2 text-[11px] md:grid-cols-2">
+      <div className={cn('grid content-start gap-2 text-[11px] md:grid-cols-2', fullscreen && 'xl:grid-cols-3')}>
         {[
           ['Git', gitSummary?.git.available ? (gitSummary.git.version || 'Available') : (gitSummary?.git.error || 'Unavailable'), null],
           ['Local Git repository', gitSummary?.isRepository ? 'Detected on this computer' : 'Not detected', null],
@@ -10273,7 +11302,7 @@ export default function BuildPage() {
             <div className="break-words text-foreground">{value}</div>
           </div>
         ))}
-        <div className="rounded-md border border-border/50 bg-background/60 p-2 md:col-span-2">
+        <div className={cn('rounded-md border border-border/50 bg-background/60 p-2 md:col-span-2', fullscreen && 'xl:col-span-3')}>
           <div className="mb-2 text-[10px] font-medium uppercase text-muted-foreground">Git actions</div>
           <div className="flex flex-wrap gap-2">
             <Button
@@ -10357,19 +11386,19 @@ export default function BuildPage() {
           ) : null}
         </div>
         {gitSummary?.remoteUrl ? (
-          <div className="rounded-md border border-border/50 bg-background/60 p-2 md:col-span-2">
+          <div className={cn('rounded-md border border-border/50 bg-background/60 p-2 md:col-span-2', fullscreen && 'xl:col-span-3')}>
             <div className="mb-1 text-[10px] font-medium uppercase text-muted-foreground">Remote URL</div>
             <div className="break-all text-foreground">{gitSummary.remoteUrl}</div>
           </div>
         ) : null}
         {gitSummary?.repositoryWebUrl ? (
-          <div className="rounded-md border border-border/50 bg-background/60 p-2 md:col-span-2">
+          <div className={cn('rounded-md border border-border/50 bg-background/60 p-2 md:col-span-2', fullscreen && 'xl:col-span-3')}>
             <div className="mb-1 text-[10px] font-medium uppercase text-muted-foreground">Repository page</div>
             <div className="break-all text-foreground">{gitSummary.repositoryWebUrl}</div>
           </div>
         ) : null}
         {gitSummary?.githubCli.detail ? (
-          <div className="rounded-md border border-border/50 bg-background/60 p-2 md:col-span-2">
+          <div className={cn('rounded-md border border-border/50 bg-background/60 p-2 md:col-span-2', fullscreen && 'xl:col-span-3')}>
             <div className="mb-1 flex items-center gap-1 text-[10px] font-medium uppercase text-muted-foreground">
               <Github className="h-3 w-3" />
               GitHub CLI detail
@@ -10378,7 +11407,7 @@ export default function BuildPage() {
           </div>
         ) : null}
         {gitSummary?.authSetupHints.length ? (
-          <div className="rounded-md border border-border/50 bg-background/60 p-2 md:col-span-2">
+          <div className={cn('rounded-md border border-border/50 bg-background/60 p-2 md:col-span-2', fullscreen && 'xl:col-span-3')}>
             <div className="mb-1 text-[10px] font-medium uppercase text-muted-foreground">Credential setup hints</div>
             <ul className="list-disc space-y-1 pl-4 text-muted-foreground">
               {gitSummary.authSetupHints.map((hint) => (
@@ -10432,7 +11461,7 @@ export default function BuildPage() {
             : sources;
 
     return (
-      <div className="flex min-h-0 flex-col gap-2">
+      <div className={cn('flex min-h-0 flex-col gap-2', inDialog && 'h-full')}>
         <div className="flex shrink-0 flex-wrap items-center gap-1 rounded-md border border-border/60 bg-muted/10 p-1">
           {tabs.map((tab) => (
             <button
@@ -10448,7 +11477,7 @@ export default function BuildPage() {
             </button>
           ))}
         </div>
-        <div className={cn('min-h-0', inDialog ? 'overflow-auto pr-1' : '')}>
+        <div className={cn('min-h-0', inDialog ? 'flex-1 overflow-auto pr-1' : '', fullscreen && 'h-full')}>
           {tabContent}
         </div>
       </div>
@@ -10492,7 +11521,12 @@ export default function BuildPage() {
     refreshBuildGitStashes,
     resolvingDiffDecision,
     resolvePendingDiffBaseline,
+    reviewFilesForGitPanel,
+    selectedDiffFileContent,
+    selectedDiffFileContentBusy,
+    selectedDiffFileContentError,
     selectedDiffFile,
+    selectedReviewFilePath,
     selectedPreset?.name,
     shouldSuggestQualityChecks,
     showGitHelpTips,
@@ -10718,23 +11752,27 @@ export default function BuildPage() {
     setPromptAttachedFiles([]);
   }, []);
 
+  const addPromptAttachedFiles = useCallback((files: string[]) => {
+    setPromptAttachedFiles((current) => {
+      const deduped = new Set(current);
+      for (const filePath of files) {
+        if (typeof filePath === 'string' && filePath.trim()) {
+          deduped.add(filePath);
+        }
+      }
+      return Array.from(deduped);
+    });
+  }, []);
+
   const handleSelectPromptFiles = useCallback(async () => {
     try {
       const files = await accomplish.selectFiles();
       if (!Array.isArray(files) || files.length === 0) return;
-      setPromptAttachedFiles((current) => {
-        const deduped = new Set(current);
-        for (const filePath of files) {
-          if (typeof filePath === 'string' && filePath.trim()) {
-            deduped.add(filePath);
-          }
-        }
-        return Array.from(deduped);
-      });
+      addPromptAttachedFiles(files);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [accomplish]);
+  }, [accomplish, addPromptAttachedFiles]);
 
   const removePromptAttachedFile = useCallback((filePath: string) => {
     setPromptAttachedFiles((current) => current.filter((entry) => entry !== filePath));
@@ -12240,6 +13278,14 @@ export default function BuildPage() {
     }
   }, []);
 
+  const handleCopyAssistantMessageClick = useCallback((
+    messageId: string,
+    content: string,
+    sourceElement?: HTMLElement | null
+  ) => {
+    void handleCopyAssistantMessage(messageId, content, sourceElement);
+  }, [handleCopyAssistantMessage]);
+
   const toggleToolMessageExpanded = useCallback((messageId: string) => {
     setExpandedToolMessageIds((current) => ({
       ...current,
@@ -12257,6 +13303,404 @@ export default function BuildPage() {
       copyResetTimeoutRef.current = null;
     }
   }, []);
+
+  const buildTopBarControls = useMemo(() => (
+    <TooltipProvider delayDuration={250}>
+      <div className="flex max-w-[min(78vw,1520px)] items-center gap-2 overflow-x-auto rounded-full border border-border/60 bg-card/85 px-2 py-1 shadow-md backdrop-blur-md">
+        <div className="shrink-0">
+          <ModeSwitch />
+        </div>
+        <BuildTooltip
+          content={`Active Build agent: ${activeAgent?.name || activeAgentId || 'None'}. Build tasks use this agent's model, persona prompt, workspace defaults, permissions, memory, and task history.`}
+          side="bottom"
+          align="start"
+        >
+          <div className="inline-flex max-w-[170px] shrink-0 items-center gap-1.5 truncate rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground">
+            <Wrench className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">Agent: {activeAgent?.name || activeAgentId}</span>
+          </div>
+        </BuildTooltip>
+        {modelBadgeLabel ? (
+          <BuildTooltip
+            content={modelBadgeLabel}
+            side="bottom"
+            align="start"
+          >
+            <div className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground">
+              <Code className="h-3.5 w-3.5 shrink-0" />
+              <span>Model</span>
+            </div>
+          </BuildTooltip>
+        ) : null}
+        <BuildTooltip
+          content={`Current Build runtime status: ${formatRuntimeStatus(snapshot?.runtime.status ?? 'stopped')}. This shows whether the project preview/dev server is stopped, starting, running, stopping, or in an error state.`}
+          side="bottom"
+          align="start"
+        >
+          <div className={cn('inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium', statusBadgeClass)}>
+            {snapshot?.runtime.status === 'running' ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Circle className="h-3.5 w-3.5" />}
+            {formatRuntimeStatus(snapshot?.runtime.status ?? 'stopped')}
+          </div>
+        </BuildTooltip>
+        {snapshot?.runtime.port ? (
+          <BuildTooltip
+            content={`The Build runtime preview server is using local port ${snapshot.runtime.port}, usually available at http://localhost:${snapshot.runtime.port}.`}
+            side="bottom"
+            align="start"
+          >
+            <div className="inline-flex shrink-0 items-center rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground">
+              Port {snapshot.runtime.port}
+            </div>
+          </BuildTooltip>
+        ) : null}
+        {snapshot?.runtime.buildStatus && snapshot.runtime.buildStatus !== 'unknown' ? (
+          <div className={cn(
+            'inline-flex shrink-0 items-center rounded-full px-2.5 py-1 text-xs',
+            snapshot.runtime.buildStatus === 'success' ? 'bg-emerald-500/10 text-emerald-700' : 'bg-destructive/10 text-destructive'
+          )}>
+            Build {snapshot.runtime.buildStatus}
+          </div>
+        ) : null}
+
+        <div className="h-5 w-px shrink-0 bg-border/70" />
+
+        <BuildTooltip
+          content="Open reusable workflow recipes for Build, Research, Automation, Files, Connectors, and Troubleshooting."
+          side="bottom"
+          align="end"
+        >
+          <Button
+            size="icon-sm"
+            variant="outline"
+            className="h-8 w-8"
+            onClick={() => setRecipeCatalogOpen(true)}
+            aria-label="Open recipe library"
+          >
+            <ClipboardList className="h-3.5 w-3.5" />
+          </Button>
+        </BuildTooltip>
+        <BuildTooltip
+          content="Scan the workspace and suggest runtime commands, check commands, protected files, and an agent role."
+          side="bottom"
+          align="end"
+        >
+          <Button
+            size="icon-sm"
+            variant="outline"
+            className={cn(
+              'h-8 w-8',
+              shouldShowWorkspaceSetupPrompt ? 'border-primary/60 bg-primary/10 text-primary' : ''
+            )}
+            onClick={() => void scanWorkspaceSetup()}
+            disabled={!activeAgentId || workspaceSetupScanning}
+            aria-label="Scan workspace"
+          >
+            {workspaceSetupScanning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
+          </Button>
+        </BuildTooltip>
+        <Popover open={sectionsDropdownOpen} onOpenChange={setSectionsDropdownOpen}>
+          <BuildTooltip
+            content={hiddenBuildSections.length > 0
+              ? `Closed sections: ${hiddenBuildSections.join(', ')}`
+              : 'Show or hide collapsible Build Mode sections.'}
+            side="bottom"
+            align="end"
+          >
+            <PopoverTrigger asChild>
+              <Button
+                size="sm"
+                variant="outline"
+                className={cn(
+                  'h-8 gap-1.5 px-2 text-[11px]',
+                  hiddenBuildSections.length > 0
+                    ? 'border-amber-400/60 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+                    : ''
+                )}
+              >
+                Sections
+                <ChevronsUpDown className="h-3.5 w-3.5" />
+              </Button>
+            </PopoverTrigger>
+          </BuildTooltip>
+          <PopoverContent align="start" className="w-64 p-1.5">
+            <div className="space-y-1">
+              <div className="border-b border-border/60 pb-1">
+                <div className="flex items-center gap-1 rounded-md hover:bg-accent">
+                  <button
+                    type="button"
+                    className="flex min-w-0 flex-1 items-center justify-between rounded-md px-2 py-1.5 text-left text-xs font-medium"
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      toggleAiBuildOperatorOnly();
+                      keepSectionsDropdownOpen();
+                    }}
+                    title={aiBuildOperatorOnlyActive
+                      ? 'Show all Build Mode sections again.'
+                      : 'Show only the AI Build Operator and hide every other Build Mode section.'}
+                  >
+                    <span className="min-w-0 truncate">AI Build Operator Only</span>
+                    {aiBuildOperatorOnlyActive ? (
+                      <Check className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
+                    ) : (
+                      <Circle className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    className={cn(
+                      'mr-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-background/70 hover:text-foreground',
+                      aiBuildOperatorOnlyLocked ? 'text-amber-500 hover:text-amber-400' : 'text-muted-foreground/45'
+                    )}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      toggleAiBuildOperatorOnlyLock();
+                      keepSectionsDropdownOpen();
+                    }}
+                    title={aiBuildOperatorOnlyLocked
+                      ? 'AI Build Operator Only is locked and will stay that way when you switch modes or restart. Click to stop persisting this.'
+                      : 'Keep only the AI Build Operator visible when you switch modes or restart the app.'}
+                    aria-label={aiBuildOperatorOnlyLocked
+                      ? 'Stop persisting AI Build Operator Only layout'
+                      : 'Persist AI Build Operator Only layout'}
+                  >
+                    <Lock className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+              {([
+                ['workspace', 'Project & Workspace', leftPanelCollapsed],
+                ['runtimePreview', 'Runtime Preview', runtimePreviewSectionHidden],
+                ['terminal', 'Terminal', terminalSectionHidden],
+                ['runtimeLogs', 'Runtime Logs', runtimeLogsSectionHidden],
+                ['diff', 'Changes & Git', diffSectionHidden],
+              ] as Array<[BuildSectionKey, string, boolean]>).map(([section, label, hidden]) => {
+                const locked = Boolean(hiddenSectionLocks[section]);
+                return (
+                  <div key={section} className="flex items-center gap-1 rounded-md hover:bg-accent">
+                    <button
+                      type="button"
+                      className="flex min-w-0 flex-1 items-center justify-between rounded-md px-2 py-1.5 text-left text-xs"
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setBuildSectionHidden(section, !hidden);
+                        keepSectionsDropdownOpen();
+                      }}
+                      title={`Toggle the ${label} section.`}
+                    >
+                      <span className="min-w-0 truncate">{label}</span>
+                      {hidden ? (
+                        <Circle className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      ) : (
+                        <Check className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
+                      )}
+                    </button>
+                    {hidden ? (
+                      <button
+                        type="button"
+                        className={cn(
+                          'mr-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-background/70 hover:text-foreground',
+                          locked ? 'text-amber-500 hover:text-amber-400' : 'text-muted-foreground/45'
+                        )}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          toggleHiddenSectionLock(section);
+                          keepSectionsDropdownOpen();
+                        }}
+                        title={locked
+                          ? `${label} is locked hidden and will stay hidden when you switch modes or restart. Click to stop persisting this.`
+                          : `Keep ${label} hidden when you switch modes or restart the app.`}
+                        aria-label={locked ? `Stop persisting hidden ${label}` : `Persist hidden ${label}`}
+                      >
+                        <Lock className="h-3.5 w-3.5" />
+                      </button>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          </PopoverContent>
+        </Popover>
+        <Popover open={presetDropdownOpen} onOpenChange={setPresetDropdownOpen}>
+          <BuildTooltip
+            content="Build presets save workspace-specific commands, environment profiles, and related build settings. If you choose a preset that belongs to another workspace, Build Mode can switch to that workspace path after confirmation."
+            side="bottom"
+            align="end"
+          >
+            <PopoverTrigger asChild>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 max-w-[180px] gap-1.5 px-2 text-[11px]"
+              >
+                <span className="truncate">{selectedPreset?.name || 'No preset'}</span>
+                <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              </Button>
+            </PopoverTrigger>
+          </BuildTooltip>
+          <PopoverContent align="start" className="w-[320px] p-1.5">
+            <div className="space-y-1">
+              <button
+                type="button"
+                className={cn(
+                  'flex w-full items-center justify-between gap-3 rounded-md px-2 py-1.5 text-left text-xs hover:bg-accent',
+                  !selectedPresetId ? 'bg-accent/50 text-foreground' : 'text-foreground'
+                )}
+                onClick={() => {
+                  setPresetDropdownOpen(false);
+                  void handleSelectPreset(null);
+                }}
+                title="Use the current workspace without a preset."
+              >
+                <span className="font-medium">No preset</span>
+                <span className="truncate text-[10px] text-muted-foreground">Current workspace only</span>
+              </button>
+              {presets.map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  className={cn(
+                    'flex w-full items-center justify-between gap-3 rounded-md px-2 py-1.5 text-left text-xs hover:bg-accent',
+                    selectedPresetId === preset.id ? 'bg-accent/50 text-foreground' : 'text-foreground'
+                  )}
+                  onClick={() => {
+                    setPresetDropdownOpen(false);
+                    void handleSelectPreset(preset.id);
+                  }}
+                  title={`${preset.name} — ${preset.workspaceRelativePath || '.'}`}
+                >
+                  <span className="min-w-0 truncate font-medium">{preset.name}</span>
+                  <span className="max-w-[150px] truncate text-[10px] text-muted-foreground">
+                    {preset.workspaceRelativePath || '.'}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </PopoverContent>
+        </Popover>
+        <BuildTooltip
+          content={`Auto-restart is ${autoRestart ? 'on' : 'off'}. Automatically restart the project runtime when Build mode changes settings that affect the preview server.`}
+          side="bottom"
+          align="end"
+        >
+          <Button
+            size="icon-sm"
+            variant={autoRestart ? 'secondary' : 'outline'}
+            className="h-8 w-8"
+            onClick={() => setAutoRestart((current) => !current)}
+            aria-pressed={autoRestart}
+            aria-label="Toggle auto-restart"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+          </Button>
+        </BuildTooltip>
+        <BuildTooltip
+          content={`Auto-repair with AI is ${autoRepairEnabled ? 'on' : 'off'}. When runtime or build errors are detected, Build mode can ask the AI to run a follow-up repair task using the error context.`}
+          side="bottom"
+          align="end"
+        >
+          <Button
+            size="icon-sm"
+            variant={autoRepairEnabled ? 'secondary' : 'outline'}
+            className="h-8 w-8"
+            onClick={() => setAutoRepairEnabled((current) => !current)}
+            aria-pressed={autoRepairEnabled}
+            aria-label="Toggle auto-repair with AI"
+          >
+            <Wrench className="h-3.5 w-3.5" />
+          </Button>
+        </BuildTooltip>
+        <BuildTooltip content="Start the current project runtime (dev/server process)." side="bottom" align="end">
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 gap-0 px-2 2xl:gap-1.5"
+            onClick={() => void runRuntimeAction('start')}
+            disabled={busyAction !== null}
+          >
+            <Play className="h-4 w-4" />
+            <span className="hidden 2xl:inline">Start</span>
+          </Button>
+        </BuildTooltip>
+        <BuildTooltip content="Stop the currently running project runtime." side="bottom" align="end">
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 gap-0 px-2 2xl:gap-1.5"
+            onClick={() => void runRuntimeAction('stop')}
+            disabled={busyAction !== null}
+          >
+            <Square className="h-4 w-4" />
+            <span className="hidden 2xl:inline">Stop</span>
+          </Button>
+        </BuildTooltip>
+        <BuildTooltip content="Restart the project runtime using current settings." side="bottom" align="end">
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 gap-0 px-2 2xl:gap-1.5"
+            onClick={() => void runRuntimeAction('restart')}
+            disabled={busyAction !== null}
+          >
+            <RefreshCw className="h-4 w-4" />
+            <span className="hidden 2xl:inline">Restart</span>
+          </Button>
+        </BuildTooltip>
+        <BuildTooltip content="Run the project's build command once." side="bottom" align="end">
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 gap-0 px-2 2xl:gap-1.5"
+            onClick={() => void runRuntimeAction('build')}
+            disabled={busyAction !== null}
+          >
+            <Wrench className="h-4 w-4" />
+            <span className="hidden 2xl:inline">Build</span>
+          </Button>
+        </BuildTooltip>
+      </div>
+    </TooltipProvider>
+  ), [
+    activeAgent?.name,
+    activeAgentId,
+    aiBuildOperatorOnlyActive,
+    aiBuildOperatorOnlyLocked,
+    autoRepairEnabled,
+    autoRestart,
+    busyAction,
+    diffSectionHidden,
+    handleSelectPreset,
+    hiddenBuildSections,
+    hiddenSectionLocks,
+    keepSectionsDropdownOpen,
+    leftPanelCollapsed,
+    modelBadgeLabel,
+    presetDropdownOpen,
+    presets,
+    runRuntimeAction,
+    runtimeLogsSectionHidden,
+    runtimePreviewSectionHidden,
+    scanWorkspaceSetup,
+    sectionsDropdownOpen,
+    selectedPreset?.name,
+    selectedPresetId,
+    setBuildSectionHidden,
+    setPresetDropdownOpen,
+    setRecipeCatalogOpen,
+    setSectionsDropdownOpen,
+    shouldShowWorkspaceSetupPrompt,
+    snapshot,
+    statusBadgeClass,
+    terminalSectionHidden,
+    toggleAiBuildOperatorOnly,
+    toggleAiBuildOperatorOnlyLock,
+    toggleHiddenSectionLock,
+    workspaceSetupScanning,
+  ]);
+  useTopBarControls(buildTopBarControls);
 
   return (
     <TooltipProvider delayDuration={250}>
@@ -12596,19 +14040,44 @@ export default function BuildPage() {
         onSelectPrompt={selectSavedPrompt}
         mode={savedPromptsMode}
       />
-      <Dialog open={gitReviewDialogOpen} onOpenChange={setGitReviewDialogOpen}>
-        <DialogContent className="flex max-h-[92vh] w-[94vw] max-w-6xl flex-col overflow-hidden">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <FileDiff className="h-4 w-4" />
-              Changes & Git Review
-            </DialogTitle>
-            <DialogDescription>
-              Review changed files, Git status, checks, and sources before committing or pushing.
-            </DialogDescription>
+      <Dialog open={gitReviewDialogOpen} onOpenChange={(open) => {
+        setGitReviewDialogOpen(open);
+        if (!open) setGitReviewDialogFullscreen(false);
+      }}>
+        <DialogContent
+          className={cn(
+            'flex flex-col overflow-hidden',
+            gitReviewDialogFullscreen
+              ? 'h-[calc(100vh-1rem)] max-h-[calc(100vh-1rem)] w-[calc(100vw-1rem)] max-w-none p-4'
+              : 'max-h-[92vh] w-[94vw] max-w-6xl'
+          )}
+        >
+          <DialogHeader className="pr-8">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <DialogTitle className="flex items-center gap-2">
+                  <FileDiff className="h-4 w-4" />
+                  Changes & Git Review
+                </DialogTitle>
+                <DialogDescription>
+                  Review changed files, Git status, checks, and sources before committing or pushing.
+                </DialogDescription>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 shrink-0 gap-1 px-2 text-xs"
+                onClick={() => setGitReviewDialogFullscreen((current) => !current)}
+                title={gitReviewDialogFullscreen ? 'Exit full screen Changes & Git review' : 'Open Changes & Git review full screen'}
+              >
+                {gitReviewDialogFullscreen ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+                {gitReviewDialogFullscreen ? 'Exit full screen' : 'Full screen'}
+              </Button>
+            </div>
           </DialogHeader>
           <div className="min-h-0 flex-1 overflow-hidden">
-            {renderBuildGitReviewContent({ inDialog: true })}
+            {renderBuildGitReviewContent({ inDialog: true, fullscreen: gitReviewDialogFullscreen })}
           </div>
         </DialogContent>
       </Dialog>
@@ -13686,14 +15155,21 @@ export default function BuildPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      {/* Legacy Build header moved to the global usage bar.
       <div className="flex-shrink-0 border-b border-border bg-card/50 px-4 py-3">
         <div className="flex w-full flex-wrap items-center justify-between gap-x-4 gap-y-2">
           <div className="flex flex-wrap items-center gap-2">
             <ModeSwitch />
-            <div className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground">
-              <Wrench className="h-3.5 w-3.5" />
-              Agent: {activeAgent?.name || activeAgentId}
-            </div>
+            <BuildTooltip
+              content={`Active Build agent: ${activeAgent?.name || activeAgentId || 'None'}. Build tasks use this agent's model, persona prompt, workspace defaults, permissions, memory, and task history.`}
+              side="bottom"
+              align="start"
+            >
+              <div className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground">
+                <Wrench className="h-3.5 w-3.5" />
+                Agent: {activeAgent?.name || activeAgentId}
+              </div>
+            </BuildTooltip>
             {modelBadgeLabel ? (
               <BuildTooltip
                 content={modelBadgeLabel}
@@ -13706,17 +15182,37 @@ export default function BuildPage() {
                 </div>
               </BuildTooltip>
             ) : null}
-            <div className="inline-flex shrink-0 items-center rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground">
-              Preset: {selectedPreset?.name || 'None'}
-            </div>
-            <div className={cn('inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium', statusBadgeClass)}>
-              {snapshot?.runtime.status === 'running' ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Circle className="h-3.5 w-3.5" />}
-              {formatRuntimeStatus(snapshot?.runtime.status ?? 'stopped')}
-            </div>
-            {snapshot?.runtime.port ? (
+            <BuildTooltip
+              content={selectedPreset
+                ? `Current Build preset: ${selectedPreset.name}. Presets store workspace, runtime, preview, linked project, and check settings for this Build setup.`
+                : 'No Build preset is selected. Presets store workspace, runtime, preview, linked project, and check settings for a Build setup.'}
+              side="bottom"
+              align="start"
+            >
               <div className="inline-flex shrink-0 items-center rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground">
-                Port {snapshot.runtime.port}
+                Preset: {selectedPreset?.name || 'None'}
               </div>
+            </BuildTooltip>
+            <BuildTooltip
+              content={`Current Build runtime status: ${formatRuntimeStatus(snapshot?.runtime.status ?? 'stopped')}. This shows whether the project preview/dev server is stopped, starting, running, stopping, or in an error state.`}
+              side="bottom"
+              align="start"
+            >
+              <div className={cn('inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium', statusBadgeClass)}>
+                {snapshot?.runtime.status === 'running' ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Circle className="h-3.5 w-3.5" />}
+                {formatRuntimeStatus(snapshot?.runtime.status ?? 'stopped')}
+              </div>
+            </BuildTooltip>
+            {snapshot?.runtime.port ? (
+              <BuildTooltip
+                content={`The Build runtime preview server is using local port ${snapshot.runtime.port}, usually available at http://localhost:${snapshot.runtime.port}.`}
+                side="bottom"
+                align="start"
+              >
+                <div className="inline-flex shrink-0 items-center rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground">
+                  Port {snapshot.runtime.port}
+                </div>
+              </BuildTooltip>
             ) : null}
             {snapshot?.runtime.buildStatus && snapshot.runtime.buildStatus !== 'unknown' ? (
               <div className={cn(
@@ -13946,22 +15442,34 @@ export default function BuildPage() {
                 </div>
               </PopoverContent>
             </Popover>
-            <label className="inline-flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
-              <input
-                type="checkbox"
-                checked={autoRestart}
-                onChange={(event) => setAutoRestart(event.target.checked)}
-              />
-              Auto-restart
-            </label>
-            <label className="inline-flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
-              <input
-                type="checkbox"
-                checked={autoRepairEnabled}
-                onChange={(event) => setAutoRepairEnabled(event.target.checked)}
-              />
-              Auto-repair with AI
-            </label>
+            <BuildTooltip
+              content="Automatically restart the project runtime when Build mode changes settings that affect the preview server."
+              side="bottom"
+              align="end"
+            >
+              <label className="inline-flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={autoRestart}
+                  onChange={(event) => setAutoRestart(event.target.checked)}
+                />
+                Auto-restart
+              </label>
+            </BuildTooltip>
+            <BuildTooltip
+              content="When runtime or build errors are detected, Build mode can ask the AI to run a follow-up repair task using the error context."
+              side="bottom"
+              align="end"
+            >
+              <label className="inline-flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={autoRepairEnabled}
+                  onChange={(event) => setAutoRepairEnabled(event.target.checked)}
+                />
+                Auto-repair with AI
+              </label>
+            </BuildTooltip>
             <BuildTooltip content="Start the current project runtime (dev/server process)." side="bottom" align="end">
               <Button
                 size="sm"
@@ -14009,6 +15517,8 @@ export default function BuildPage() {
           </div>
         </div>
       </div>
+
+      */}
 
       <div className="flex-1 min-h-0 px-3 py-3">
         <div className="flex h-full w-full flex-col gap-3">
@@ -15458,6 +16968,7 @@ export default function BuildPage() {
                         assistantNearBottomRef.current = isAtBottom;
                         setAssistantNearBottom(isAtBottom);
                       }}
+                      rangeChanged={handleBuildPromptNavigatorRangeChanged}
                       itemContent={(index, message) => {
                         const changedFilesPayload = parseBuildChangedFilesSummaryMessage(message);
                         return (
@@ -15483,9 +16994,7 @@ export default function BuildPage() {
                                 savingProjectNote={projectNoteSavingMessageId === message.id}
                                 savingRtf={rtfSavingMessageId === message.id}
                                 proseClasses={assistantProseClasses}
-                                onCopy={(messageId, content, sourceElement) => {
-                                  void handleCopyAssistantMessage(messageId, content, sourceElement);
-                                }}
+                                onCopy={handleCopyAssistantMessageClick}
                                 onSaveAsProjectNote={handleOpenSaveAnswerAsProjectNote}
                                 onSaveAsRtf={handleOpenSaveAnswerAsRtf}
                                 onToggleToolMessage={toggleToolMessageExpanded}
@@ -15497,6 +17006,14 @@ export default function BuildPage() {
                       }}
                     />
                   )}
+                  <PromptNavigator
+                    entries={buildPromptNavigatorEntries}
+                    activeEntryId={activeBuildPromptNavigatorId}
+                    onJump={handleBuildPromptNavigatorJump}
+                    storageKey={BUILD_PROMPT_NAVIGATOR_STORAGE_KEY}
+                    label="Prompt navigator"
+                    tone="build"
+                  />
                 </div>
                 {!assistantNearBottom && assistantMessages.length > 0 ? (
                   <Button
@@ -15522,16 +17039,19 @@ export default function BuildPage() {
                 agentId={activeAgentId}
                 workspace={snapshot?.workspaceRoot || agentWorkspaceRoot}
                 usageProjectId={selectedBuildProjectId}
+                askAiToRunTests={askAiToRunTests}
                 showWorkingFolder={!hasVisibleBuildCenterArea}
                 showProposedDiffPopupButton={diffSectionHidden && !hasVisibleBuildCenterArea}
                 promptsCount={promptLibraryItems.length}
                 onDraftChange={syncGoalPromptDraftRef}
                 onUsageProjectChange={handleBuildUsageProjectChange}
+                onAskAiToRunTestsChange={setAskAiToRunTests}
                 onRun={handleRunPrompt}
                 onStop={handleStopPrompt}
                 onAttachFiles={() => {
                   void handleSelectPromptFiles();
                 }}
+                onAddAttachedFiles={addPromptAttachedFiles}
                 onRemoveFile={removePromptAttachedFile}
                 onOpenSavedPrompts={openSavedPrompts}
                 onSaveCurrentPrompt={saveCurrentBuildPrompt}
@@ -15621,7 +17141,7 @@ export default function BuildPage() {
                       </div>
                       <div className="grid gap-2 xl:grid-cols-[minmax(0,1fr)_320px]">
                         <div className="min-w-0 space-y-2">
-                          <pre className="max-h-36 overflow-auto rounded-md bg-muted/50 p-2 text-[11px] leading-relaxed">{diff?.patch || 'No patch available.'}</pre>
+                          <BuildUnifiedDiffViewer patch={diff?.patch} compact />
                           {changedDiffFiles.length > 0 ? (
                             <div className="grid min-h-0 grid-cols-1 gap-2 lg:grid-cols-[220px_1fr]">
                               <div className="max-h-52 overflow-auto rounded-md border border-border/60 bg-muted/20 p-1">
@@ -17143,6 +18663,8 @@ export default function BuildPage() {
         anchorRect={projectWorkPopupAnchorRect}
         storageScope="build-left"
         defaultSide="left"
+        agentId={activeAgentId}
+        onInsertPrompt={insertTextIntoBuildPrompt}
         onClose={() => setProjectWorkPopupOpen(false)}
       />
       {workspaceTreeContextMenu ? (

@@ -1769,6 +1769,39 @@ export function readUserSkillFile(req: UserSkillReadFileRequest & { agentId?: st
   return { path: full, content };
 }
 
+function normalizeSkillMarkdownTextForSave(input: string): string {
+  let text = String(input || '').trim();
+  if (!text) return '';
+
+  if (text.startsWith('"') && text.endsWith('"')) {
+    try {
+      const parsed = JSON.parse(text);
+      if (typeof parsed === 'string') text = parsed.trim();
+    } catch {
+      // Not a JSON string; keep the text as entered.
+    }
+  }
+
+  const literalNewlineCount = (text.match(/\\n/g) || []).length;
+  const actualNewlineCount = (text.match(/\n/g) || []).length;
+  const looksEscapedMarkdown =
+    text.startsWith('---\\n')
+    || text.includes('\\nmetadata:')
+    || text.includes('\\n# ')
+    || text.includes('\\n## ')
+    || (literalNewlineCount >= 3 && actualNewlineCount <= 2);
+
+  if (looksEscapedMarkdown) {
+    text = text
+      .replace(/\\r\\n/g, '\n')
+      .replace(/\\n/g, '\n')
+      .replace(/\\t/g, '  ')
+      .replace(/\\"/g, '"');
+  }
+
+  return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+}
+
 export async function writeUserSkillFile(req: UserSkillWriteFileRequest & { agentId?: string }): Promise<{ path: string; manifest?: UserSkillManifest }> {
   const rel = safeRelPath(req.relPath);
   const resolved = resolveSkillBaseDir(req.skillId, req.source, req.agentId);
@@ -1777,7 +1810,7 @@ export async function writeUserSkillFile(req: UserSkillWriteFileRequest & { agen
   const isSkillMarkdown = rel.toLowerCase() === SKILL_MD_FILE.toLowerCase();
 
   if (isSkillMarkdown) {
-    const nextContent = String(req.content ?? '');
+    const nextContent = normalizeSkillMarkdownTextForSave(String(req.content ?? ''));
     const validation = validateSkillMarkdown({ skillId: req.skillId, raw: nextContent });
     if (!validation.ok) {
       throw new Error(`Skill validation failed: ${validation.issues.join(' ')}`);
@@ -2368,7 +2401,10 @@ export function buildUserSkillsPromptBundle(params?: { agentId?: string; userMes
   blocks.push('<skills>');
   blocks.push('Skills are simple markdown playbooks stored on disk and injected into your context.');
   blocks.push('Use installed skills when relevant.');
-  blocks.push('If the user asks you to save/create a new skill, do it yourself by creating a new folder containing SKILL.md.');
+  blocks.push('If the user asks you to save/create a new skill, create a compact OpenClaw-style folder containing SKILL.md.');
+  blocks.push('New skills must be reusable playbooks: frontmatter name should be a kebab-case slug, description should be a short trigger phrase, and the body should contain durable workflow instructions.');
+  blocks.push('Do not save raw chat logs, tool transcripts, retries, status messages, one-off target names, or private data into a skill.');
+  blocks.push('When a skill comes from a completed task, generalize the target into placeholders and include a concise tool call overview, workflow, verification checks, and fallback paths.');
   if (autoSkillEnabled) {
     blocks.push('Auto skill creation is ENABLED for this agent. You may proactively create a skill when a workflow is clearly reusable.');
     if (autoSkillAutoPromoteLowRisk) {

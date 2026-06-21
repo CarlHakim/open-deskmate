@@ -1365,6 +1365,12 @@ export async function resumeDesktopSessionRequest(params: {
   attachedFiles?: string[];
   privacyMode?: 'normal' | 'incognito';
   usageProjectId?: string | null;
+  resumeOptions?: {
+    workingDirectory?: string;
+    requiresBrowser?: boolean;
+    buildMode?: boolean;
+    buildWorkspaceRelativePath?: string;
+  };
   applyAgentContext: (config: TaskConfig) => TaskConfig;
 }): Promise<Task> {
   const {
@@ -1376,6 +1382,7 @@ export async function resumeDesktopSessionRequest(params: {
     attachedFiles,
     privacyMode,
     usageProjectId,
+    resumeOptions,
     applyAgentContext,
   } = params;
   const taskManager = getTaskManager();
@@ -1397,9 +1404,13 @@ export async function resumeDesktopSessionRequest(params: {
     sessionId: validatedSessionId,
     taskId,
     agentId: existingTask?.agentId,
+    workingDirectory: resumeOptions?.workingDirectory,
     attachedFiles: runtimeAttachedFiles,
     privacyMode: effectivePrivacyMode,
     usageProjectId: usageProjectId ?? existingTask?.usageProjectId ?? null,
+    requiresBrowser: resumeOptions?.requiresBrowser,
+    buildMode: resumeOptions?.buildMode === true ? true : undefined,
+    buildWorkspaceRelativePath: resumeOptions?.buildWorkspaceRelativePath,
   });
   assertUsageBudgetAllowsRun(resumeConfig.agentId, resumeConfig.usageProjectId);
 

@@ -16,6 +16,7 @@ import { UsageBudgetPill } from '../usage/UsageBudgetPill';
 import type { ContextWindowEstimateResponse } from '@accomplish/shared';
 import InlineSlashCommandMenu from '../commands/InlineSlashCommandMenu';
 import { filterSlashCommands, type SlashCommandDefinition } from '../../lib/slash-commands';
+import { registerPromptAttachmentTarget, registerPromptInsertionTarget } from '../../lib/prompt-insertion';
 import {
   addPromptHistoryEntry,
   CHAT_PROMPT_HISTORY_STORAGE_KEY,
@@ -108,6 +109,24 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
     getValue: () => textRef.current,
     focus: () => textareaRef.current?.focus(),
   }));
+
+  const appendPromptText = useCallback((prompt: string) => {
+    const insertion = prompt.trim();
+    if (!insertion) return;
+    promptHistoryCursorRef.current = null;
+    promptHistoryDraftRef.current = '';
+    setText((current) => (current.trim() ? `${current.trim()}\n\n${insertion}` : insertion));
+    window.requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      const cursor = textareaRef.current?.value.length ?? 0;
+      textareaRef.current?.setSelectionRange(cursor, cursor);
+    });
+  }, []);
+
+  useEffect(() => registerPromptInsertionTarget(
+    { mode: 'chat', label: 'Chat prompt' },
+    appendPromptText
+  ), [appendPromptText]);
   const [workingFolder, setWorkingFolder] = useState<string | null>(defaultWorkingFolder);
   const previousDefaultRef = useRef<string | null>(defaultWorkingFolder);
   const [showSavedPromptsDialog, setShowSavedPromptsDialog] = useState(false);
@@ -119,6 +138,11 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
   const clearAttachedFiles = useAttachmentStore((state) => state.clearFiles);
   const { prompts, loadPrompts } = useSavedPromptsStore();
   const promptPickerCount = prompts.length + BUILD_RECIPES.length;
+
+  useEffect(() => registerPromptAttachmentTarget(
+    { mode: 'chat', label: 'Chat prompt' },
+    addAttachedFiles
+  ), [addAttachedFiles]);
 
   useEffect(() => {
     void loadUsageProjects(true);
@@ -448,49 +472,23 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
   return (
     <div className="relative z-20 flex flex-col gap-2">
       {/* Main input area */}
-      <div className="relative flex flex-col rounded-2xl border-2 border-border/60 bg-background px-4 py-3 shadow-soft transition-[border-color,box-shadow] duration-200 ease-out focus-within:border-primary/50 focus-within:shadow-glow">
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-2">
-            <ContextWindowIndicator stats={contextStats} className="mb-0" />
-            <ContextInspector
-              stats={contextStats}
-              agentId={agentId}
-              workspace={workingFolder || defaultWorkingFolder}
-              attachedFiles={attachedFiles}
-              privacyMode={privacyMode}
-              usageProjectId={draftUsageProjectId}
-            />
-            <UsageProjectSelector
-              mode="chat"
-              value={draftUsageProjectId}
-              onChange={setDraftUsageProjectId}
-              compact
-              disabled={isActionDisabled}
-              persistSelection={false}
-            />
-          </div>
-          {privacyMode === 'incognito' && (
-            <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/40 bg-amber-400/10 px-2 py-0.5 text-[10px] font-medium text-amber-700">
-              <Shield className="h-3 w-3" />
-              Incognito (not saved)
-            </span>
-          )}
-        </div>
+      <div className="relative flex flex-col rounded-xl border-2 border-border/60 bg-background px-3 py-2 shadow-soft transition-[border-color,box-shadow] duration-200 ease-out focus-within:border-primary/50 focus-within:shadow-glow">
         {privacyMode === 'incognito' && (
-          <p className="mb-2 text-[11px] text-muted-foreground">
+          <p className="mb-1.5 text-[10px] leading-tight text-muted-foreground">
             Chat content is not saved. Usage totals still include this session.
           </p>
         )}
         {/* Text input row */}
-        <div className="flex items-end gap-3">
+        <div className="flex items-center gap-2">
           {/* Add files button */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
                 disabled={isActionDisabled}
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-border/50 text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors duration-200 disabled:cursor-not-allowed disabled:opacity-50 mb-1"
-                title="Add files"
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-border/70 bg-background/85 text-foreground/80 shadow-sm backdrop-blur-sm transition-colors duration-200 hover:border-border hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                title="Add photos and files"
+                aria-label="Add photos and files"
               >
                 <Plus className="h-4 w-4" />
               </button>
@@ -514,7 +512,7 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
               placeholder={placeholder}
               disabled={isInputDisabled}
               rows={1}
-              className={`max-h-[200px] min-h-[40px] w-full resize-none bg-transparent py-2 text-foreground placeholder:text-muted-foreground/60 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 leading-relaxed ${large ? 'text-lg' : 'text-sm'}`}
+              className={`block max-h-[160px] min-h-10 w-full resize-none bg-transparent pb-1.5 pt-2.5 text-foreground placeholder:text-muted-foreground/60 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 leading-6 ${large ? 'text-lg' : 'text-sm'}`}
             />
             <InlineSlashCommandMenu
               commands={filteredSlashCommands}
@@ -606,33 +604,50 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
         )}
 
         {/* Action buttons row */}
-        <div className="mt-2 pt-2 border-t border-border/30 flex items-center gap-2">
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5 border-t border-border/30 pt-1.5">
+          <ContextWindowIndicator stats={contextStats} className="mb-0" />
+          <ContextInspector
+            stats={contextStats}
+            agentId={agentId}
+            workspace={workingFolder || defaultWorkingFolder}
+            attachedFiles={attachedFiles}
+            privacyMode={privacyMode}
+            usageProjectId={draftUsageProjectId}
+          />
+          <UsageProjectSelector
+            mode="chat"
+            value={draftUsageProjectId}
+            onChange={setDraftUsageProjectId}
+            compact
+            disabled={isActionDisabled}
+            persistSelection={false}
+          />
           <UsageBudgetPill usageProjectId={draftUsageProjectId} label="Task budget" className="max-w-[220px]" />
           {onPrivacyModeChange && (
             <button
               type="button"
               onClick={() => onPrivacyModeChange(privacyMode === 'incognito' ? 'normal' : 'incognito')}
               disabled={isActionDisabled}
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50 border ${
+              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border text-xs font-medium shadow-sm backdrop-blur-sm transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50 ${
                 privacyMode === 'incognito'
-                  ? 'border-amber-500/50 bg-amber-500/10 text-amber-700'
-                  : 'border-border/50 text-muted-foreground hover:text-foreground hover:bg-accent/60 hover:border-border'
+                  ? 'border-amber-500/60 bg-amber-500/20 text-amber-700'
+                  : 'border-border/70 bg-background/85 text-foreground/80 hover:border-border hover:bg-background hover:text-foreground'
               }`}
               title="Toggle incognito mode for this task/session"
+              aria-label="Toggle incognito mode for this task/session"
             >
               <Shield className="h-3.5 w-3.5" />
-              <span>{privacyMode === 'incognito' ? 'Incognito on' : 'Incognito'}</span>
             </button>
           )}
           <button
             type="button"
             onClick={handleSelectFolder}
             disabled={isActionDisabled}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50 border border-border/50 hover:border-border"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-background/85 text-xs font-medium text-foreground/80 shadow-sm backdrop-blur-sm transition-colors duration-150 hover:border-border hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
             title="Select a working folder"
+            aria-label="Select a working folder"
           >
             <Folder className="h-3.5 w-3.5" />
-            <span>Work in a folder</span>
           </button>
           <button
             type="button"
@@ -641,8 +656,9 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
               setShowSavedPromptsDialog(true);
             }}
             disabled={isActionDisabled || promptPickerCount === 0}
-            className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50 border border-border/50 hover:border-border"
+            className="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-border/70 bg-background/85 px-2 text-xs font-medium text-foreground/80 shadow-sm backdrop-blur-sm transition-colors duration-150 hover:border-border hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
             title={promptPickerCount === 0 ? 'No saved prompts or recipes' : 'Use a saved prompt or recipe'}
+            aria-label={promptPickerCount === 0 ? 'No saved prompts or recipes' : 'Use a saved prompt or recipe'}
           >
             <FileText className="h-3.5 w-3.5" />
             {promptPickerCount > 0 && (
@@ -658,8 +674,9 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
               setShowSavedPromptsDialog(true);
             }}
             disabled={isActionDisabled}
-            className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50 border border-border/50 hover:border-border"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-background/85 text-xs font-medium text-foreground/80 shadow-sm backdrop-blur-sm transition-colors duration-150 hover:border-border hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
             title="Manage saved prompts"
+            aria-label="Manage saved prompts"
           >
             <Settings className="h-3.5 w-3.5" />
           </button>
@@ -670,8 +687,9 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
               writeChatProjectWorkPopupSession(true, draftUsageProjectId);
             }}
             disabled={isActionDisabled}
-            className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50 border border-border/50 hover:border-border"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-background/85 text-xs font-medium text-foreground/80 shadow-sm backdrop-blur-sm transition-colors duration-150 hover:border-border hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
             title="Open project work linked to this Chat prompt."
+            aria-label="Open project work linked to this Chat prompt"
           >
             <FolderOpen className="h-3.5 w-3.5" />
           </button>
@@ -679,8 +697,8 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
             type="button"
             onClick={toggleVoiceWake}
             disabled={voiceToggleBusy || isActionDisabled || !voiceAccessKeySet || talkModeActive}
-            className={`flex items-center gap-2 rounded-lg border border-border/50 px-2.5 py-1.5 text-xs font-medium transition-colors ${
-              voiceEnabled ? 'bg-emerald-500/10 text-emerald-600' : 'bg-muted/40 text-muted-foreground'
+            className={`flex items-center gap-2 rounded-lg border border-border/70 px-2.5 py-1.5 text-xs font-medium shadow-sm backdrop-blur-sm transition-colors ${
+              voiceEnabled ? 'bg-emerald-500/20 text-emerald-700' : 'bg-background/85 text-foreground/80'
             } ${voiceToggleBusy ? 'opacity-60' : ''} ${talkModeActive ? 'ring-2 ring-emerald-400/40 shadow-glow' : ''}`}
             title={
               !voiceAccessKeySet
@@ -773,6 +791,8 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
         sourceLabel={draftUsageProjectId ? 'Selected Chat budget project' : 'Chat project work'}
         fallbackLabel="Chat project work"
         storageScope="chat"
+        agentId={agentId}
+        onInsertPrompt={appendPromptText}
         onSelectedProjectChange={(projectId) => writeChatProjectWorkPopupSession(true, projectId)}
         onClose={() => {
           setProjectWorkPopupOpen(false);

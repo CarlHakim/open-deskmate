@@ -1,8 +1,9 @@
 'use client';
 
-import { memo, useEffect, useMemo, useState, type FC, type SVGProps } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent, type FC, type SVGProps } from 'react';
 import { cn } from '@/lib/utils';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { AGENT_CHARACTER_AVATARS, getAgentCharacterAvatar } from '@/lib/agent-character-gallery';
 
 type AvatarSvgComponent = FC<SVGProps<SVGSVGElement>>;
 
@@ -12,6 +13,12 @@ type Hat = 'none' | 'cap' | 'fedora' | 'beanie' | 'hardhat' | 'chef' | 'helmet' 
 type Outfit = 'none' | 'tie' | 'labcoat' | 'hoodie' | 'armor';
 type Accessory = 'none' | 'glasses' | 'goggles' | 'headset';
 type Special = 'Robot' | 'Android' | 'Cyborg';
+
+interface AvatarCropSettings {
+  zoom: number;
+  x: number;
+  y: number;
+}
 
 interface BuilderConfig {
   hair: Hair;
@@ -30,6 +37,9 @@ interface Preset {
 }
 
 const BUILDER_PREFIX = 'builder:v1:';
+const AVATAR_IMAGE_CANVAS_SIZE = 256;
+const MAX_SOURCE_AVATAR_IMAGE_BYTES = 10 * 1024 * 1024;
+const DEFAULT_AVATAR_CROP: AvatarCropSettings = { zoom: 1, x: 50, y: 50 };
 const DEFAULT_CONFIG: BuilderConfig = {
   hair: 'short',
   facial: 'none',
@@ -110,6 +120,110 @@ function tintedBackground(color: string | undefined): string {
   if (/^#[0-9a-fA-F]{6}$/.test(safe)) return `${safe}22`;
   if (/^#[0-9a-fA-F]{8}$/.test(safe)) return safe;
   return 'hsl(var(--muted))';
+}
+
+function loadImageElement(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Unable to read that image.'));
+    image.src = src;
+  });
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result);
+      } else {
+        reject(new Error('Unable to read that image.'));
+      }
+    };
+    reader.onerror = () => reject(new Error('Unable to read that image.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function loadAvatarImageSource(file: File): Promise<{
+  source: CanvasImageSource;
+  width: number;
+  height: number;
+  close?: () => void;
+}> {
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const bitmap = await createImageBitmap(file);
+      return {
+        source: bitmap,
+        width: bitmap.width,
+        height: bitmap.height,
+        close: () => bitmap.close(),
+      };
+    } catch {
+      // Fall back to FileReader + HTMLImageElement below for image types Chromium cannot decode this way.
+    }
+  }
+
+  const dataUrl = await readFileAsDataUrl(file);
+  const image = await loadImageElement(dataUrl);
+  return {
+    source: image,
+    width: image.naturalWidth || image.width,
+    height: image.naturalHeight || image.height,
+  };
+}
+
+function clampAvatarCrop(value: number, min: number, max: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, value));
+}
+
+async function cropAvatarImageDataUrl(dataUrl: string, crop: AvatarCropSettings): Promise<string> {
+  const image = await loadImageElement(dataUrl);
+  const naturalWidth = image.naturalWidth || image.width;
+  const naturalHeight = image.naturalHeight || image.height;
+  if (!naturalWidth || !naturalHeight) {
+    throw new Error('Unable to read that image.');
+  }
+
+  const canvas = document.createElement('canvas');
+  canvas.width = AVATAR_IMAGE_CANVAS_SIZE;
+  canvas.height = AVATAR_IMAGE_CANVAS_SIZE;
+  const context = canvas.getContext('2d');
+  if (!context) {
+    throw new Error('Unable to prepare the image.');
+  }
+
+  const zoom = clampAvatarCrop(crop.zoom, 1, 3, DEFAULT_AVATAR_CROP.zoom);
+  const x = clampAvatarCrop(crop.x, 0, 100, DEFAULT_AVATAR_CROP.x);
+  const y = clampAvatarCrop(crop.y, 0, 100, DEFAULT_AVATAR_CROP.y);
+  const scale = Math.max(
+    AVATAR_IMAGE_CANVAS_SIZE / naturalWidth,
+    AVATAR_IMAGE_CANVAS_SIZE / naturalHeight
+  ) * zoom;
+  const scaledWidth = naturalWidth * scale;
+  const scaledHeight = naturalHeight * scale;
+  const offsetX = -Math.max(0, scaledWidth - AVATAR_IMAGE_CANVAS_SIZE) * (x / 100);
+  const offsetY = -Math.max(0, scaledHeight - AVATAR_IMAGE_CANVAS_SIZE) * (y / 100);
+
+  context.clearRect(0, 0, AVATAR_IMAGE_CANVAS_SIZE, AVATAR_IMAGE_CANVAS_SIZE);
+  context.drawImage(image, offsetX, offsetY, scaledWidth, scaledHeight);
+  return canvas.toDataURL('image/png');
+}
+
+async function validateAvatarImageFile(file: File): Promise<string> {
+  if (file.size > MAX_SOURCE_AVATAR_IMAGE_BYTES) {
+    throw new Error('Choose an image under 10 MB.');
+  }
+  if (file.type && !file.type.startsWith('image/')) {
+    throw new Error('Choose an image file.');
+  }
+
+  const image = await loadAvatarImageSource(file);
+  image.close?.();
+  return readFileAsDataUrl(file);
 }
 
 function normalizeConfig(partial: Partial<BuilderConfig> | undefined): BuilderConfig {
@@ -402,23 +516,33 @@ export const AGENT_AVATAR_COLORS = [
 interface AgentAvatarPickerProps {
   selectedAvatar: string | undefined;
   selectedColor: string | undefined;
+  selectedImageDataUrl?: string | undefined;
   onAvatarChange: (avatar: string | undefined) => void;
   onColorChange: (color: string | undefined) => void;
+  onImageDataUrlChange?: (imageDataUrl: string | undefined) => void;
 }
 
 function AgentAvatarPicker({
   selectedAvatar,
   selectedColor,
+  selectedImageDataUrl,
   onAvatarChange,
   onColorChange,
+  onImageDataUrlChange,
 }: AgentAvatarPickerProps) {
-  const [activeTab, setActiveTab] = useState<'preset' | 'builder' | 'color'>('preset');
+  const [activeTab, setActiveTab] = useState<'preset' | 'characters' | 'builder' | 'color' | 'image'>('preset');
   const [builderConfig, setBuilderConfig] = useState<BuilderConfig>(() => {
     const resolved = resolveAvatar(selectedAvatar);
     return resolved.kind === 'human' ? resolved.config : { ...DEFAULT_CONFIG };
   });
   const [avatarCodeInput, setAvatarCodeInput] = useState(selectedAvatar || 'Person');
   const [exportStatus, setExportStatus] = useState<string | null>(null);
+  const [pendingImageDataUrl, setPendingImageDataUrl] = useState<string | null>(null);
+  const [pendingImageName, setPendingImageName] = useState('');
+  const [avatarCrop, setAvatarCrop] = useState<AvatarCropSettings>(DEFAULT_AVATAR_CROP);
+  const [cropPreviewDataUrl, setCropPreviewDataUrl] = useState<string | null>(null);
+  const [cropPreviewBusy, setCropPreviewBusy] = useState(false);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     const resolved = resolveAvatar(selectedAvatar);
@@ -428,16 +552,51 @@ function AgentAvatarPicker({
     setAvatarCodeInput(selectedAvatar || 'Person');
   }, [selectedAvatar]);
 
+  useEffect(() => {
+    if (!pendingImageDataUrl) {
+      setCropPreviewDataUrl(null);
+      setCropPreviewBusy(false);
+      return;
+    }
+
+    let cancelled = false;
+    setCropPreviewBusy(true);
+    cropAvatarImageDataUrl(pendingImageDataUrl, avatarCrop)
+      .then((dataUrl) => {
+        if (!cancelled) {
+          setCropPreviewDataUrl(dataUrl);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCropPreviewDataUrl(null);
+          setExportStatus('Unable to preview that crop.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setCropPreviewBusy(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [avatarCrop, pendingImageDataUrl]);
+
   const previewColor = safeColor(selectedColor, 'hsl(var(--foreground))');
   const presetIconColor = safeColor(selectedColor, 'hsl(var(--foreground))');
   const selectedPreset = useMemo(() => AGENT_AVATARS.find((entry) => entry.name === selectedAvatar), [selectedAvatar]);
+  const selectedCharacter = useMemo(() => getAgentCharacterAvatar(selectedAvatar), [selectedAvatar]);
   const SelectedComponent = selectedPreset?.component;
+  const imagePreviewDataUrl = cropPreviewDataUrl || selectedImageDataUrl;
 
   const handleBuilderChange = <K extends keyof BuilderConfig>(key: K, value: BuilderConfig[K]) => {
     const next = normalizeConfig({ ...builderConfig, [key]: value });
     setBuilderConfig(next);
     const encoded = encodeBuilderAvatar(next);
     onAvatarChange(encoded);
+    onImageDataUrlChange?.(undefined);
     setAvatarCodeInput(encoded);
   };
 
@@ -456,15 +615,55 @@ function AgentAvatarPicker({
     const value = avatarCodeInput.trim();
     if (!value) {
       onAvatarChange(undefined);
+      onImageDataUrlChange?.(undefined);
       setExportStatus('Avatar reset to default.');
       return;
     }
-    if (value.startsWith(BUILDER_PREFIX) || PRESET_MAP[value]) {
+    if (value.startsWith(BUILDER_PREFIX) || PRESET_MAP[value] || getAgentCharacterAvatar(value)) {
       onAvatarChange(value);
+      onImageDataUrlChange?.(undefined);
       setExportStatus('Avatar code applied.');
       return;
     }
-    setExportStatus('Invalid avatar code. Use a preset name or builder code.');
+    setExportStatus('Invalid avatar code. Use a preset name, character code, or builder code.');
+  };
+
+  const handleImageInputChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    try {
+      const dataUrl = await validateAvatarImageFile(file);
+      setPendingImageDataUrl(dataUrl);
+      setPendingImageName(file.name);
+      setAvatarCrop(DEFAULT_AVATAR_CROP);
+      setActiveTab('image');
+      setExportStatus('Adjust the crop, then apply the image.');
+    } catch (error) {
+      setExportStatus(error instanceof Error ? error.message : 'Unable to use that image.');
+    }
+  };
+
+  const handleApplyImageCrop = async () => {
+    if (!pendingImageDataUrl) return;
+    try {
+      const dataUrl = await cropAvatarImageDataUrl(pendingImageDataUrl, avatarCrop);
+      onImageDataUrlChange?.(dataUrl);
+      setPendingImageDataUrl(null);
+      setPendingImageName('');
+      setCropPreviewDataUrl(null);
+      setExportStatus('Image avatar saved.');
+    } catch (error) {
+      setExportStatus(error instanceof Error ? error.message : 'Unable to apply that crop.');
+    }
+  };
+
+  const handleCancelImageCrop = () => {
+    setPendingImageDataUrl(null);
+    setPendingImageName('');
+    setCropPreviewDataUrl(null);
+    setAvatarCrop(DEFAULT_AVATAR_CROP);
+    setExportStatus(null);
   };
 
   const handleExportSvg = () => {
@@ -493,7 +692,11 @@ function AgentAvatarPicker({
           )}
           style={{ backgroundColor: tintedBackground(selectedColor) }}
         >
-          {SelectedComponent ? (
+          {imagePreviewDataUrl ? (
+            <img src={imagePreviewDataUrl} alt="Selected agent avatar" className="h-full w-full rounded-[0.65rem] object-cover" />
+          ) : selectedCharacter ? (
+            <img src={selectedCharacter.src} alt={selectedCharacter.label} className="h-full w-full rounded-[0.65rem] object-cover" />
+          ) : SelectedComponent ? (
             <SelectedComponent className="h-10 w-10" color={previewColor} />
           ) : (
             <svg viewBox="0 0 24 24" fill="none" className="h-10 w-10" dangerouslySetInnerHTML={{ __html: getAvatarPaths(selectedAvatar, previewColor) }} />
@@ -503,8 +706,10 @@ function AgentAvatarPicker({
 
       <div className="flex border-b border-border/50">
         <button type="button" onClick={() => setActiveTab('preset')} className={cn('flex-1 py-2 text-sm font-medium transition-colors', activeTab === 'preset' ? 'text-primary border-b-2 border-primary' : 'text-muted-foreground hover:text-foreground')}>Presets</button>
+        <button type="button" onClick={() => setActiveTab('characters')} className={cn('flex-1 py-2 text-sm font-medium transition-colors', activeTab === 'characters' ? 'text-primary border-b-2 border-primary' : 'text-muted-foreground hover:text-foreground')}>Characters</button>
         <button type="button" onClick={() => setActiveTab('builder')} className={cn('flex-1 py-2 text-sm font-medium transition-colors', activeTab === 'builder' ? 'text-primary border-b-2 border-primary' : 'text-muted-foreground hover:text-foreground')}>Builder</button>
         <button type="button" onClick={() => setActiveTab('color')} className={cn('flex-1 py-2 text-sm font-medium transition-colors', activeTab === 'color' ? 'text-primary border-b-2 border-primary' : 'text-muted-foreground hover:text-foreground')}>Color</button>
+        <button type="button" onClick={() => setActiveTab('image')} className={cn('flex-1 py-2 text-sm font-medium transition-colors', activeTab === 'image' ? 'text-primary border-b-2 border-primary' : 'text-muted-foreground hover:text-foreground')}>Image</button>
       </div>
 
       {activeTab === 'preset' ? (
@@ -514,7 +719,7 @@ function AgentAvatarPicker({
               <button
                 key={name}
                 type="button"
-                onClick={() => { onAvatarChange(name); setAvatarCodeInput(name); setExportStatus(null); }}
+                onClick={() => { onAvatarChange(name); onImageDataUrlChange?.(undefined); setAvatarCodeInput(name); setExportStatus(null); }}
                 className={cn(
                   'flex flex-col items-center gap-1.5 p-2 rounded-lg border transition-all duration-200',
                   'hover:scale-[1.02] hover:border-primary/40 hover:bg-accent/40',
@@ -528,6 +733,38 @@ function AgentAvatarPicker({
                   <AvatarComp className="h-10 w-10" color={presetIconColor} />
                 </div>
                 <span className="text-[10px] font-medium text-foreground truncate w-full text-center">{label}</span>
+              </button>
+            ))}
+          </div>
+        </ScrollArea>
+      ) : activeTab === 'characters' ? (
+        <ScrollArea className="h-[260px]">
+          <div className="grid grid-cols-3 gap-2 p-1 sm:grid-cols-4">
+            {AGENT_CHARACTER_AVATARS.map((character) => (
+              <button
+                key={character.id}
+                type="button"
+                onClick={() => {
+                  onAvatarChange(character.id);
+                  onImageDataUrlChange?.(undefined);
+                  setAvatarCodeInput(character.id);
+                  setExportStatus(`${character.label} selected.`);
+                }}
+                className={cn(
+                  'flex min-w-0 flex-col items-center gap-1.5 rounded-lg border p-2 transition-all duration-200',
+                  'hover:scale-[1.02] hover:border-primary/40 hover:bg-accent/40',
+                  selectedAvatar === character.id
+                    ? 'border-primary/50 bg-primary/10 ring-2 ring-primary/25'
+                    : 'border-border/70 bg-card'
+                )}
+                title={character.label}
+              >
+                <img
+                  src={character.src}
+                  alt={character.label}
+                  className="h-12 w-12 rounded-md border border-border/70 bg-background object-cover shadow-sm"
+                />
+                <span className="w-full truncate text-center text-[10px] font-medium text-foreground">{character.label}</span>
               </button>
             ))}
           </div>
@@ -558,11 +795,156 @@ function AgentAvatarPicker({
           </div>
           {exportStatus && <p className="text-[11px] text-muted-foreground">{exportStatus}</p>}
         </div>
-      ) : (
+      ) : activeTab === 'color' ? (
         <div className="grid grid-cols-6 gap-2 p-1">
           {AGENT_AVATAR_COLORS.map((color) => (
             <button key={color.name} type="button" onClick={() => onColorChange(color.value)} className={cn('w-10 h-10 rounded-lg border-2 transition-all duration-200 hover:scale-110', selectedColor === color.value ? 'border-primary ring-2 ring-primary/20' : 'border-border/50 hover:border-border')} style={{ backgroundColor: color.value || 'hsl(var(--muted))' }} title={color.name} />
           ))}
+        </div>
+      ) : (
+        <div className="space-y-3 rounded-lg border border-border/60 bg-background/60 p-3">
+          <input
+            ref={imageInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(event) => void handleImageInputChange(event)}
+          />
+          {pendingImageDataUrl ? (
+            <div className="space-y-3">
+              <div className="flex items-start gap-3">
+                <div className="flex h-28 w-28 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-primary/40 bg-card shadow-sm">
+                  {cropPreviewDataUrl ? (
+                    <img src={cropPreviewDataUrl} alt="Cropped avatar preview" className="h-full w-full object-cover" />
+                  ) : (
+                    <span className="px-2 text-center text-[11px] text-muted-foreground">
+                      {cropPreviewBusy ? 'Previewing...' : 'Preview unavailable'}
+                    </span>
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium text-foreground">Preview and crop</div>
+                  <p className="mt-1 truncate text-xs text-muted-foreground" title={pendingImageName}>
+                    {pendingImageName || 'Selected image'}
+                  </p>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Adjust the crop until the square preview looks right, then apply it.
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid gap-3 rounded-lg border border-border/60 bg-card/60 p-3">
+                <label className="grid gap-1 text-xs text-muted-foreground">
+                  <span className="flex items-center justify-between">
+                    Zoom
+                    <span className="text-[11px] tabular-nums">{avatarCrop.zoom.toFixed(2)}x</span>
+                  </span>
+                  <input
+                    type="range"
+                    min={1}
+                    max={3}
+                    step={0.05}
+                    value={avatarCrop.zoom}
+                    onChange={(event) => setAvatarCrop((prev) => ({ ...prev, zoom: Number(event.target.value) }))}
+                  />
+                </label>
+                <label className="grid gap-1 text-xs text-muted-foreground">
+                  <span className="flex items-center justify-between">
+                    Horizontal crop
+                    <span className="text-[11px] tabular-nums">{Math.round(avatarCrop.x)}%</span>
+                  </span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={1}
+                    value={avatarCrop.x}
+                    onChange={(event) => setAvatarCrop((prev) => ({ ...prev, x: Number(event.target.value) }))}
+                  />
+                </label>
+                <label className="grid gap-1 text-xs text-muted-foreground">
+                  <span className="flex items-center justify-between">
+                    Vertical crop
+                    <span className="text-[11px] tabular-nums">{Math.round(avatarCrop.y)}%</span>
+                  </span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={1}
+                    value={avatarCrop.y}
+                    onChange={(event) => setAvatarCrop((prev) => ({ ...prev, y: Number(event.target.value) }))}
+                  />
+                </label>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleApplyImageCrop()}
+                  className="rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+                >
+                  Apply crop
+                </button>
+                <button
+                  type="button"
+                  onClick={() => imageInputRef.current?.click()}
+                  className="rounded-md border border-input bg-background px-3 py-2 text-xs hover:bg-accent"
+                >
+                  Choose different image
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCancelImageCrop}
+                  className="rounded-md border border-input bg-background px-3 py-2 text-xs hover:bg-accent"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center gap-3">
+                <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-border bg-card">
+                  {selectedImageDataUrl ? (
+                    <img src={selectedImageDataUrl} alt="Image avatar preview" className="h-full w-full object-cover" />
+                  ) : selectedCharacter ? (
+                    <img src={selectedCharacter.src} alt={selectedCharacter.label} className="h-full w-full object-cover" />
+                  ) : (
+                    <svg viewBox="0 0 24 24" fill="none" className="h-10 w-10" dangerouslySetInnerHTML={{ __html: getAvatarPaths(selectedAvatar, previewColor) }} />
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium text-foreground">Custom image avatar</div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Choose an image from this PC, preview the crop, then save it with the agent.
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => imageInputRef.current?.click()}
+                  className="rounded-md border border-input bg-background px-3 py-2 text-xs hover:bg-accent"
+                >
+                  Choose image
+                </button>
+                {selectedImageDataUrl && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onImageDataUrlChange?.(undefined);
+                      setExportStatus('Image avatar removed.');
+                    }}
+                    className="rounded-md border border-input bg-background px-3 py-2 text-xs hover:bg-accent"
+                  >
+                    Remove image
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+          {exportStatus && <p className="text-[11px] text-muted-foreground">{exportStatus}</p>}
         </div>
       )}
     </div>
@@ -571,7 +953,24 @@ function AgentAvatarPicker({
 
 export default memo(AgentAvatarPicker);
 
-export function AgentAvatarIcon({ avatar, color, className }: { avatar: string | undefined; color: string | undefined; className?: string }) {
+export function AgentAvatarIcon({
+  avatar,
+  color,
+  imageDataUrl,
+  className,
+}: {
+  avatar: string | undefined;
+  color: string | undefined;
+  imageDataUrl?: string | undefined;
+  className?: string;
+}) {
+  if (imageDataUrl) {
+    return <img src={imageDataUrl} alt="" className={cn('rounded-md object-cover', className)} />;
+  }
+  const character = getAgentCharacterAvatar(avatar);
+  if (character) {
+    return <img src={character.src} alt="" className={cn('rounded-md object-cover', className)} />;
+  }
   const c = safeColor(color, 'currentColor');
   return <svg viewBox="0 0 24 24" fill="none" className={className} dangerouslySetInnerHTML={{ __html: getAvatarPaths(avatar, c) }} />;
 }

@@ -2,7 +2,7 @@
  * Global token usage + estimated cost (informational only; not billing).
  */
 
-import type { ProviderType } from './provider';
+import type { ProviderType, SelectedModel } from './provider';
 
 export type UsagePeriod = 'day' | 'week' | 'month';
 
@@ -425,15 +425,67 @@ export type UsageProjectWorkItemChecklistList = {
   id: string;
   name: string;
   items: UsageProjectWorkItemChecklistItem[];
+  context?: string;
+  outlineColor?: string;
   createdAt: string;
   updatedAt?: string;
 };
+
+export type ChecklistListPromptPurpose = 'build' | 'research' | 'review' | 'write' | 'custom';
+
+export type ChecklistListPromptGenerateItem = {
+  id: string;
+  text: string;
+  completed?: boolean;
+  assigneeNames?: string[];
+  dueDate?: string | null;
+};
+
+export type ChecklistListPromptGenerateRequest = {
+  agentId?: string | null;
+  purpose?: ChecklistListPromptPurpose;
+  customPurpose?: string;
+  workItemTitle?: string;
+  listName?: string;
+  listContext?: string;
+  extraInstruction?: string;
+  includeWorkItemName?: boolean;
+  includeListName?: boolean;
+  includeListContext?: boolean;
+  includeAssignee?: boolean;
+  includeDueDate?: boolean;
+  includeCompletedItems?: boolean;
+  items: ChecklistListPromptGenerateItem[];
+};
+
+export type ChecklistListPromptGenerateResponse = {
+  ok: boolean;
+  prompt: string;
+  model?: SelectedModel | null;
+  error?: string;
+};
+
+export type WorkItemNotePromptGenerateRequest = {
+  agentId?: string | null;
+  purpose?: ChecklistListPromptPurpose;
+  customPurpose?: string;
+  workItemTitle?: string;
+  noteTitle?: string;
+  noteText: string;
+  noteHtml?: string;
+  extraInstruction?: string;
+  includeWorkItemName?: boolean;
+  includeNoteTitle?: boolean;
+};
+
+export type WorkItemNotePromptGenerateResponse = ChecklistListPromptGenerateResponse;
 
 export type UsageProjectWorkItemNote = {
   id: string;
   title?: string;
   text: string;
   html?: string;
+  outlineColor?: string;
   createdAt: string;
   updatedAt?: string;
 };
@@ -463,6 +515,7 @@ export type UsageProjectWorkItemDrawing = {
   width: number;
   height: number;
   elements: UsageProjectWorkItemDrawingElement[];
+  outlineColor?: string;
   createdAt: string;
   updatedAt?: string;
 };
@@ -475,6 +528,7 @@ export type UsageProjectWorkItemDocumentLink = {
   kind: UsageProjectWorkItemDocumentLinkKind;
   path?: string;
   url?: string;
+  outlineColor?: string;
   createdAt: string;
 };
 

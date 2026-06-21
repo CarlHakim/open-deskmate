@@ -24,6 +24,7 @@ export interface AgentConfig {
   description?: string;
   avatar?: string;
   avatarColor?: string;
+  avatarImageDataUrl?: string;
   workspaceRoot?: string;
   systemPromptAppend?: string;
   selectedModel?: SelectedModel | null;
@@ -63,6 +64,7 @@ export interface AgentProfile {
   description?: string;
   avatar?: string;
   avatarColor?: string;
+  avatarImageDataUrl?: string;
   workspaceRoot?: string;
   systemPromptAppend?: string;
   selectedModel?: SelectedModel;

@@ -21,6 +21,8 @@ Use Changes & Git whenever a Build task edits files, you want to check what chan
 - Staged, unstaged, and untracked files.
 - GitHub CLI availability when relevant.
 - Suggested next step.
+- A larger review popup with Overview, Files, Diff, Git, and Sources tabs.
+- A side-by-side file review with additions, deletions, line numbers, linked scrolling, and a mini preview map.
 
 ## Quick Steps
 
@@ -116,6 +118,36 @@ Open the panel in a larger popup for maximal view:
 - Git.
 - Sources.
 
+The popup can also be switched to fullscreen.
+
+## Files Tab
+
+Use the Files tab when you want to understand exactly what changed in a selected file.
+
+It can show:
+
+- Before and after file content.
+- Red deletion markers.
+- Green addition markers.
+- Line numbers.
+- Linked scrolling so both sides move together.
+- A mini preview map on the side, similar to an editor minimap, so you can jump to dense change areas.
+- Full file content for the selected file when available.
+
+If a preview says it was truncated, the app is protecting the review view from loading an overly large file into the comparison area. Use the full file option or open the file directly when you need every line.
+
+## Diff Tab
+
+Use the Diff tab when you want the compact patch-style view.
+
+In this view:
+
+- Lines starting with `-` are removals and are shown in red.
+- Lines starting with `+` are additions and are shown in green.
+- Unchanged context lines are shown without change coloring.
+
+The Files tab is usually easier for beginners. The Diff tab is useful when you want a developer-style patch.
+
 ## Troubleshooting
 
 - If Push is disabled, check whether the branch has a remote/upstream and whether Git credentials are configured.
@@ -123,9 +155,11 @@ Open the panel in a larger popup for maximal view:
 - If the branch is diverged, review the local-only and remote-only commits before choosing pull, merge, rebase, or backup recovery.
 - If GitHub CLI is unavailable, normal Git can still work; only GitHub-specific automation is limited.
 - If a private repository pushes successfully, the app is using credentials already available to Git or GitHub CLI on the machine.
+- If the edited-files card or top change counter looks stale, refresh Changes & Git and compare against the Files tab before committing.
 
 ## Related Pages
 
 - [Build Mode](./build-mode.md)
 - [Build Mode Safety](./settings/build-mode-safety.md)
 - [Activity Timeline And Recovery](./activity-timeline-and-recovery.md)
+- [Build Smoke Testing](./build-smoke-testing.md)

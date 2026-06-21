@@ -123,6 +123,7 @@ const mockSpawn = vi.fn(() => mockChildProc);
 vi.mock('child_process', () => ({
   execSync: vi.fn(() => '/usr/local/bin/opencode'),
   spawn: mockSpawn,
+  spawnSync: vi.fn(),
 }));
 
 const isWin = process.platform === 'win32';
@@ -145,17 +146,25 @@ vi.mock('@main/store/secureStorage', () => ({
     anthropic: 'test-anthropic-key',
     openai: 'test-openai-key',
   })),
+  getApiKey: vi.fn(() => Promise.resolve(null)),
 }));
 
 // Mock app settings
 vi.mock('@main/store/appSettings', () => ({
   getSelectedModel: vi.fn(() => ({ model: 'claude-3-opus-20240229' })),
+  getDebugMode: vi.fn(() => false),
+  getAgentSpeedMode: vi.fn(() => 'balanced'),
 }));
 
 // Mock config generator
 vi.mock('@main/opencode/config-generator', () => ({
   generateOpenCodeConfig: vi.fn(() => Promise.resolve('/mock/config/path')),
   ACCOMPLISH_AGENT_NAME: 'accomplish',
+}));
+
+// Mock agent context
+vi.mock('@main/services/agent-context', () => ({
+  resolveSelectedModelForTask: vi.fn(() => ({ model: 'claude-3-opus-20240229' })),
 }));
 
 // Mock system-path
@@ -180,6 +189,7 @@ describe('OpenCode Adapter Module', () => {
   let isOpenCodeCliInstalled: typeof import('@main/opencode/adapter').isOpenCodeCliInstalled;
   let getOpenCodeCliVersion: typeof import('@main/opencode/adapter').getOpenCodeCliVersion;
   let OpenCodeCliNotFoundError: typeof import('@main/opencode/adapter').OpenCodeCliNotFoundError;
+  let ToolLoopGuard: typeof import('@main/opencode/adapter').ToolLoopGuard;
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -203,6 +213,7 @@ describe('OpenCode Adapter Module', () => {
     isOpenCodeCliInstalled = module.isOpenCodeCliInstalled;
     getOpenCodeCliVersion = module.getOpenCodeCliVersion;
     OpenCodeCliNotFoundError = module.OpenCodeCliNotFoundError;
+    ToolLoopGuard = module.ToolLoopGuard;
   });
 
   afterEach(() => {
@@ -211,6 +222,35 @@ describe('OpenCode Adapter Module', () => {
   });
 
   describe('OpenCodeAdapter Class', () => {
+    describe('ToolLoopGuard', () => {
+      it('stops after the same successful tool call repeats consecutively', () => {
+        const guard = new ToolLoopGuard();
+
+        expect(guard.record('Read', { path: 'src/app.ts' }).shouldStop).toBe(false);
+        expect(guard.record('Read', { path: 'src/app.ts' }).shouldStop).toBe(false);
+
+        const decision = guard.record('Read', { path: 'src/app.ts' });
+        expect(decision.shouldStop).toBe(true);
+        expect(decision.reason).toContain('3 times in a row');
+      });
+
+      it('does not treat different arguments as the same tool loop', () => {
+        const guard = new ToolLoopGuard();
+
+        expect(guard.record('Read', { path: 'src/a.ts' }).shouldStop).toBe(false);
+        expect(guard.record('Read', { path: 'src/b.ts' }).shouldStop).toBe(false);
+        expect(guard.record('Read', { path: 'src/c.ts' }).shouldStop).toBe(false);
+      });
+
+      it('does not count errored tool calls as successful repeats', () => {
+        const guard = new ToolLoopGuard();
+
+        expect(guard.record('Read', { path: 'src/app.ts' }).shouldStop).toBe(false);
+        expect(guard.record('Read', { path: 'src/app.ts' }, { isError: true }).shouldStop).toBe(false);
+        expect(guard.record('Read', { path: 'src/app.ts' }).shouldStop).toBe(false);
+      });
+    });
+
     describe('Constructor', () => {
       it('should create adapter instance with optional task ID', () => {
         // Act

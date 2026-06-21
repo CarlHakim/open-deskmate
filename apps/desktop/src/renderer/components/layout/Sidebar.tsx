@@ -14,7 +14,7 @@ import { cn } from '@/lib/utils';
 import type { ProviderConfig, SelectedModel, Task } from '@accomplish/shared';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import ConversationListItem from './ConversationListItem';
+import ConversationListItem, { getTaskDisplayTitle, getTaskHoverTitle } from './ConversationListItem';
 import FolderItem from './FolderItem';
 import CreateFolderDialog from './CreateFolderDialog';
 import SettingsDialog from './SettingsDialog';
@@ -47,6 +47,7 @@ import {
 import { getIconByName } from './ProjectIconPicker';
 import { AgentAvatarIcon } from './AgentAvatarPicker';
 import { useTheme } from '@/contexts/ThemeContext';
+import { isAgentCharacterAvatar } from '@/lib/agent-character-gallery';
 import {
   normalizeSelectedModel,
   SELECTED_MODEL_CHANGED_EVENT,
@@ -61,6 +62,10 @@ const PROVIDER_LABELS: Record<string, string> = {
   xai: 'xAI',
   ollama: 'Ollama',
 };
+
+function isPictureAvatar(avatar: string | undefined, imageDataUrl: string | undefined): boolean {
+  return Boolean(imageDataUrl || isAgentCharacterAvatar(avatar));
+}
 
 const CHAT_SIDEBAR_WIDTH_KEY = 'open-deskmate-chat-sidebar-width';
 const CHAT_SIDEBAR_DEFAULT_WIDTH = 280;
@@ -119,7 +124,7 @@ export default function Sidebar() {
   const [sidebarResizing, setSidebarResizing] = useState(false);
 
   const MAX_VISIBLE_PROJECTS = 5;
-  const { tasks, loadTasks, updateTaskStatus, addTaskUpdate, insertTask, openLauncher, setTaskFolder } = useTaskStore();
+  const { tasks, loadTasks, updateTaskStatus, addTaskUpdate, insertTask, openLauncher, setTaskFolder, clearCurrentTask } = useTaskStore();
   const { folders, loadFolders, toggleFolderExpanded, reorderFolders } = useFolderStore();
   const { agents, activeAgentId, defaultAgentId, loadAgents, setActiveAgent, upsertAgent } = useAgentStore();
   const { projects: usageProjects, archivedProjects: archivedUsageProjects, loadProjects: loadUsageProjects } = useUsageProjectStore();
@@ -264,8 +269,21 @@ export default function Sidebar() {
 
   const handleNewConversation = () => {
     analytics.trackNewTask();
+    clearCurrentTask();
     window.dispatchEvent(new CustomEvent('opendeskmate:new-chat-task'));
     navigate('/');
+  };
+
+  const handleAgentSwitch = async (agentId: string) => {
+    if (!agentId || agentId === activeAgentId) return;
+    try {
+      await setActiveAgent(agentId);
+      clearCurrentTask();
+      window.dispatchEvent(new CustomEvent('opendeskmate:new-chat-task'));
+      navigate('/');
+    } catch (error) {
+      console.error('Failed to switch agent:', error);
+    }
   };
 
   useEffect(() => {
@@ -329,6 +347,7 @@ export default function Sidebar() {
         description: activeAgent.description,
         avatar: activeAgent.avatar,
         avatarColor: activeAgent.avatarColor,
+        avatarImageDataUrl: activeAgent.avatarImageDataUrl,
         workspaceRoot: activeAgent.workspaceRoot,
         systemPromptAppend: activeAgent.systemPromptAppend,
         selectedModel: selection,
@@ -427,10 +446,10 @@ export default function Sidebar() {
                     title={`${activeAgent?.name || 'Agent'}${activeAgent?.roleName ? `\n${activeAgent.roleName}` : activeAgent?.id || activeAgentId ? `\n${activeAgent?.id || activeAgentId}` : ''}`}
                   >
                     <div
-                      className="flex h-9 w-9 items-center justify-center rounded-lg"
+                      className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-lg"
                       style={{ backgroundColor: activeAgent?.avatarColor ? `${activeAgent.avatarColor}15` : 'hsl(var(--primary) / 0.1)' }}
                     >
-                      <AgentAvatarIcon avatar={activeAgent?.avatar} color={activeAgent?.avatarColor || 'hsl(var(--primary))'} className="h-6 w-6" />
+                      <AgentAvatarIcon avatar={activeAgent?.avatar} color={activeAgent?.avatarColor || 'hsl(var(--primary))'} imageDataUrl={activeAgent?.avatarImageDataUrl} className={isPictureAvatar(activeAgent?.avatar, activeAgent?.avatarImageDataUrl) ? 'h-full w-full' : 'h-6 w-6'} />
                     </div>
                     <div className="w-full truncate px-0.5 text-center text-[10px] font-medium leading-tight">
                       {activeAgent?.name || 'Agent'}
@@ -531,7 +550,7 @@ export default function Sidebar() {
                         key={agent.id}
                         onClick={() => {
                           if (!isActive) {
-                            void setActiveAgent(agent.id);
+                            void handleAgentSwitch(agent.id);
                           }
                         }}
                         className="flex items-center justify-between gap-2"
@@ -540,8 +559,8 @@ export default function Sidebar() {
                           <span className="inline-flex h-4 w-4 items-center justify-center">
                             {isActive ? <Check className="h-4 w-4" /> : null}
                           </span>
-                          <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-md" style={{ backgroundColor: agent.avatarColor ? `${agent.avatarColor}15` : 'hsl(var(--muted))' }}>
-                            <AgentAvatarIcon avatar={agent.avatar} color={agent.avatarColor || 'hsl(var(--muted-foreground))'} className="h-6 w-6" />
+                          <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center overflow-hidden rounded-md" style={{ backgroundColor: agent.avatarColor ? `${agent.avatarColor}15` : 'hsl(var(--muted))' }}>
+                            <AgentAvatarIcon avatar={agent.avatar} color={agent.avatarColor || 'hsl(var(--muted-foreground))'} imageDataUrl={agent.avatarImageDataUrl} className={isPictureAvatar(agent.avatar, agent.avatarImageDataUrl) ? 'h-full w-full' : 'h-6 w-6'} />
                           </div>
                           <div className="min-w-0">
                             <div className="truncate text-sm">{agent.name}</div>
@@ -671,8 +690,8 @@ export default function Sidebar() {
                 className="w-full flex items-center gap-2 rounded-xl border border-border/60 bg-card/80 px-3 py-2 text-sm text-foreground hover:bg-accent/60 transition-all"
                 title="Switch agent"
               >
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg" style={{ backgroundColor: activeAgent?.avatarColor ? `${activeAgent.avatarColor}15` : 'hsl(var(--primary) / 0.1)' }}>
-                  <AgentAvatarIcon avatar={activeAgent?.avatar} color={activeAgent?.avatarColor || 'hsl(var(--primary))'} className="h-7 w-7" />
+                <div className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-lg" style={{ backgroundColor: activeAgent?.avatarColor ? `${activeAgent.avatarColor}15` : 'hsl(var(--primary) / 0.1)' }}>
+                  <AgentAvatarIcon avatar={activeAgent?.avatar} color={activeAgent?.avatarColor || 'hsl(var(--primary))'} imageDataUrl={activeAgent?.avatarImageDataUrl} className={isPictureAvatar(activeAgent?.avatar, activeAgent?.avatarImageDataUrl) ? 'h-full w-full' : 'h-7 w-7'} />
                 </div>
                 <div className="flex-1 min-w-0 text-left">
                   <div className="font-medium truncate">{activeAgent?.name || 'Agent'}</div>
@@ -777,7 +796,7 @@ export default function Sidebar() {
                     key={agent.id}
                     onClick={() => {
                       if (!isActive) {
-                        void setActiveAgent(agent.id);
+                        void handleAgentSwitch(agent.id);
                       }
                     }}
                     className="flex items-center justify-between gap-2"
@@ -786,8 +805,8 @@ export default function Sidebar() {
                       <span className="inline-flex h-4 w-4 items-center justify-center">
                         {isActive ? <Check className="h-4 w-4" /> : null}
                       </span>
-                      <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-md" style={{ backgroundColor: agent.avatarColor ? `${agent.avatarColor}15` : 'hsl(var(--muted))' }}>
-                        <AgentAvatarIcon avatar={agent.avatar} color={agent.avatarColor || 'hsl(var(--muted-foreground))'} className="h-6 w-6" />
+                      <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center overflow-hidden rounded-md" style={{ backgroundColor: agent.avatarColor ? `${agent.avatarColor}15` : 'hsl(var(--muted))' }}>
+                        <AgentAvatarIcon avatar={agent.avatar} color={agent.avatarColor || 'hsl(var(--muted-foreground))'} imageDataUrl={agent.avatarImageDataUrl} className={isPictureAvatar(agent.avatar, agent.avatarImageDataUrl) ? 'h-full w-full' : 'h-6 w-6'} />
                       </div>
                       <div className="min-w-0">
                         <div className="text-sm truncate">{agent.name}</div>
@@ -987,13 +1006,14 @@ export default function Sidebar() {
                                             <button
                                               key={task.id}
                                               type="button"
+                                              title={getTaskHoverTitle(task)}
                                               onClick={() => {
                                                 navigate(`/execution/${task.id}`);
                                                 setShowAllProjects(false);
                                               }}
                                               className="w-full text-left px-2 py-1.5 rounded-lg text-xs transition-all duration-200 text-muted-foreground hover:bg-accent/60 hover:text-foreground truncate cursor-pointer"
                                             >
-                                              {task.summary || task.prompt}
+                                              {getTaskDisplayTitle(task)}
                                             </button>
                                           ))}
                                         </div>

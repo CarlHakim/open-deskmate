@@ -18,6 +18,7 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
+  ChevronRight,
   Circle,
   Eye,
   EyeOff,
@@ -28,6 +29,7 @@ import {
   Loader2,
   Lock,
   Maximize2,
+  Paperclip,
   Plus,
   RefreshCw,
   Trash2,
@@ -42,16 +44,30 @@ import { useTheme } from '@/contexts/ThemeContext';
 import { cn } from '@/lib/utils';
 import { getAccomplish } from '@/lib/accomplish';
 import {
+  AutoGrowingTextarea,
+  attachDocumentLinkToActivePrompt,
+  ChecklistListContextButton,
+  ChecklistListProgressBadge,
+  ChecklistListPromptButton,
+  checklistListCollapseKey,
   checklistProgress,
   createChecklistList,
   createWorkItemDrawing,
+  CsvExportPicker,
   DrawingEditor,
   flattenChecklistLists,
   getChecklistListsFromItem,
   labelForDocumentTarget,
   localId,
   nowIso,
+  readChecklistListCollapseState,
   RichWorkItemNoteEditor,
+  WorkItemOutlineColorPicker,
+  WorkItemNameTooltip,
+  type WorkboardListCsvCandidate,
+  type WorkboardNoteCsvCandidate,
+  workItemOutlineStyle,
+  writeChecklistListCollapseState,
 } from '@/components/usage/ProjectWorkboardTab';
 
 type ProjectWorkTab = 'lists' | 'notes' | 'documents' | 'drawings';
@@ -75,6 +91,12 @@ type SaveState = {
   message?: string;
 };
 
+type DocumentPromptNotice = {
+  documentId: string;
+  kind: 'success' | 'error';
+  text: string;
+};
+
 type BuildProjectWorkPopupProps = {
   open: boolean;
   projects: UsageProject[];
@@ -88,6 +110,8 @@ type BuildProjectWorkPopupProps = {
   anchorRect?: RectLike | null;
   storageScope?: string;
   defaultSide?: 'left' | 'right';
+  agentId?: string | null;
+  onInsertPrompt?: (prompt: string) => void;
   onSelectedProjectChange?: (projectId: string | null) => void;
   onClose: () => void;
 };
@@ -263,6 +287,8 @@ export default function BuildProjectWorkPopup({
   anchorRect,
   storageScope = 'build',
   defaultSide = 'right',
+  agentId,
+  onInsertPrompt,
   onSelectedProjectChange,
   onClose,
 }: BuildProjectWorkPopupProps) {
@@ -285,11 +311,15 @@ export default function BuildProjectWorkPopup({
   const [newListNameByItemId, setNewListNameByItemId] = useState<Record<string, string>>({});
   const [newChecklistTextByKey, setNewChecklistTextByKey] = useState<Record<string, string>>({});
   const [expandedChecklistMeta, setExpandedChecklistMeta] = useState<Record<string, boolean>>({});
+  const [collapsedChecklistLists, setCollapsedChecklistLists] = useState<Record<string, boolean>>(() => readChecklistListCollapseState());
   const [newNoteTitleByItemId, setNewNoteTitleByItemId] = useState<Record<string, string>>({});
   const [newNoteTextByItemId, setNewNoteTextByItemId] = useState<Record<string, string>>({});
   const [newDocumentLabelByItemId, setNewDocumentLabelByItemId] = useState<Record<string, string>>({});
   const [newDocumentTargetByItemId, setNewDocumentTargetByItemId] = useState<Record<string, string>>({});
+  const [quickCreateItemId, setQuickCreateItemId] = useState('');
+  const [documentPromptNotice, setDocumentPromptNotice] = useState<DocumentPromptNotice | null>(null);
   const saveTimersRef = useRef<Record<string, number>>({});
+  const documentPromptNoticeTimerRef = useRef<number | null>(null);
 
   const activeProjects = useMemo(
     () => projects.filter((project) => project.status === 'active'),
@@ -321,10 +351,45 @@ export default function BuildProjectWorkPopup({
     }
     return `${stateFilterIds.length} states`;
   }, [sortedColumns, stateFilterIds]);
+  const quickCreateItem = useMemo(
+    () => filteredItems.find((item) => item.id === quickCreateItemId) || filteredItems[0] || null,
+    [filteredItems, quickCreateItemId]
+  );
+  const resolveCsvAssigneeNames = useCallback((assigneeIds?: string[]) => (
+    (assigneeIds || []).map((id) => assignees.find((assignee) => assignee.id === id)?.name || '').filter(Boolean)
+  ), [assignees]);
+  const listCsvCandidates = useMemo<WorkboardListCsvCandidate[]>(() => (
+    filteredItems.flatMap((item) => getChecklistListsFromItem(item).map((list) => ({
+      id: `${item.id}:${list.id}`,
+      workItemTitle: item.title,
+      list,
+    })))
+  ), [filteredItems]);
+  const noteCsvCandidates = useMemo<WorkboardNoteCsvCandidate[]>(() => (
+    filteredItems.flatMap((item) => (item.notes || []).map((note) => ({
+      id: `${item.id}:${note.id}`,
+      workItemTitle: item.title,
+      note,
+    })))
+  ), [filteredItems]);
+
+  useEffect(() => {
+    if (filteredItems.length === 0) {
+      if (quickCreateItemId) setQuickCreateItemId('');
+      return;
+    }
+    if (!filteredItems.some((item) => item.id === quickCreateItemId)) {
+      setQuickCreateItemId(filteredItems[0].id);
+    }
+  }, [filteredItems, quickCreateItemId]);
 
   useEffect(() => () => {
     Object.values(saveTimersRef.current).forEach((timer) => window.clearTimeout(timer));
     saveTimersRef.current = {};
+    if (documentPromptNoticeTimerRef.current !== null) {
+      window.clearTimeout(documentPromptNoticeTimerRef.current);
+      documentPromptNoticeTimerRef.current = null;
+    }
   }, []);
 
   useEffect(() => {
@@ -530,6 +595,16 @@ export default function BuildProjectWorkPopup({
 
   const checklistMetaKey = (itemId: string, listId: string, checklistItemId: string) => `${itemId}:${listId}:${checklistItemId}`;
 
+  const toggleChecklistListCollapsed = (collapseKey: string) => {
+    setCollapsedChecklistLists((current) => {
+      const next = { ...current };
+      if (next[collapseKey]) delete next[collapseKey];
+      else next[collapseKey] = true;
+      writeChecklistListCollapseState(next);
+      return next;
+    });
+  };
+
   const toggleChecklistItemMeta = (itemId: string, listId: string, checklistItemId: string) => {
     const key = checklistMetaKey(itemId, listId, checklistItemId);
     setExpandedChecklistMeta((current) => ({ ...current, [key]: !current[key] }));
@@ -564,6 +639,19 @@ export default function BuildProjectWorkPopup({
     };
     setNewNoteTitleByItemId((current) => ({ ...current, [item.id]: '' }));
     setNewNoteTextByItemId((current) => ({ ...current, [item.id]: '' }));
+    patchItem(item.id, { notes: [note, ...(item.notes || [])] });
+  };
+
+  const savePromptAsNote = (item: UsageProjectWorkItem, title: string, prompt: string) => {
+    const text = prompt.trim();
+    if (!text) return;
+    const note: UsageProjectWorkItemNote = {
+      id: localId(),
+      title: title.trim() || 'Generated prompt',
+      text,
+      html: plainTextToNoteHtml(text),
+      createdAt: nowIso(),
+    };
     patchItem(item.id, { notes: [note, ...(item.notes || [])] });
   };
 
@@ -633,6 +721,26 @@ export default function BuildProjectWorkPopup({
     if (!target) return;
     if (documentLink.kind === 'url') await api.openExternal(target);
     else await api.openPath(target);
+  };
+
+  const showDocumentPromptNotice = (notice: DocumentPromptNotice) => {
+    setDocumentPromptNotice(notice);
+    if (documentPromptNoticeTimerRef.current !== null) {
+      window.clearTimeout(documentPromptNoticeTimerRef.current);
+    }
+    documentPromptNoticeTimerRef.current = window.setTimeout(() => {
+      setDocumentPromptNotice(null);
+      documentPromptNoticeTimerRef.current = null;
+    }, notice.kind === 'success' ? 3200 : 4400);
+  };
+
+  const attachDocumentToPrompt = (documentLink: UsageProjectWorkItemDocumentLink) => {
+    const result = attachDocumentLinkToActivePrompt(documentLink);
+    showDocumentPromptNotice({
+      documentId: documentLink.id,
+      kind: result.ok ? 'success' : 'error',
+      text: result.message,
+    });
   };
 
   const addDrawing = (item: UsageProjectWorkItem) => {
@@ -821,8 +929,158 @@ export default function BuildProjectWorkPopup({
     );
   };
 
+  const renderQuickCreateBar = () => {
+    if (!selectedProject) return null;
+    const target = quickCreateItem;
+    const disabled = !target;
+    const targetId = target?.id || '';
+    const targetTitle = target?.title || 'Create a work item first';
+
+    const renderTargetSelect = () => (
+      <label className="grid min-w-0 flex-1 gap-1 text-[11px] font-medium text-muted-foreground">
+        Add to work item
+        <select
+          value={targetId}
+          onChange={(event) => setQuickCreateItemId(event.target.value)}
+          disabled={filteredItems.length === 0}
+          className="h-8 min-w-0 rounded-md border border-input bg-background px-2 text-xs text-foreground"
+        >
+          {filteredItems.length === 0 ? (
+            <option value="">No visible work items</option>
+          ) : filteredItems.map((item) => (
+            <option key={item.id} value={item.id}>{item.title}</option>
+          ))}
+        </select>
+      </label>
+    );
+
+    if (activeTab === 'lists') {
+      return (
+        <div className="mb-3 rounded-lg border border-border bg-background/75 p-2">
+          <div className="flex flex-wrap items-end gap-2">
+            {renderTargetSelect()}
+            <label className="grid min-w-[150px] flex-1 gap-1 text-[11px] font-medium text-muted-foreground">
+              New list
+              <Input
+                value={target ? (newListNameByItemId[target.id] || '') : ''}
+                onChange={(event) => target && setNewListNameByItemId((current) => ({ ...current, [target.id]: event.target.value }))}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && target) {
+                    event.preventDefault();
+                    addChecklistList(target);
+                  }
+                }}
+                placeholder="List name"
+                className="h-8 text-xs"
+                disabled={disabled}
+              />
+            </label>
+            <Button type="button" variant="outline" size="sm" className="h-8 gap-1 px-2 text-xs" onClick={() => target && addChecklistList(target)} disabled={disabled}>
+              <Plus className="h-3.5 w-3.5" />
+              New list
+            </Button>
+          </div>
+        </div>
+      );
+    }
+
+    if (activeTab === 'notes') {
+      return (
+        <div className="mb-3 rounded-lg border border-border bg-background/75 p-2">
+          <div className="grid gap-2">
+            <div className="flex flex-wrap items-end gap-2">
+              {renderTargetSelect()}
+              <label className="grid min-w-[150px] flex-1 gap-1 text-[11px] font-medium text-muted-foreground">
+                Note title
+                <Input
+                  value={target ? (newNoteTitleByItemId[target.id] || '') : ''}
+                  onChange={(event) => target && setNewNoteTitleByItemId((current) => ({ ...current, [target.id]: event.target.value }))}
+                  placeholder="Note title"
+                  className="h-8 text-xs"
+                  disabled={disabled}
+                />
+              </label>
+              <Button type="button" variant="outline" size="sm" className="h-8 gap-1 px-2 text-xs" onClick={() => target && addNote(target)} disabled={disabled}>
+                <Plus className="h-3.5 w-3.5" />
+                Add note
+              </Button>
+            </div>
+            <Textarea
+              value={target ? (newNoteTextByItemId[target.id] || '') : ''}
+              onChange={(event) => target && setNewNoteTextByItemId((current) => ({ ...current, [target.id]: event.target.value }))}
+              placeholder={disabled ? `Create a work item first to add notes.` : `Write a note for ${targetTitle}...`}
+              className="min-h-16 resize-y text-xs"
+              disabled={disabled}
+            />
+          </div>
+        </div>
+      );
+    }
+
+    if (activeTab === 'drawings') {
+      return (
+        <div className="mb-3 rounded-lg border border-border bg-background/75 p-2">
+          <div className="flex flex-wrap items-end gap-2">
+            {renderTargetSelect()}
+            <Button type="button" variant="outline" size="sm" className="h-8 gap-1 px-2 text-xs" onClick={() => target && addDrawing(target)} disabled={disabled}>
+              <Plus className="h-3.5 w-3.5" />
+              New drawing
+            </Button>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="mb-3 rounded-lg border border-border bg-background/75 p-2">
+        <div className="grid gap-2">
+          <div className="flex flex-wrap items-end gap-2">
+            {renderTargetSelect()}
+            <label className="grid min-w-[140px] flex-1 gap-1 text-[11px] font-medium text-muted-foreground">
+              Document label
+              <Input
+                value={target ? (newDocumentLabelByItemId[target.id] || '') : ''}
+                onChange={(event) => target && setNewDocumentLabelByItemId((current) => ({ ...current, [target.id]: event.target.value }))}
+                placeholder="Document label"
+                className="h-8 text-xs"
+                disabled={disabled}
+              />
+            </label>
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Input
+              value={target ? (newDocumentTargetByItemId[target.id] || '') : ''}
+              onChange={(event) => target && setNewDocumentTargetByItemId((current) => ({ ...current, [target.id]: event.target.value }))}
+              placeholder={disabled ? 'Create a work item first to add documents.' : 'Local file path, Google Doc, Microsoft 365, GitHub, or web URL'}
+              className="h-8 min-w-[180px] flex-1 text-xs"
+              disabled={disabled}
+            />
+            <Button type="button" variant="outline" size="sm" className="h-8 gap-1 px-2 text-xs" onClick={() => target && addDocumentLink(target)} disabled={disabled}>
+              <Link className="h-3.5 w-3.5" />
+              Add link
+            </Button>
+            <Button type="button" variant="outline" size="sm" className="h-8 gap-1 px-2 text-xs" onClick={() => target && void addLocalDocuments(target)} disabled={disabled}>
+              <FolderOpen className="h-3.5 w-3.5" />
+              Add from PC
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderLists = () => (
     <div className="space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-xs font-semibold text-foreground">Lists</div>
+        <CsvExportPicker
+          type="lists"
+          candidates={listCsvCandidates}
+          filenameScope={`${selectedProject?.name || 'project-work'}-popup`}
+          resolveAssigneeNames={resolveCsvAssigneeNames}
+        />
+      </div>
+      {renderQuickCreateBar()}
       {filteredItems.map((item) => {
         const lists = getChecklistListsFromItem(item);
         const progress = checklistProgress(flattenChecklistLists(lists));
@@ -840,18 +1098,53 @@ export default function BuildProjectWorkPopup({
                 const listMetaOpen = list.items.length > 0 && list.items.every((checkItem) => (
                   expandedChecklistMeta[checklistMetaKey(item.id, list.id, checkItem.id)]
                 ));
+                const listProgress = checklistProgress(list.items);
+                const collapseKey = checklistListCollapseKey(selectedProjectId, item.id, list.id);
+                const listCollapsed = collapsedChecklistLists[collapseKey] === true;
                 return (
-                <div key={list.id} className="rounded-md border border-border/60 bg-card/60 p-2">
+                <div key={list.id} className="rounded-md border border-border/60 bg-card/60 p-2" style={workItemOutlineStyle(list.outlineColor)}>
                   <div className="flex items-center gap-1.5">
                     <Input
                       defaultValue={list.name}
                       className="h-7 text-xs"
+                      title={list.name || 'Checklist'}
                       onBlur={(event) => {
                         const name = event.target.value.trim() || 'Checklist';
                         const nextLists = lists.map((entry) => (entry.id === list.id ? { ...entry, name, updatedAt: nowIso() } : entry));
                         patchChecklistLists(item, nextLists);
                       }}
                     />
+                    <ChecklistListProgressBadge progress={listProgress} />
+                    <ChecklistListPromptButton
+                      list={list}
+                      workItemTitle={item.title}
+                      agentId={agentId}
+                      className="h-7"
+                      resolveAssigneeNames={(assigneeIds) => (assigneeIds || [])
+                        .map((id) => assignees.find((assignee) => assignee.id === id)?.name || '')
+                        .filter(Boolean)}
+                      onSavePromptAsNote={(title, prompt) => savePromptAsNote(item, title, prompt)}
+                      onInsertPrompt={onInsertPrompt}
+                    />
+                    <WorkItemOutlineColorPicker
+                      value={list.outlineColor}
+                      onChange={(outlineColor) => {
+                        const nextLists = lists.map((entry) => entry.id === list.id ? { ...entry, outlineColor, updatedAt: nowIso() } : entry);
+                        patchChecklistLists(item, nextLists);
+                      }}
+                      className="h-7 w-7"
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      title={listCollapsed ? 'Expand list' : 'Collapse list'}
+                      aria-label={listCollapsed ? 'Expand list' : 'Collapse list'}
+                      onClick={() => toggleChecklistListCollapsed(collapseKey)}
+                    >
+                      {listCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                    </Button>
                     <Button
                       type="button"
                       variant="ghost"
@@ -867,6 +1160,26 @@ export default function BuildProjectWorkPopup({
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
                   </div>
+                  <div className="mt-2 space-y-1">
+                    <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                      <span>{listProgress.percent}% complete</span>
+                      <span>{listProgress.done}/{listProgress.total} item{listProgress.total === 1 ? '' : 's'}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-muted">
+                        <div className="h-full rounded-full bg-primary" style={{ width: `${listProgress.percent}%` }} />
+                      </div>
+                      <ChecklistListContextButton
+                        value={list.context}
+                        onSave={(context) => {
+                          const nextLists = lists.map((entry) => entry.id === list.id ? { ...entry, context, updatedAt: nowIso() } : entry);
+                          patchChecklistLists(item, nextLists);
+                        }}
+                      />
+                    </div>
+                  </div>
+                  {!listCollapsed ? (
+                  <>
                   <div className="mt-2 space-y-2">
                     {list.items.map((checkItem) => {
                       const metaOpen = expandedChecklistMeta[checklistMetaKey(item.id, list.id, checkItem.id)] === true;
@@ -882,16 +1195,20 @@ export default function BuildProjectWorkPopup({
                             checked={checkItem.completed}
                             onChange={(event) => updateChecklistItem(item, list.id, checkItem.id, { completed: event.target.checked })}
                           />
-                          <div className="flex min-w-0 flex-1 items-center rounded-md border border-input bg-background">
-                            <input
+                          <div className="flex min-w-0 flex-1 items-stretch rounded-md border border-input bg-background">
+                            <AutoGrowingTextarea
                               defaultValue={checkItem.text}
-                              className={cn('h-7 min-w-0 flex-1 bg-transparent px-2 text-xs outline-none', checkItem.completed && 'text-muted-foreground line-through')}
+                              className={cn(
+                                'min-h-7 min-w-0 flex-1 resize-none bg-transparent px-2 py-1.5 text-xs leading-relaxed outline-none',
+                                'whitespace-pre-wrap break-words',
+                                checkItem.completed && 'text-muted-foreground line-through'
+                              )}
                               onBlur={(event) => updateChecklistItem(item, list.id, checkItem.id, { text: event.target.value.trim() || checkItem.text })}
                               placeholder="List item"
                             />
                             <button
                               type="button"
-                              className={cn('flex h-7 w-7 items-center justify-center border-l border-border/60 text-muted-foreground hover:text-foreground', checkItem.assigneeIds?.length && 'text-primary')}
+                              className={cn('flex min-h-7 w-7 shrink-0 items-center justify-center border-l border-border/60 text-muted-foreground hover:text-foreground', checkItem.assigneeIds?.length && 'text-primary')}
                               title={`Assignee: ${assigneeName}`}
                               aria-label={`Assignee: ${assigneeName}`}
                               onClick={() => toggleChecklistItemMeta(item.id, list.id, checkItem.id)}
@@ -900,7 +1217,7 @@ export default function BuildProjectWorkPopup({
                             </button>
                             <button
                               type="button"
-                              className={cn('flex h-7 w-7 items-center justify-center border-l border-border/60 text-muted-foreground hover:text-foreground', checkItem.dueDate && 'text-primary')}
+                              className={cn('flex min-h-7 w-7 shrink-0 items-center justify-center border-l border-border/60 text-muted-foreground hover:text-foreground', checkItem.dueDate && 'text-primary')}
                               title={`Due date: ${dueDateLabel}`}
                               aria-label={`Due date: ${dueDateLabel}`}
                               onClick={() => toggleChecklistItemMeta(item.id, list.id, checkItem.id)}
@@ -909,7 +1226,7 @@ export default function BuildProjectWorkPopup({
                             </button>
                             <button
                               type="button"
-                              className="flex h-7 w-7 items-center justify-center border-l border-border/60 text-muted-foreground hover:text-destructive"
+                              className="flex min-h-7 w-7 shrink-0 items-center justify-center border-l border-border/60 text-muted-foreground hover:text-destructive"
                               title="Delete list item"
                               aria-label="Delete list item"
                               onClick={() => deleteChecklistItem(item, list.id, checkItem.id)}
@@ -951,22 +1268,24 @@ export default function BuildProjectWorkPopup({
                     })}
                   </div>
                   <div className="mt-2 flex items-center gap-1.5">
-                    <Input
+                    <AutoGrowingTextarea
                       value={newChecklistTextByKey[`${item.id}:${list.id}`] || ''}
                       onChange={(event) => setNewChecklistTextByKey((current) => ({ ...current, [`${item.id}:${list.id}`]: event.target.value }))}
                       onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
+                        if (event.key === 'Enter' && !event.shiftKey) {
                           event.preventDefault();
                           addChecklistItem(item, list);
                         }
                       }}
                       placeholder="Add checklist item"
-                      className="h-8 text-xs"
+                      className="min-h-8 resize-none rounded-md border border-input bg-background px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap break-words"
                     />
                     <Button type="button" variant="outline" size="icon" className="h-8 w-8" onClick={() => addChecklistItem(item, list)}>
                       <Plus className="h-3.5 w-3.5" />
                     </Button>
                   </div>
+                  </>
+                  ) : null}
                 </div>
                 );
               })}
@@ -991,6 +1310,15 @@ export default function BuildProjectWorkPopup({
 
   const renderNotes = () => (
     <div className="space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-xs font-semibold text-foreground">Notes</div>
+        <CsvExportPicker
+          type="notes"
+          candidates={noteCsvCandidates}
+          filenameScope={`${selectedProject?.name || 'project-work'}-popup`}
+        />
+      </div>
+      {renderQuickCreateBar()}
       {filteredItems.map((item) => (
         <section key={item.id} className="rounded-lg border border-border bg-background/70 p-3">
           {renderWorkItemHeader(item)}
@@ -1021,6 +1349,10 @@ export default function BuildProjectWorkPopup({
               <RichWorkItemNoteEditor
                 key={note.id}
                 note={note}
+                workItemTitle={item.title}
+                agentId={agentId}
+                onInsertPrompt={onInsertPrompt}
+                onSavePromptAsNote={(title, prompt) => savePromptAsNote(item, title, prompt)}
                 onChange={(nextNote) => updateNote(item, nextNote)}
                 onDelete={() => deleteNote(item, note.id)}
               />
@@ -1033,6 +1365,7 @@ export default function BuildProjectWorkPopup({
 
   const renderDocuments = () => (
     <div className="space-y-3">
+      {renderQuickCreateBar()}
       {filteredItems.map((item) => (
         <section key={item.id} className="rounded-lg border border-border bg-background/70 p-3">
           {renderWorkItemHeader(item)}
@@ -1068,15 +1401,19 @@ export default function BuildProjectWorkPopup({
           <div className="mt-3 space-y-2">
             {(item.documents || []).length === 0 ? (
               <div className="rounded-md border border-dashed border-border/70 px-3 py-4 text-center text-xs text-muted-foreground">No linked documents.</div>
-            ) : (item.documents || []).map((documentLink) => (
-              <div key={documentLink.id} className="rounded-md border border-border/60 bg-card/60 p-2">
+            ) : (item.documents || []).map((documentLink) => {
+              const promptNotice = documentPromptNotice?.documentId === documentLink.id ? documentPromptNotice : null;
+              return (
+              <div key={documentLink.id} className="rounded-md border border-border/60 bg-card/60 p-2" style={workItemOutlineStyle(documentLink.outlineColor)}>
                 <div className="grid gap-2">
-                  <Input
-                    defaultValue={documentLink.label}
-                    onBlur={(event) => updateDocument(item, documentLink, { label: event.target.value.trim() || documentLink.label })}
-                    className="h-8 text-xs"
-                    placeholder="Label"
-                  />
+                  <WorkItemNameTooltip value={documentLink.label || 'Untitled document'}>
+                    <Input
+                      defaultValue={documentLink.label}
+                      onBlur={(event) => updateDocument(item, documentLink, { label: event.target.value.trim() || documentLink.label })}
+                      className="h-8 text-xs"
+                      placeholder="Label"
+                    />
+                  </WorkItemNameTooltip>
                   <Input
                     defaultValue={targetForDocument(documentLink)}
                     onBlur={(event) => updateDocumentTarget(item, documentLink, event.target.value.trim())}
@@ -1084,18 +1421,52 @@ export default function BuildProjectWorkPopup({
                     placeholder="Path or URL"
                   />
                   <div className="flex items-center gap-1.5">
+                    <WorkItemOutlineColorPicker
+                      value={documentLink.outlineColor}
+                      onChange={(outlineColor) => updateDocument(item, documentLink, { outlineColor })}
+                      className="h-8 w-8"
+                    />
                     <Button type="button" variant="outline" size="sm" className="h-8 gap-1 px-2 text-xs" onClick={() => void openDocument(documentLink)}>
                       <FileText className="h-3.5 w-3.5" />
                       Open
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className={cn(
+                        'h-8 gap-1 px-2 text-xs',
+                        promptNotice?.kind === 'success' && 'border-emerald-500/60 bg-emerald-500/10 text-emerald-200',
+                        promptNotice?.kind === 'error' && 'border-red-500/60 bg-red-500/10 text-red-200'
+                      )}
+                      onClick={() => attachDocumentToPrompt(documentLink)}
+                      title={documentLink.kind === 'local'
+                        ? 'Attach this local document file to the active Chat or Build prompt.'
+                        : 'Insert this document link into the active Chat or Build prompt.'}
+                    >
+                      {promptNotice?.kind === 'success' ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Paperclip className="h-3.5 w-3.5" />}
+                      {promptNotice?.kind === 'success' ? 'Attached' : 'Attach'}
                     </Button>
                     <Button type="button" variant="ghost" size="sm" className="h-8 gap-1 px-2 text-xs" onClick={() => deleteDocument(item, documentLink.id)}>
                       <Trash2 className="h-3.5 w-3.5" />
                       Delete
                     </Button>
                   </div>
+                  {promptNotice ? (
+                    <div className={cn(
+                      'flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-[11px]',
+                      promptNotice.kind === 'success'
+                        ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-100'
+                        : 'border-red-500/40 bg-red-500/10 text-red-100'
+                    )}>
+                      {promptNotice.kind === 'success' ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : <X className="h-3.5 w-3.5 shrink-0" />}
+                      <span>{promptNotice.text}</span>
+                    </div>
+                  ) : null}
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         </section>
       ))}
@@ -1104,6 +1475,7 @@ export default function BuildProjectWorkPopup({
 
   const renderDrawings = () => (
     <div className="space-y-3">
+      {renderQuickCreateBar()}
       {filteredItems.map((item) => (
         <section key={item.id} className="rounded-lg border border-border bg-background/70 p-3">
           {renderWorkItemHeader(item)}

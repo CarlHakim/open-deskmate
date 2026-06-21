@@ -10,6 +10,9 @@ export const taskConfigSchema = z.object({
   sessionId: z.string().optional(),
   usageProjectId: z.string().nullable().optional(),
   privacyMode: z.enum(['normal', 'incognito']).optional(),
+  requiresBrowser: z.boolean().optional(),
+  buildMode: z.boolean().optional(),
+  buildWorkspaceRelativePath: z.string().optional(),
   chrome: z.boolean().optional(),
 });
 
@@ -27,6 +30,12 @@ export const resumeSessionSchema = z.object({
   existingTaskId: z.string().optional(),
   usageProjectId: z.string().nullable().optional(),
   privacyMode: z.enum(['normal', 'incognito']).optional(),
+  options: z.object({
+    workingDirectory: z.string().optional(),
+    requiresBrowser: z.boolean().optional(),
+    buildMode: z.boolean().optional(),
+    buildWorkspaceRelativePath: z.string().optional(),
+  }).optional(),
   chrome: z.boolean().optional(),
 });
 

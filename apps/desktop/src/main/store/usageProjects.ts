@@ -72,6 +72,11 @@ function normalizeColor(value: unknown): string | undefined {
   return color || undefined;
 }
 
+function normalizeOutlineColor(value: unknown): string | undefined {
+  const color = normalizeText(value).slice(0, 32);
+  return /^#[0-9a-f]{6}$/i.test(color) ? color : undefined;
+}
+
 function normalizeLongText(value: unknown, fallback = ''): string {
   return String(value ?? fallback).trim();
 }
@@ -213,12 +218,14 @@ function normalizeWorkItemChecklistLists(value: unknown, legacyChecklist: unknow
       const name = normalizeText(source.name, 'List').slice(0, 80) || 'List';
       const createdAt = normalizeDateString(source.createdAt, nowIso());
       lists.push({
-        id: normalizeText(source.id).slice(0, 80) || randomUUID(),
-        name,
-        items,
-        createdAt,
-        updatedAt: source.updatedAt ? normalizeDateString(source.updatedAt, createdAt) : undefined,
-      });
+      id: normalizeText(source.id).slice(0, 80) || randomUUID(),
+      name,
+      items,
+      context: normalizeLongText(source.context).slice(0, 5000) || undefined,
+      outlineColor: normalizeOutlineColor(source.outlineColor),
+      createdAt,
+      updatedAt: source.updatedAt ? normalizeDateString(source.updatedAt, createdAt) : undefined,
+    });
     }
   }
 
@@ -230,6 +237,8 @@ function normalizeWorkItemChecklistLists(value: unknown, legacyChecklist: unknow
         id: randomUUID(),
         name: 'Checklist',
         items,
+        context: undefined,
+        outlineColor: undefined,
         createdAt: timestamp,
       });
     }
@@ -261,6 +270,7 @@ function normalizeWorkItemNotes(value: unknown): UsageProjectWorkItemNote[] {
       title: normalizeText(source.title).slice(0, 160) || undefined,
       text,
       html: html || undefined,
+      outlineColor: normalizeOutlineColor(source.outlineColor),
       createdAt,
       updatedAt: source.updatedAt ? normalizeDateString(source.updatedAt, createdAt) : undefined,
     }];
@@ -329,6 +339,7 @@ function normalizeWorkItemDrawings(value: unknown): UsageProjectWorkItemDrawing[
       width: Math.max(320, Math.min(1600, normalizeDrawingNumber(source.width, 640))),
       height: Math.max(200, Math.min(1200, normalizeDrawingNumber(source.height, 360))),
       elements,
+      outlineColor: normalizeOutlineColor(source.outlineColor),
       createdAt,
       updatedAt: source.updatedAt ? normalizeDateString(source.updatedAt, createdAt) : undefined,
     }];
@@ -354,6 +365,7 @@ function normalizeWorkItemDocuments(value: unknown): UsageProjectWorkItemDocumen
       kind,
       path: kind === 'local' ? rawPath : undefined,
       url: kind === 'url' ? rawUrl : undefined,
+      outlineColor: normalizeOutlineColor(source.outlineColor),
       createdAt: normalizeDateString(source.createdAt, nowIso()),
     }];
   }).sort((a, b) => b.createdAt.localeCompare(a.createdAt));

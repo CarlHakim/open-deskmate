@@ -11,6 +11,7 @@ import { buildOpenAICompatibleChatCompletionsUrl } from './openai-compatible';
 const SYSTEM_PROMPT = [
   'You are Deskmate.',
   'The user wants to save the workflow that just happened in a chat as a reusable SKILL.md playbook (OpenDeskmate-style).',
+  'Your job is to transform the chat transcript into a reusable procedure, not to preserve or summarize the chat log.',
   '',
   'You MUST output STRICT JSON only (no markdown, no code fences, no extra text).',
   '',
@@ -25,20 +26,29 @@ const SYSTEM_PROMPT = [
   'SKILL.md requirements:',
   '- Must start with frontmatter:',
   '  ---',
-  '  name: ...',
-  '  description: ...',
+  '  name: kebab-case-skill-id',
+  '  description: "short trigger phrase under 160 characters"',
   '  metadata: |',
   '    { "opendeskmate": { ... } }',
   '  ---',
   '- The metadata.opendeskmate envelope must be present.',
+  '- Set metadata.opendeskmate.generatedBy to "task-save-skill-draft" and metadata.opendeskmate.requiresReview to true.',
   '- If you can infer requirements, set metadata.opendeskmate.requires with any of:',
   '  - bins: list of required CLI binaries',
   '  - anyBins: list of binaries where any ONE satisfies',
   '  - env: list of env var names the user must set (API keys, etc.)',
   '  - config: list of config paths the user must set via the app, preferably relative to the skill config object (e.g. apiKey, camera.nodes)',
   '- If you can infer installation actions, set metadata.opendeskmate.install as an array of install specs.',
+  '- Follow OpenClaw-style skill shape: compact trigger metadata, lean markdown body, no chat log, no long generic AI advice.',
+  '- Keep the frontmatter name equal to the skillId slug. Put the human-readable title as the first markdown heading.',
   '- Keep the skill generic and reusable (avoid user-specific paths; use placeholders).',
-  '- Write a clear "How to use" section with bullet steps and optional parameters.',
+  '- Preserve the reusable method: useful tool categories, source choices, decision rules, fallback paths, checks, and output formatting.',
+  '- Include a concise "Tool call overview" section that explains which tool categories were useful and why; do not include raw tool payloads.',
+  '- Generalize the original target into inputs/placeholders like <place>, <client>, <repository>, <document>, or <goal>.',
+  '- Remove raw transcript text, full tool logs, status messages, retries, failed branches, repeated actions, and chat-specific narration.',
+  '- Collapse repeated exploration into durable steps a future agent should follow.',
+  '- Include decision rules, inputs, outputs, verification checks, and fallback paths that are reusable.',
+  '- Prefer these body sections when relevant: When to use, Inputs, Tool call overview, Workflow, Output format, Verification, Fallbacks.',
   '- Do not include secrets.',
   '- IMPORTANT: This app runs on Windows often. Do NOT require "bash" unless the user explicitly asked for bash. Prefer cmd.exe, PowerShell, or Node-based commands.',
 ].join('\n');
@@ -49,16 +59,115 @@ function modelIdFromSelectedModel(selectedModel: SelectedModel): string {
   return parts.length > 1 ? parts.slice(1).join('/') : raw;
 }
 
+type JsonObjectParseResult = {
+  value: unknown;
+  start: number;
+  end: number;
+};
+
+function findFirstJsonObject(text: string): JsonObjectParseResult | null {
+  for (let start = 0; start < text.length; start += 1) {
+    if (text[start] !== '{') continue;
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let index = start; index < text.length; index += 1) {
+      const char = text[index];
+
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (char === '\\') {
+          escaped = true;
+        } else if (char === '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (char === '"') {
+        inString = true;
+        continue;
+      }
+      if (char === '{') {
+        depth += 1;
+        continue;
+      }
+      if (char === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          const candidate = text.slice(start, index + 1);
+          try {
+            return { value: JSON.parse(candidate), start, end: index + 1 };
+          } catch {
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractSkillMdFallback(text: string): string {
+  const fenced = text.match(/```(?:markdown|md)?\s*(---[\s\S]*?)```/i);
+  if (fenced?.[1]?.trim()) return fenced[1].trim();
+
+  const frontmatterStart = text.indexOf('---');
+  if (frontmatterStart === -1) return '';
+  return text.slice(frontmatterStart).replace(/```$/g, '').trim();
+}
+
+function unwrapDraftObject(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const obj = value as Record<string, unknown>;
+  for (const key of ['draft', 'skill', 'workflow', 'result']) {
+    const nested = obj[key];
+    if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+      return nested;
+    }
+  }
+  return value;
+}
+
 function extractJsonObject(text: string): unknown {
   const trimmed = (text || '').trim();
   if (!trimmed) throw new Error('Empty response');
-  const firstBrace = trimmed.indexOf('{');
-  const lastBrace = trimmed.lastIndexOf('}');
-  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
-    throw new Error('No JSON object found in response');
+
+  const sources: string[] = [];
+  const fencedJsonMatches = trimmed.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi);
+  for (const match of fencedJsonMatches) {
+    if (match[1]?.trim()) sources.push(match[1].trim());
   }
-  const candidate = trimmed.slice(firstBrace, lastBrace + 1);
-  return JSON.parse(candidate);
+  sources.push(trimmed);
+
+  for (const source of sources) {
+    const parsed = findFirstJsonObject(source);
+    if (!parsed) continue;
+    const value = unwrapDraftObject(parsed.value);
+
+    if (
+      value
+      && typeof value === 'object'
+      && !Array.isArray(value)
+      && !String((value as { skillMd?: unknown; skill_md?: unknown; skillMarkdown?: unknown }).skillMd
+        ?? (value as { skill_md?: unknown }).skill_md
+        ?? (value as { skillMarkdown?: unknown }).skillMarkdown
+        ?? '').trim()
+    ) {
+      const skillMd = extractSkillMdFallback(source.slice(parsed.end)) || extractSkillMdFallback(trimmed);
+      if (skillMd) {
+        return { ...(value as Record<string, unknown>), skillMd };
+      }
+    }
+
+    return value;
+  }
+
+  throw new Error('No JSON object found in response');
 }
 
 function safeString(value: unknown, maxLen: number): string {
@@ -109,6 +218,600 @@ function buildTranscript(req: UserSkillGenerateFromTaskRequest): { prompt: strin
   }
 
   return { prompt: task.prompt, transcript: lines.join('\n').trim() };
+}
+
+function normalizeSkillId(value: string): string {
+  const raw = String(value || '').trim().toLowerCase();
+  const collapsed = raw
+    .replace(/[^a-z0-9-_]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  const prefixed = /^[a-z0-9]/.test(collapsed) ? collapsed : `skill-${collapsed}`;
+  return prefixed.replace(/[^a-z0-9-_]/g, '').slice(0, 64) || 'skill';
+}
+
+function titleFromText(value: string, fallback = 'Reusable Workflow'): string {
+  const cleaned = String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80);
+  if (!cleaned) return fallback;
+  return cleaned
+    .split(' ')
+    .slice(0, 8)
+    .map((word) => word ? `${word[0].toUpperCase()}${word.slice(1)}` : '')
+    .join(' ')
+    || fallback;
+}
+
+function yamlQuoted(value: string): string {
+  return JSON.stringify(String(value || ''));
+}
+
+const SKILL_NAME_STOP_WORDS = new Set([
+  'a',
+  'an',
+  'and',
+  'are',
+  'as',
+  'at',
+  'be',
+  'been',
+  'being',
+  'by',
+  'can',
+  'could',
+  'for',
+  'from',
+  'how',
+  'i',
+  'in',
+  'into',
+  'is',
+  'it',
+  'me',
+  'my',
+  'of',
+  'on',
+  'or',
+  'please',
+  'that',
+  'the',
+  'these',
+  'this',
+  'those',
+  'to',
+  'use',
+  'using',
+  'was',
+  'were',
+  'what',
+  'when',
+  'where',
+  'which',
+  'with',
+  'would',
+  'you',
+  'your',
+]);
+
+const SKILL_ACTION_WORDS = new Set([
+  'add',
+  'answer',
+  'build',
+  'change',
+  'check',
+  'compare',
+  'create',
+  'describe',
+  'edit',
+  'explain',
+  'find',
+  'fix',
+  'generate',
+  'get',
+  'give',
+  'implement',
+  'image',
+  'images',
+  'look',
+  'make',
+  'overview',
+  'photo',
+  'photos',
+  'picture',
+  'pictures',
+  'recommend',
+  'report',
+  'research',
+  'save',
+  'search',
+  'show',
+  'summarize',
+  'tell',
+  'update',
+  'workflow',
+]);
+
+function skillNameTokens(value: string, includeActionWords = true): string[] {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length > 2)
+    .filter((token) => !SKILL_NAME_STOP_WORDS.has(token))
+    .filter((token) => includeActionWords || !SKILL_ACTION_WORDS.has(token));
+}
+
+function normalizedNameForComparison(value: string): string {
+  return skillNameTokens(value, true).join(' ');
+}
+
+function firstMarkdownHeading(skillMd: string): string {
+  const match = normalizeSkillMarkdownText(skillMd).match(/^#\s+(.+)$/m);
+  return match?.[1]?.trim().replace(/\s+#*$/, '') || '';
+}
+
+function looksTaskSpecificName(name: string, prompt: string): boolean {
+  const normalizedName = normalizedNameForComparison(name);
+  if (!normalizedName) return false;
+  if (normalizedName === normalizedNameForComparison(titleFromText(prompt))) return true;
+
+  const nameTokens = skillNameTokens(name, true);
+  if (nameTokens.length === 0) return false;
+
+  const promptTokens = new Set(skillNameTokens(prompt, true));
+  const promptSpecificTokens = new Set(skillNameTokens(prompt, false));
+  const overlap = nameTokens.filter((token) => promptTokens.has(token)).length;
+  const specificOverlap = nameTokens.filter((token) => promptSpecificTokens.has(token)).length;
+
+  if (specificOverlap >= 2) return true;
+  return nameTokens.length >= 4 && overlap / nameTokens.length >= 0.75;
+}
+
+function genericPromptName(prompt: string): string {
+  const cleaned = String(prompt || '')
+    .replace(/\s+/g, ' ')
+    .replace(/^(please\s+)?(can|could|would)\s+you\s+/i, '')
+    .replace(/^(please\s+)?(i\s+want\s+you\s+to|i\s+need\s+you\s+to|i\s+want\s+to)\s+/i, '')
+    .replace(/\b(me|for me)\b/gi, '')
+    .replace(/\b(of|about|for|called|named|from|in|at|with|using)\b[\s\S]*$/i, '')
+    .trim();
+  const title = titleFromText(cleaned, '');
+  if (!title || looksTaskSpecificName(title, prompt)) return '';
+  return /\b(workflow|skill|process)\b/i.test(title) ? title : `${title} Workflow`;
+}
+
+function reusableIdentityForDraft(params: {
+  prompt: string;
+  skillMd: string;
+  inferredName: string;
+  inferredDescription: string;
+}): FallbackSkillPlan | { skillId: string; name: string; description: string } | null {
+  const frontmatterName = frontmatterField(params.skillMd, 'name');
+  const nameLooksSpecific =
+    looksTaskSpecificName(params.inferredName, params.prompt)
+    || (frontmatterName ? looksTaskSpecificName(frontmatterName, params.prompt) : false);
+  if (!nameLooksSpecific) return null;
+
+  const heading = firstMarkdownHeading(params.skillMd);
+  if (heading && !looksTaskSpecificName(heading, params.prompt) && !/^how to use$/i.test(heading)) {
+    return {
+      skillId: normalizeSkillId(heading),
+      name: titleFromText(heading),
+      description: params.inferredDescription || `Reusable workflow for ${heading.toLowerCase()}.`,
+    };
+  }
+
+  const plan = fallbackPlanFromPrompt(params.prompt);
+  if (plan.skillId !== 'reusable-task-workflow') return plan;
+
+  const genericName = genericPromptName(params.prompt);
+  if (genericName) {
+    return {
+      skillId: normalizeSkillId(genericName),
+      name: genericName,
+      description: `Reusable workflow for ${genericName.toLowerCase().replace(/\.$/, '')}.`,
+    };
+  }
+
+  return plan;
+}
+
+type FallbackSkillPlan = {
+  skillId: string;
+  name: string;
+  description: string;
+  whenToUse: string[];
+  inputs: string[];
+  steps: string[];
+  outputFormat: string[];
+  verification: string[];
+  fallbackPaths: string[];
+};
+
+function isImageGalleryPrompt(prompt: string): boolean {
+  const text = String(prompt || '').toLowerCase();
+  const asksForImages = /\b(image|images|picture|pictures|photo|photos|gallery)\b/i.test(text);
+  const lookupIntent = /\b(find|show|get|search|collect|source|present|gallery)\b/i.test(text)
+    || /\b(images|pictures|photos)\s+(of|for)\b/i.test(text);
+  const creationIntent = /\b(generate|create|draw|edit|modify|remove|replace|upscale|annotate)\b/i.test(text);
+  return asksForImages && lookupIntent && !creationIntent;
+}
+
+function observedToolNamesFromTranscript(transcript: string): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const match of transcript.matchAll(/^\[tool:([^\]\s]+)\]/gm)) {
+    const raw = String(match[1] || '').trim();
+    if (!raw) continue;
+    const key = raw.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(raw);
+    if (result.length >= 12) break;
+  }
+  return result;
+}
+
+function toolPurpose(toolName: string): string {
+  const lower = toolName.toLowerCase();
+  if (lower.includes('web') || lower.includes('fetch')) {
+    return 'Retrieve source pages, search result pages, or reference material without relying on remembered facts.';
+  }
+  if (lower.includes('browser') || lower.includes('navigate') || lower.includes('screenshot')) {
+    return 'Inspect pages visually, extract page data, or capture visual proof when a browser session is available.';
+  }
+  if (lower.includes('image')) {
+    return 'Collect, inspect, or prepare candidate image links and previews.';
+  }
+  if (lower.includes('grep') || lower.includes('search') || lower.includes('find')) {
+    return 'Search cached output or local/reference files for reusable evidence.';
+  }
+  if (lower.includes('file') || lower.includes('read') || lower.includes('write')) {
+    return 'Read or write local supporting files only when the workflow requires saved artifacts.';
+  }
+  if (lower.includes('shell') || lower.includes('command') || lower.includes('powershell')) {
+    return 'Run Windows-friendly commands for inspection, extraction, or verification.';
+  }
+  return 'Support the workflow where this tool is available and appropriate.';
+}
+
+function fallbackPlanFromPrompt(prompt: string): FallbackSkillPlan {
+  if (isImageGalleryPrompt(prompt)) {
+    return {
+      skillId: 'find-images',
+      name: 'Find Images',
+      description: 'Find and present a curated image gallery for any place, landmark, or location.',
+      whenToUse: [
+        'The user asks for images, pictures, photos, or a visual gallery of a place, landmark, venue, region, or location.',
+        'The output should be human-readable, with captions and links instead of a raw dump of URLs.',
+      ],
+      inputs: [
+        '`<place>`: The place, landmark, venue, region, or location to find images for.',
+        '`<count>`: Optional target number of images to return.',
+        '`<sourcePreference>`: Optional preferred source such as Wikimedia Commons, Wikipedia, a known official site, or general web results.',
+        '`<constraints>`: Optional limits such as licensing, image size, viewpoint, landmark type, or whether to include full-size links.',
+      ],
+      steps: [
+        'Extract `<place>`, desired image count, and any source or licensing constraints from the user request.',
+        'Search reliable and inspectable sources first. Prefer Wikimedia Commons and Wikipedia for places and landmarks because image pages usually include stable file pages, captions, and licensing context.',
+        'Use web or browser tools to collect candidate image pages and direct preview URLs. Keep the search broad enough to cover landmarks, streets, civic buildings, landscape views, and notable local features.',
+        'Deduplicate candidates and reject broken, irrelevant, tiny, or purely decorative images. Prefer a varied set that helps the user understand the place visually.',
+        'For each selected image, keep a short caption, source page link, and preview or thumbnail URL. When possible, keep a full-size source link separately from the thumbnail.',
+        'Present the result as a concise gallery with markdown image previews, captions, and source/full-size links. If the app supports thumbnails or image preview cards, include direct image URLs that the UI can render.',
+      ],
+      outputFormat: [
+        'A 1-2 sentence introduction naming `<place>` and the visual focus.',
+        'A numbered or grouped gallery where each item has a caption, an image preview, and a source or full-size link.',
+        'Optional source links at the end for the main pages used.',
+      ],
+      verification: [
+        'Check that each image URL is reachable or comes from a page that clearly contains the image.',
+        'Check that captions match the visible subject and do not claim certainty beyond the source.',
+        'If only weak or broken image links are available, say so and provide the best source pages instead of pretending the gallery is complete.',
+      ],
+      fallbackPaths: [
+        'If a browser/image-search tool is unavailable, use web fetch against Wikipedia and Wikimedia Commons category pages.',
+        'If source output is truncated, search the cached output for `upload.wikimedia.org`, image file extensions, or Commons file links.',
+        'If direct image rendering fails, provide source page links and label them clearly so the user can open them.',
+      ],
+    };
+  }
+
+  if (/\b(build|fix|implement|code|app|website|runtime|bug)\b/i.test(prompt)) {
+    return {
+      skillId: 'software-change-workflow',
+      name: 'Software Change Workflow',
+      description: 'Plan, implement, verify, and summarize a repeatable software change.',
+      whenToUse: [
+        'The user asks for a software fix, feature, UI change, or app behavior change.',
+        'The work should be carried through code inspection, implementation, verification, and a concise handoff.',
+      ],
+      inputs: [
+        '`<goal>`: The requested software behavior or fix.',
+        '`<workspace>`: The repository or project to inspect.',
+        '`<constraints>`: Existing patterns, test expectations, platform constraints, or files that must not be changed.',
+      ],
+      steps: [
+        'Inspect the relevant files and existing patterns before editing.',
+        'Identify the smallest scoped change that satisfies `<goal>` without unrelated refactors.',
+        'Edit the implementation and any focused tests or types needed for the changed behavior.',
+        'Run the most relevant checks available for the project, such as typecheck, unit tests, lint, or build.',
+        'Summarize changed files, verification results, and any remaining risk.',
+      ],
+      outputFormat: [
+        'A concise summary of what changed.',
+        'The checks that were run and their result.',
+        'Any follow-up or limitation that still matters.',
+      ],
+      verification: [
+        'Prefer project scripts over invented commands.',
+        'Check the UI or runtime when the change is user-facing.',
+        'Do not overwrite unrelated user changes.',
+      ],
+      fallbackPaths: [
+        'If a test command is missing or broken for unrelated reasons, report that directly and run the next best focused check.',
+        'If the code path is unclear, search for neighboring components, stores, IPC handlers, and shared types before editing.',
+      ],
+    };
+  }
+
+  if (/\b(research|look up|find|compare|summarize|overview|report)\b/i.test(prompt)) {
+    return {
+      skillId: 'research-brief-workflow',
+      name: 'Research Brief Workflow',
+      description: 'Gather, verify, and present a concise research answer with useful sources.',
+      whenToUse: [
+        'The user asks for research, comparison, lookup, summary, or recommendation work.',
+        'The answer benefits from source checking and a structured final response.',
+      ],
+      inputs: [
+        '`<topic>`: The subject to research.',
+        '`<scope>`: Optional geography, date range, market, audience, or depth.',
+        '`<outputFormat>`: Optional preference such as table, bullets, brief, or detailed report.',
+      ],
+      steps: [
+        'Clarify the topic and scope from the user request.',
+        'Gather current information from reliable primary or high-quality sources where possible.',
+        'Compare sources, remove duplicates, and keep only evidence that affects the answer.',
+        'Organize the result into the requested output format.',
+        'Include source links or attribution when the answer depends on external material.',
+      ],
+      outputFormat: [
+        'A direct answer first.',
+        'A structured summary using bullets, sections, or tables when helpful.',
+        'Source links for claims that need attribution.',
+      ],
+      verification: [
+        'Check dates and make sure current claims are not based only on old information.',
+        'Prefer primary sources when technical, financial, legal, medical, or product details matter.',
+      ],
+      fallbackPaths: [
+        'If a source is unavailable, use another credible source and mention the limitation.',
+        'If the data conflicts, surface the conflict instead of forcing a false conclusion.',
+      ],
+    };
+  }
+
+  return {
+    skillId: 'reusable-task-workflow',
+    name: 'Reusable Task Workflow',
+    description: 'Turn a completed task into a repeatable workflow with inputs, steps, checks, and output format.',
+    whenToUse: [
+      'A future task has the same repeatable shape as the original completed chat.',
+      'The exact subject should change, but the method, checks, and final format should stay useful.',
+    ],
+    inputs: [
+      '`<goal>`: The user-facing result to produce.',
+      '`<target>`: The place, file, repository, document, client, or other object the workflow operates on.',
+      '`<constraints>`: Any limits, preferred sources, formatting needs, permissions, or environment details.',
+    ],
+    steps: [
+      'Identify the reusable goal and required inputs.',
+      'Gather only the information needed for the current target.',
+      'Use the same tool categories and decision points that made the original task work.',
+      'Remove one-off details and keep the final output focused on the user goal.',
+      'Verify the result using the most relevant checks for the task.',
+      'Present the final result with any files, links, screenshots, or notes the user needs.',
+    ],
+    outputFormat: [
+      'A direct answer or artifact that matches the user request.',
+      'Relevant links, files, tables, screenshots, or notes when they are part of the workflow.',
+    ],
+    verification: [
+      'Check that the output matches the requested target, not the source task target.',
+      'Avoid carrying over user-specific names, paths, or private data from the original chat.',
+    ],
+    fallbackPaths: [
+      'If a preferred tool is unavailable, use an equivalent available app tool or explain what is missing.',
+      'If the result cannot be fully verified, state the limitation clearly.',
+    ],
+  };
+}
+
+export function normalizeSkillMarkdownText(input: string): string {
+  let text = String(input || '').trim();
+  if (!text) return '';
+
+  if (text.startsWith('"') && text.endsWith('"')) {
+    try {
+      const parsed = JSON.parse(text);
+      if (typeof parsed === 'string') text = parsed.trim();
+    } catch {
+      // Leave non-JSON quoted text alone.
+    }
+  }
+
+  const literalNewlineCount = (text.match(/\\n/g) || []).length;
+  const actualNewlineCount = (text.match(/\n/g) || []).length;
+  const looksEscapedMarkdown =
+    text.startsWith('---\\n')
+    || text.includes('\\nmetadata:')
+    || text.includes('\\n# ')
+    || text.includes('\\n## ')
+    || (literalNewlineCount >= 3 && actualNewlineCount <= 2);
+
+  if (looksEscapedMarkdown) {
+    text = text
+      .replace(/\\r\\n/g, '\n')
+      .replace(/\\n/g, '\n')
+      .replace(/\\t/g, '  ')
+      .replace(/\\"/g, '"');
+  }
+
+  return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+}
+
+function frontmatterField(skillMd: string, field: 'name' | 'description'): string {
+  const lines = normalizeSkillMarkdownText(skillMd).split(/\r?\n/);
+  if (lines[0]?.trim() !== '---') return '';
+  const endIdx = lines.findIndex((line, index) => index > 0 && line.trim() === '---');
+  if (endIdx === -1) return '';
+  const pattern = new RegExp(`^${field}\\s*:\\s*(.+)$`, 'i');
+  for (const line of lines.slice(1, endIdx)) {
+    const match = line.match(pattern);
+    if (!match?.[1]) continue;
+    return match[1].trim().replace(/^["']|["']$/g, '');
+  }
+  return '';
+}
+
+function ensureSkillMarkdownFrontmatter(params: {
+  skillId: string;
+  name: string;
+  description: string;
+  skillMd: string;
+}): string {
+  const raw = normalizeSkillMarkdownText(params.skillMd);
+  if (raw.startsWith('---')) return raw;
+  const metadata = {
+    opendeskmate: {
+      skillKey: params.skillId,
+      generatedBy: 'task-save-skill-draft',
+      requiresReview: true,
+    },
+  };
+  return [
+    '---',
+    `name: ${params.skillId}`,
+    `description: ${yamlQuoted(params.description)}`,
+    'metadata: |',
+    ...JSON.stringify(metadata, null, 2).split('\n').map((line) => `  ${line}`),
+    '---',
+    '',
+    raw || [
+      '# How to use',
+      '',
+      '- Review the source chat and adapt these steps before relying on the skill.',
+      '- Add concrete instructions, required inputs, and expected outputs.',
+    ].join('\n'),
+  ].join('\n');
+}
+
+function applySkillIdentityToFrontmatter(params: {
+  skillMd: string;
+  skillId: string;
+  description: string;
+}): string {
+  const raw = normalizeSkillMarkdownText(params.skillMd);
+  if (!raw.startsWith('---')) return raw;
+
+  const lines = raw.split(/\n/);
+  const endIdx = lines.findIndex((line, index) => index > 0 && line.trim() === '---');
+  if (endIdx === -1) return raw;
+
+  let sawName = false;
+  let sawDescription = false;
+  const next = [...lines];
+  for (let index = 1; index < endIdx; index += 1) {
+    const line = next[index] ?? '';
+    if (/^name\s*:/i.test(line)) {
+      next[index] = `name: ${params.skillId}`;
+      sawName = true;
+      continue;
+    }
+    if (/^description\s*:/i.test(line)) {
+      next[index] = `description: ${yamlQuoted(params.description)}`;
+      sawDescription = true;
+    }
+  }
+
+  const insertAt = 1;
+  const additions: string[] = [];
+  if (!sawName) additions.push(`name: ${params.skillId}`);
+  if (!sawDescription) additions.push(`description: ${yamlQuoted(params.description)}`);
+  if (additions.length > 0) {
+    next.splice(insertAt, 0, ...additions);
+  }
+
+  return next.join('\n').trim();
+}
+
+function fallbackSkillMarkdown(params: { plan: FallbackSkillPlan; transcript: string }): string {
+  const tools = observedToolNamesFromTranscript(params.transcript);
+  const metadata = {
+    opendeskmate: {
+      skillKey: params.plan.skillId,
+      generatedBy: 'task-save-skill-fallback',
+      requiresReview: true,
+      observedTools: tools,
+    },
+  };
+  const toolOverview = tools.length > 0
+    ? tools.map((tool) => `- \`${tool}\`: ${toolPurpose(tool)}`)
+    : [
+        '- Web/browser tools: Retrieve and inspect external sources when the task depends on current or visual information.',
+        '- File/search tools: Inspect local or cached content when the workflow uses saved artifacts.',
+        '- Verification tools: Check that the result is reachable, accurate for the target, and formatted as requested.',
+      ];
+  return [
+    '---',
+    `name: ${params.plan.skillId}`,
+    `description: ${yamlQuoted(params.plan.description)}`,
+    'metadata: |',
+    ...JSON.stringify(metadata, null, 2).split('\n').map((line) => `  ${line}`),
+    '---',
+    '',
+    `# ${params.plan.name}`,
+    '',
+    params.plan.description,
+    '',
+    '## When to use',
+    '',
+    ...params.plan.whenToUse.map((item) => `- ${item}`),
+    '',
+    '## Inputs',
+    '',
+    ...params.plan.inputs.map((item) => `- ${item}`),
+    '',
+    '## Tool call overview',
+    '',
+    ...toolOverview,
+    '',
+    '## Workflow',
+    '',
+    ...params.plan.steps.map((item, index) => `${index + 1}. ${item}`),
+    '',
+    '## Output format',
+    '',
+    ...params.plan.outputFormat.map((item) => `- ${item}`),
+    '',
+    '## Verification',
+    '',
+    ...params.plan.verification.map((item) => `- ${item}`),
+    '',
+    '## Fallbacks',
+    '',
+    ...params.plan.fallbackPaths.map((item) => `- ${item}`),
+    '',
+    '## Notes',
+    '',
+    '- This fallback was created because the AI draft could not be parsed as strict JSON.',
+    '- Review before sharing, but keep the reusable method and placeholders rather than the original task target.',
+    '- Do not include raw chat logs, full tool payloads, retries, or private user data in the skill.',
+  ].join('\n');
 }
 
 async function callAnthropic(apiKey: string, model: string, userText: string): Promise<{ text: string; usage: { input: number; output: number } | null }> {
@@ -191,23 +894,66 @@ async function callGoogle(apiKey: string, model: string, userText: string): Prom
   return { text, usage };
 }
 
-function normalizeDraft(value: unknown): UserSkillWorkflowDraft {
-  const obj = value as Partial<UserSkillWorkflowDraft>;
-  const skillId = String(obj.skillId ?? '').trim();
-  const name = String(obj.name ?? '').trim();
-  const skillMd = String((obj as { skillMd?: unknown }).skillMd ?? '').trim();
-  if (!skillId || !name || !skillMd) {
-    throw new Error('Invalid draft JSON: missing skillId/name/skillMd');
+function normalizeDraft(value: unknown, fallback: { taskPrompt: string; transcript: string; responseText?: string }): UserSkillWorkflowDraft {
+  const obj = unwrapDraftObject(value) as Partial<UserSkillWorkflowDraft> & Record<string, unknown>;
+  let skillMd = String(
+    obj.skillMd
+      ?? obj.skill_md
+      ?? obj.skillMarkdown
+      ?? obj.skill_markdown
+      ?? obj.markdown
+      ?? obj.content
+      ?? ''
+  ).trim();
+  if (!skillMd && fallback.responseText) {
+    skillMd = extractSkillMdFallback(fallback.responseText);
   }
+  skillMd = normalizeSkillMarkdownText(skillMd);
+  if (!skillMd) {
+    throw new Error('Invalid draft JSON: missing skillMd');
+  }
+
+  const inferredName =
+    String(obj.name ?? obj.skillName ?? obj.skill_name ?? '').trim()
+    || frontmatterField(skillMd, 'name')
+    || titleFromText(fallback.taskPrompt);
+  const inferredDescription =
+    String(obj.description ?? obj.summary ?? '').trim()
+    || frontmatterField(skillMd, 'description')
+    || 'Reusable workflow saved from a completed chat.';
+  const reusableIdentity = reusableIdentityForDraft({
+    prompt: fallback.taskPrompt,
+    skillMd,
+    inferredName,
+    inferredDescription,
+  });
+  const skillId = reusableIdentity?.skillId
+    ?? normalizeSkillId(String(obj.skillId ?? obj.skill_id ?? obj.id ?? '').trim() || inferredName || fallback.taskPrompt);
+  const name = reusableIdentity?.name ?? inferredName ?? titleFromText(skillId);
+  const description = reusableIdentity?.description ?? inferredDescription;
+  skillMd = ensureSkillMarkdownFrontmatter({
+    skillId,
+    name,
+    description,
+    skillMd,
+  });
+  skillMd = applySkillIdentityToFrontmatter({
+    skillMd,
+    skillId,
+    description,
+  });
+
   return {
-    skillId: skillId.slice(0, 64),
+    skillId,
     name: name.slice(0, 120),
-    description: String(obj.description ?? '').trim().slice(0, 300) || undefined,
+    description: description.slice(0, 300) || undefined,
     skillMd,
   };
 }
 
 export function sanitizeGeneratedSkillMd(skillMd: string, platform = process.platform): string {
+  skillMd = normalizeSkillMarkdownText(skillMd);
+
   // The app runs OpenCode with Windows shell rules (cmd.exe) in the system prompt.
   // Generated skills should not depend on bash on Windows unless the user explicitly adds it.
   if (platform !== 'win32') return skillMd;
@@ -295,10 +1041,15 @@ export async function generateUserSkillFromTask(req: UserSkillGenerateFromTaskRe
     return { ok: false, error: `No API key configured for ${provider}` };
   }
 
-  const { transcript } = buildTranscript(req);
+  const { prompt, transcript } = buildTranscript(req);
   const userText = [
     'Create a reusable SKILL.md that captures the workflow from this chat.',
-    'Focus on the repeatable procedure, assumptions, and parameters.',
+    'Focus on the repeatable procedure, assumptions, parameters, useful tool categories, source strategy, checks, and final output shape.',
+    'Generalize the original target into placeholders. For example, an image search for one town should become a reusable image-gallery workflow for <place>, not a skill named after that town.',
+    'Use OpenClaw-style skill writing: frontmatter name is a kebab-case slug, description is a short trigger phrase, and the body contains the reusable instructions.',
+    'Include a concise Tool call overview section that explains what the important tool calls were for, but do not copy raw tool output or the full transcript.',
+    'Remove duplicated attempts, transient errors, one-off details, and chat-specific narration.',
+    'The result should read like instructions for a future agent, not a record of what happened in this task.',
     '',
     transcript,
   ].join('\n');
@@ -370,10 +1121,17 @@ export async function generateUserSkillFromTask(req: UserSkillGenerateFromTaskRe
 
   try {
     const parsed = extractJsonObject(text);
-    const draft = normalizeDraft(parsed);
+    const draft = normalizeDraft(parsed, { taskPrompt: prompt, transcript, responseText: text });
     draft.skillMd = sanitizeGeneratedSkillMd(draft.skillMd);
     return { ok: true, draft };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : 'Failed to parse AI response' };
+    const plan = fallbackPlanFromPrompt(prompt);
+    const draft: UserSkillWorkflowDraft = {
+      skillId: plan.skillId,
+      name: plan.name,
+      description: plan.description,
+      skillMd: sanitizeGeneratedSkillMd(fallbackSkillMarkdown({ plan, transcript })),
+    };
+    return { ok: true, draft };
   }
 }

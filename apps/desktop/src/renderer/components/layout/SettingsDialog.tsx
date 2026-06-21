@@ -84,6 +84,7 @@ import type {
   PluginRecord,
   PluginRegistryState,
   OllamaToolMode,
+  ModelConfig,
   ProviderConfig,
   ProviderType,
   SelectedModel,
@@ -129,6 +130,7 @@ import appIcon from '../../../../resources/icon.png';
 import { useAgentStore } from '@/stores/agentStore';
 import { useAttachmentStore } from '@/stores/attachmentStore';
 import { emitSelectedModelChanged } from '@/lib/selected-model-events';
+import { isAgentCharacterAvatar } from '@/lib/agent-character-gallery';
 import AgentAvatarPicker, { AgentAvatarIcon } from './AgentAvatarPicker';
 import PromptLibrarySettingsPanel from './PromptLibrarySettingsPanel';
 import {
@@ -852,6 +854,7 @@ function createAgentModelUpdate(agent: AgentProfile, selectedModel: SelectedMode
     description: agent.description,
     avatar: agent.avatar,
     avatarColor: agent.avatarColor,
+    avatarImageDataUrl: agent.avatarImageDataUrl,
     workspaceRoot: agent.workspaceRoot,
     systemPromptAppend: agent.systemPromptAppend,
     selectedModel,
@@ -886,6 +889,18 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const [provider, setProvider] = useState('anthropic');
   const [modelProviders, setModelProviders] = useState<ProviderConfig[]>(DEFAULT_PROVIDERS);
   const [customModelProviders, setCustomModelProviders] = useState<ProviderConfig[]>([]);
+  const [builtinProviderModelOverrides, setBuiltinProviderModelOverrides] = useState<Record<string, ModelConfig[]>>({});
+  const [builtinModelProviderId, setBuiltinModelProviderId] = useState('google');
+  const [builtinModelId, setBuiltinModelId] = useState('');
+  const [builtinModelName, setBuiltinModelName] = useState('');
+  const [builtinModelContextWindow, setBuiltinModelContextWindow] = useState('128000');
+  const [builtinModelMaxOutputTokens, setBuiltinModelMaxOutputTokens] = useState('4096');
+  const [builtinModelSupportsVision, setBuiltinModelSupportsVision] = useState(true);
+  const [builtinModelSaving, setBuiltinModelSaving] = useState(false);
+  const [builtinModelError, setBuiltinModelError] = useState<string | null>(null);
+  const [builtinModelStatus, setBuiltinModelStatus] = useState<string | null>(null);
+  const [editingBuiltinModelKey, setEditingBuiltinModelKey] = useState<string | null>(null);
+  const [deletingBuiltinModelKey, setDeletingBuiltinModelKey] = useState<string | null>(null);
   const [customProviderId, setCustomProviderId] = useState('');
   const [customProviderName, setCustomProviderName] = useState('');
   const [customProviderBaseUrl, setCustomProviderBaseUrl] = useState('');
@@ -1119,6 +1134,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const [agentSystemPrompt, setAgentSystemPrompt] = useState('');
   const [agentAvatar, setAgentAvatar] = useState<string | undefined>(undefined);
   const [agentAvatarColor, setAgentAvatarColor] = useState<string | undefined>(undefined);
+  const [agentAvatarImageDataUrl, setAgentAvatarImageDataUrl] = useState<string | undefined>(undefined);
   const [agentModelOverrideEnabled, setAgentModelOverrideEnabled] = useState(false);
   const [agentModelProvider, setAgentModelProvider] = useState<ProviderType>('anthropic');
   const [agentModelId, setAgentModelId] = useState(AGENT_FALLBACK_MODEL.model);
@@ -1948,14 +1964,16 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
 
     const fetchModelProviders = async () => {
       try {
-        const [providers, customProviders] = await Promise.all([
+        const [providers, customProviders, builtinOverrides] = await Promise.all([
           accomplish.listModelProviders(),
           accomplish.listCustomModelProviders(),
+          accomplish.listBuiltinProviderModelOverrides(),
         ]);
         const providerList = Array.isArray(providers) && providers.length > 0 ? providers : DEFAULT_PROVIDERS;
         const customProviderList = Array.isArray(customProviders) ? customProviders : [];
         setModelProviders(providerList);
         setCustomModelProviders(customProviderList);
+        setBuiltinProviderModelOverrides(builtinOverrides && typeof builtinOverrides === 'object' ? builtinOverrides : {});
         setProvider((prev) => {
           const existing = providerList.find((entry) => entry.id === prev && entry.requiresApiKey && entry.id !== 'ollama');
           if (existing) return prev;
@@ -3628,14 +3646,16 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
 
   const refreshProviderCatalog = async () => {
     const accomplish = getAccomplish();
-    const [providers, customProviders] = await Promise.all([
+    const [providers, customProviders, builtinOverrides] = await Promise.all([
       accomplish.listModelProviders(),
       accomplish.listCustomModelProviders(),
+      accomplish.listBuiltinProviderModelOverrides(),
     ]);
     const providerList = Array.isArray(providers) && providers.length > 0 ? providers : DEFAULT_PROVIDERS;
     const customProviderList = Array.isArray(customProviders) ? customProviders : [];
     setModelProviders(providerList);
     setCustomModelProviders(customProviderList);
+    setBuiltinProviderModelOverrides(builtinOverrides && typeof builtinOverrides === 'object' ? builtinOverrides : {});
     setProvider((prev) => {
       const existing = providerList.find((entry) => entry.id === prev && entry.requiresApiKey && entry.id !== 'ollama');
       if (existing) return prev;
@@ -3657,6 +3677,111 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     if (customProviderNameInputRef.current) customProviderNameInputRef.current.value = '';
     if (customProviderBaseUrlInputRef.current) customProviderBaseUrlInputRef.current.value = '';
     if (customProviderModelsTextRef.current) customProviderModelsTextRef.current.value = '';
+  };
+
+  const builtinExtendableProviders = useMemo(
+    () => modelProviders.filter((entry) => (
+      entry.id === 'anthropic'
+      || entry.id === 'openai'
+      || entry.id === 'google'
+      || entry.id === 'xai'
+    )),
+    [modelProviders]
+  );
+
+  const resetBuiltinModelForm = () => {
+    setEditingBuiltinModelKey(null);
+    setBuiltinModelId('');
+    setBuiltinModelName('');
+    setBuiltinModelContextWindow('128000');
+    setBuiltinModelMaxOutputTokens('4096');
+    setBuiltinModelSupportsVision(true);
+    setBuiltinModelError(null);
+    setBuiltinModelStatus(null);
+  };
+
+  const handleSaveBuiltinProviderModel = async () => {
+    const accomplish = getAccomplish();
+    const providerId = builtinModelProviderId.trim().toLowerCase();
+    const modelId = builtinModelId.trim();
+    const displayName = builtinModelName.trim();
+    const contextWindowText = builtinModelContextWindow.trim();
+    const maxOutputText = builtinModelMaxOutputTokens.trim();
+
+    setBuiltinModelError(null);
+    setBuiltinModelStatus(null);
+
+    if (!providerId) {
+      setBuiltinModelError('Choose a built-in provider.');
+      return;
+    }
+    if (!modelId) {
+      setBuiltinModelError('Model id is required.');
+      return;
+    }
+    const contextWindow = Number(contextWindowText || '128000');
+    if (!Number.isFinite(contextWindow) || contextWindow <= 0) {
+      setBuiltinModelError('Context window must be a positive number.');
+      return;
+    }
+    const maxOutputTokens = Number(maxOutputText || '4096');
+    if (!Number.isFinite(maxOutputTokens) || maxOutputTokens <= 0) {
+      setBuiltinModelError('Max output tokens must be a positive number.');
+      return;
+    }
+
+    setBuiltinModelSaving(true);
+    try {
+      const saved = await accomplish.upsertBuiltinProviderModel({
+        providerId,
+        model: {
+          id: modelId,
+          displayName: displayName || modelId,
+          provider: providerId,
+          fullId: `${providerId}/${modelId}`,
+          contextWindow: Math.floor(contextWindow),
+          maxOutputTokens: Math.floor(maxOutputTokens),
+          supportsVision: builtinModelSupportsVision,
+        },
+      });
+      await refreshProviderCatalog();
+      resetBuiltinModelForm();
+      setBuiltinModelStatus(`${saved.displayName || saved.id} added to ${getProviderDisplayName(providerId)}.`);
+    } catch (err) {
+      setBuiltinModelError(err instanceof Error ? err.message : 'Failed to save model.');
+    } finally {
+      setBuiltinModelSaving(false);
+    }
+  };
+
+  const handleEditBuiltinProviderModel = (providerId: string, model: ModelConfig) => {
+    setBuiltinModelProviderId(providerId);
+    setEditingBuiltinModelKey(`${providerId}:${model.id}`);
+    setBuiltinModelId(model.id);
+    setBuiltinModelName(model.displayName || model.id);
+    setBuiltinModelContextWindow(String(model.contextWindow || 128000));
+    setBuiltinModelMaxOutputTokens(String(model.maxOutputTokens || 4096));
+    setBuiltinModelSupportsVision(model.supportsVision === true);
+    setBuiltinModelError(null);
+    setBuiltinModelStatus(null);
+  };
+
+  const handleDeleteBuiltinProviderModel = async (providerId: string, modelId: string) => {
+    const accomplish = getAccomplish();
+    const key = `${providerId}:${modelId}`;
+    setDeletingBuiltinModelKey(key);
+    setBuiltinModelError(null);
+    setBuiltinModelStatus(null);
+    try {
+      await accomplish.deleteBuiltinProviderModel({ providerId, modelId });
+      await refreshProviderCatalog();
+      if (editingBuiltinModelKey === key) resetBuiltinModelForm();
+      setBuiltinModelStatus('Added model removed.');
+    } catch (err) {
+      setBuiltinModelError(err instanceof Error ? err.message : 'Failed to remove model.');
+    } finally {
+      setDeletingBuiltinModelKey(null);
+    }
   };
 
   const customProviderModelValidation = useMemo(() => {
@@ -5658,6 +5783,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setAgentDescription('');
     setAgentAvatar(undefined);
     setAgentAvatarColor(undefined);
+    setAgentAvatarImageDataUrl(undefined);
     setAgentWorkspaceRoot('');
     setAgentSystemPrompt('');
     setAgentModelOverrideEnabled(false);
@@ -5727,6 +5853,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setAgentDescription(agent.description || '');
     setAgentAvatar(agent.avatar);
     setAgentAvatarColor(agent.avatarColor);
+    setAgentAvatarImageDataUrl(agent.avatarImageDataUrl);
     setAgentWorkspaceRoot(agent.workspaceRoot || '');
     setAgentSystemPrompt(agent.systemPromptAppend || '');
     setAgentModelOverrideEnabled(Boolean(agent.selectedModel));
@@ -5798,6 +5925,31 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     );
     setAgentError(null);
     setAgentFormVersion((prev) => prev + 1);
+  };
+
+  const handleAgentAvatarImageDataUrlChange = async (imageDataUrl: string | undefined) => {
+    setAgentAvatarImageDataUrl(imageDataUrl);
+    if (!agentFormId) return;
+
+    const existing = agents.find((agent) => agent.id === agentFormId);
+    if (!existing) return;
+
+    setAgentError(null);
+    try {
+      await upsertAgent({
+        id: existing.id,
+        name: existing.name,
+        roleName: existing.roleName,
+        description: existing.description,
+        avatar: agentAvatar ?? existing.avatar,
+        avatarColor: agentAvatarColor ?? existing.avatarColor,
+        avatarImageDataUrl: imageDataUrl || undefined,
+        workspaceRoot: existing.workspaceRoot,
+        systemPromptAppend: existing.systemPromptAppend,
+      });
+    } catch (err) {
+      setAgentError(err instanceof Error ? err.message : 'Unable to save avatar image.');
+    }
   };
 
   const revertAgentPermissionProfileChanges = () => {
@@ -6021,6 +6173,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         description: descriptionValue || undefined,
         avatar: agentAvatar || undefined,
         avatarColor: agentAvatarColor || undefined,
+        avatarImageDataUrl: agentAvatarImageDataUrl || undefined,
         workspaceRoot: workspaceValue || undefined,
         systemPromptAppend: systemPromptValue || undefined,
         selectedModel: selectedModelOverride,
@@ -10187,6 +10340,175 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                   </div>
                 </div>
               )}
+
+              <div className="mt-6 rounded-xl border border-border bg-background/50 p-4 space-y-3">
+                <div>
+                  <h3 className="text-sm font-medium text-foreground">Additional built-in provider models</h3>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Add models to existing built-in providers such as Google, OpenAI, Anthropic, or xAI. These models keep the provider id, API key, native routing, and pricing behavior of the selected provider.
+                  </p>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="grid gap-1">
+                    <label className="text-xs text-muted-foreground">
+                      Built-in provider
+                      <InfoTip text="Choose the existing provider this model belongs to. For a new Google Gemini model, choose Google AI so it still uses the native Google API path." />
+                    </label>
+                    <select
+                      value={builtinModelProviderId}
+                      onChange={(event) => setBuiltinModelProviderId(event.target.value)}
+                      disabled={Boolean(editingBuiltinModelKey) || builtinModelSaving}
+                      className="rounded-md border border-input bg-background px-3 py-2 text-sm disabled:opacity-70"
+                    >
+                      {builtinExtendableProviders.map((entry) => (
+                        <option key={entry.id} value={entry.id}>{entry.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="grid gap-1">
+                    <label className="text-xs text-muted-foreground">
+                      Model id
+                      <InfoTip text="Use the provider's exact model id, for example gemini-2.5-pro or gemini-3-pro-preview. The app creates the full id as provider/model-id." />
+                    </label>
+                    <input
+                      type="text"
+                      value={builtinModelId}
+                      onChange={(event) => setBuiltinModelId(event.target.value)}
+                      disabled={Boolean(editingBuiltinModelKey) || builtinModelSaving}
+                      placeholder="gemini-2.5-pro"
+                      className="rounded-md border border-input bg-background px-3 py-2 text-sm disabled:opacity-70"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="grid gap-1">
+                    <label className="text-xs text-muted-foreground">
+                      Display name
+                      <InfoTip text="Friendly label shown in the model dropdown." />
+                    </label>
+                    <input
+                      type="text"
+                      value={builtinModelName}
+                      onChange={(event) => setBuiltinModelName(event.target.value)}
+                      placeholder="Gemini 2.5 Pro"
+                      className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    />
+                  </div>
+                  <label className="flex items-center gap-2 text-xs text-foreground sm:pt-6">
+                    <input
+                      type="checkbox"
+                      checked={builtinModelSupportsVision}
+                      onChange={(event) => setBuiltinModelSupportsVision(event.target.checked)}
+                      disabled={builtinModelSaving}
+                    />
+                    Supports image input
+                    <InfoTip text="Enable only if this model can receive images/multimodal input." />
+                  </label>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="grid gap-1">
+                    <label className="text-xs text-muted-foreground">
+                      Context window tokens
+                      <InfoTip text="Used by Open Deskmate's context estimate and prompt-size checks. Use a conservative value if unsure." />
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      value={builtinModelContextWindow}
+                      onChange={(event) => setBuiltinModelContextWindow(event.target.value)}
+                      className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    />
+                  </div>
+                  <div className="grid gap-1">
+                    <label className="text-xs text-muted-foreground">
+                      Max output tokens
+                      <InfoTip text="Upper output limit used for the model entry. This does not guarantee the provider will allow that much output." />
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      value={builtinModelMaxOutputTokens}
+                      onChange={(event) => setBuiltinModelMaxOutputTokens(event.target.value)}
+                      className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    />
+                  </div>
+                </div>
+
+                {builtinModelError && (
+                  <p className="text-xs text-destructive">{builtinModelError}</p>
+                )}
+                {builtinModelStatus && (
+                  <p className="text-xs text-success">{builtinModelStatus}</p>
+                )}
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    size="sm"
+                    onClick={() => void handleSaveBuiltinProviderModel()}
+                    disabled={builtinModelSaving || builtinExtendableProviders.length === 0}
+                  >
+                    {builtinModelSaving ? 'Saving...' : editingBuiltinModelKey ? 'Update model' : 'Add model'}
+                  </Button>
+                  {editingBuiltinModelKey && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={resetBuiltinModelForm}
+                      disabled={builtinModelSaving}
+                    >
+                      Cancel edit
+                    </Button>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  {Object.values(builtinProviderModelOverrides).flat().length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No additional built-in provider models configured.</p>
+                  ) : (
+                    Object.entries(builtinProviderModelOverrides).map(([providerId, models]) => (
+                      models.length === 0 ? null : (
+                        <div key={providerId} className="rounded-lg border border-border/60 bg-card p-3">
+                          <div className="mb-2 text-sm font-medium text-foreground">{getProviderDisplayName(providerId)}</div>
+                          <div className="space-y-2">
+                            {models.map((model) => {
+                              const modelKey = `${providerId}:${model.id}`;
+                              return (
+                                <div key={modelKey} className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-muted/30 px-2.5 py-2">
+                                  <div className="min-w-0">
+                                    <div className="truncate text-xs font-medium text-foreground">{model.displayName || model.id}</div>
+                                    <div className="text-[11px] text-muted-foreground">
+                                      <code className="rounded bg-muted px-1 py-0.5">{model.fullId}</code>
+                                      {' '}• context {model.contextWindow || 'default'}
+                                      {' '}• max output {model.maxOutputTokens || 'default'}
+                                      {' '}• {model.supportsVision ? 'vision' : 'text only'}
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <Button size="sm" variant="outline" onClick={() => handleEditBuiltinProviderModel(providerId, model)}>
+                                      Edit
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="destructive"
+                                      disabled={deletingBuiltinModelKey === modelKey}
+                                      onClick={() => void handleDeleteBuiltinProviderModel(providerId, model.id)}
+                                    >
+                                      {deletingBuiltinModelKey === modelKey ? 'Removing...' : 'Remove'}
+                                    </Button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )
+                    ))
+                  )}
+                </div>
+              </div>
 
               <div className="mt-6 rounded-xl border border-border bg-background/50 p-4 space-y-3">
                 <div>
@@ -15521,7 +15843,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                       <div className="flex items-start justify-between gap-4">
                         <div className="flex items-start gap-3">
                           <div
-                            className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-lg"
+                            className="flex h-12 w-12 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg"
                             style={{
                               backgroundColor: agent.avatarColor ? `${agent.avatarColor}15` : 'hsl(var(--muted))',
                             }}
@@ -15529,7 +15851,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                             <AgentAvatarIcon
                               avatar={agent.avatar}
                               color={agent.avatarColor || 'hsl(var(--muted-foreground))'}
-                              className="h-8 w-8"
+                              imageDataUrl={agent.avatarImageDataUrl}
+                              className={(agent.avatarImageDataUrl || isAgentCharacterAvatar(agent.avatar)) ? 'h-full w-full' : 'h-8 w-8'}
                             />
                           </div>
                           <div>
@@ -15878,13 +16201,17 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                 <div className="grid gap-1">
                   <label className="text-xs text-muted-foreground">
                     Avatar
-                    <InfoTip text="Choose an icon and color for this agent." />
+                    <InfoTip text="Choose a styled avatar, color, or image for this agent." />
                   </label>
                   <AgentAvatarPicker
                     selectedAvatar={agentAvatar}
                     selectedColor={agentAvatarColor}
+                    selectedImageDataUrl={agentAvatarImageDataUrl}
                     onAvatarChange={setAgentAvatar}
                     onColorChange={setAgentAvatarColor}
+                    onImageDataUrlChange={(next) => {
+                      void handleAgentAvatarImageDataUrlChange(next);
+                    }}
                   />
                 </div>
                 <div className="grid gap-1">

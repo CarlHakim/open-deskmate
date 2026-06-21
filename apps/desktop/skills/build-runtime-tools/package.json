@@ -1,0 +1,13 @@
+{
+  "name": "build-runtime-tools",
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "start": "npx tsx src/index.ts",
+    "dev": "npx tsx --watch src/index.ts"
+  },
+  "dependencies": {
+    "@accomplish/desktop": "file:../..",
+    "opendeskmate": "file:../../../.."
+  }
+}

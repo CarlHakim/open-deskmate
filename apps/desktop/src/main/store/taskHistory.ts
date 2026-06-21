@@ -193,6 +193,32 @@ export function getTasks(agentId?: string): StoredTask[] {
   return tasks.filter((task) => task.agentId === agentId);
 }
 
+function compactTaskForList(task: StoredTask): StoredTask {
+  return {
+    id: task.id,
+    prompt: task.prompt,
+    agentId: task.agentId,
+    summary: task.summary,
+    status: task.status,
+    messages: [],
+    sessionId: task.sessionId,
+    sessionFilePath: task.sessionFilePath,
+    createdAt: task.createdAt,
+    startedAt: task.startedAt,
+    completedAt: task.completedAt,
+    workingDirectory: task.workingDirectory,
+    attachedFiles: task.attachedFiles,
+    privacyMode: task.privacyMode,
+    usageProjectId: task.usageProjectId,
+    hiddenFromHistory: task.hiddenFromHistory,
+    parentTaskId: task.parentTaskId,
+  };
+}
+
+export function getTaskList(agentId?: string): StoredTask[] {
+  return getTasks(agentId).map(compactTaskForList);
+}
+
 export function getLatestTask(agentId?: string): StoredTask | undefined {
   const tasks = getTasks(agentId);
   if (tasks.length === 0) return undefined;

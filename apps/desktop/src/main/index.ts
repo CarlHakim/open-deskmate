@@ -19,6 +19,7 @@ import { startConnectorBridgeRuntime, stopConnectorBridgeRuntime } from './servi
 import { startCanvasHost, stopCanvasHost } from './services/canvas-host';
 import { startCanvasApiServer, stopCanvasApiServer } from './canvas-api';
 import { startNodeToolsApiServer } from './node-tools-api';
+import { startBuildRuntimeToolsApiServer } from './build-runtime-tools-api';
 import { startVoiceWakeService, stopVoiceWakeService } from './services/voice-wake';
 import { applyVoiceWakeAutoStart } from './store/voiceWake';
 import { disposeUserSkillsWatcher, ensureUserSkillsWatcher } from './services/user-skills';
@@ -97,6 +98,7 @@ let mainWindow: BrowserWindow | null = null;
 let webhookServer: ReturnType<typeof startWebhookServer> | null = null;
 let canvasApiServer: ReturnType<typeof startCanvasApiServer> | null = null;
 let nodeToolsApiServer: ReturnType<typeof startNodeToolsApiServer> | null = null;
+let buildRuntimeToolsApiServer: ReturnType<typeof startBuildRuntimeToolsApiServer> | null = null;
 let unsubscribeHelpDocs: (() => void) | null = null;
 let pendingHelpNavigation: { docId?: string; query?: string } | null = null;
 let shutdownInProgress = false;
@@ -156,6 +158,8 @@ async function runShutdownCleanup(): Promise<void> {
   webhookServer = null;
   const nodeTools = nodeToolsApiServer;
   nodeToolsApiServer = null;
+  const buildRuntimeTools = buildRuntimeToolsApiServer;
+  buildRuntimeToolsApiServer = null;
   const hadCanvasApi = Boolean(canvasApiServer);
   canvasApiServer = null;
 
@@ -173,6 +177,7 @@ async function runShutdownCleanup(): Promise<void> {
   const cleanupTasks: Array<Promise<unknown>> = [
     withTimeout(closeNodeServer(webhook, 'Webhook server'), SHUTDOWN_STEP_TIMEOUT_MS, 'Webhook server close'),
     withTimeout(closeNodeServer(nodeTools, 'Node Tools API server'), SHUTDOWN_STEP_TIMEOUT_MS, 'Node Tools API server close'),
+    withTimeout(closeNodeServer(buildRuntimeTools, 'Build Runtime Tools API server'), SHUTDOWN_STEP_TIMEOUT_MS, 'Build Runtime Tools API server close'),
     withTimeout(hadCanvasApi ? stopCanvasApiServer() : Promise.resolve(), SHUTDOWN_STEP_TIMEOUT_MS, 'Canvas API stop'),
     withTimeout(stopCanvasHost(), SHUTDOWN_STEP_TIMEOUT_MS, 'Canvas host stop'),
     withTimeout(stopGatewayConnectorRuntimes(), SHUTDOWN_STEP_TIMEOUT_MS, 'Gateway connector runtimes stop'),
@@ -652,6 +657,7 @@ if (!gotTheLock) {
     // Start skills watcher early so skill edits are picked up across sessions.
     ensureUserSkillsWatcher({});
     nodeToolsApiServer = startNodeToolsApiServer();
+    buildRuntimeToolsApiServer = startBuildRuntimeToolsApiServer();
     webhookServer = startWebhookServer();
     startConnectorBridgeRuntime();
     try {

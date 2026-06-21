@@ -13,7 +13,13 @@ export type OpenCodeMcpServerConfig = {
 
 type CustomMcpServerRecord = Record<string, OpenCodeMcpServerConfig>;
 
-const BUILT_IN_MCP_SERVER_IDS = new Set(['file-permission', 'node-tools', 'memory-tools', 'canvas']);
+const BUILT_IN_MCP_SERVER_IDS = new Set([
+  'file-permission',
+  'node-tools',
+  'memory-tools',
+  'canvas',
+  'build-runtime-tools',
+]);
 
 export function getCustomMcpRegistryPath(): string {
   return path.join(app.getPath('userData'), 'opencode', 'custom-mcp-servers.json');
@@ -135,4 +141,3 @@ export function loadCustomMcpRegistry(): CustomMcpServerRecord {
     return {};
   }
 }
-

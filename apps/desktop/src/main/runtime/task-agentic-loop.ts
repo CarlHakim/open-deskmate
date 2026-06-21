@@ -18,7 +18,6 @@ type AgenticRunSignal = {
 };
 
 const agenticRunSignalByTaskId = new Map<string, AgenticRunSignal>();
-const AGENTIC_LOOP_COMPLETION_CUE_RE = /\b(done|completed?|finished|resolved|all set|successful(?:ly)?)\b/i;
 
 function createAgenticRunSignal(): AgenticRunSignal {
   return {
@@ -65,10 +64,7 @@ function decideAgenticLoopStatus(taskId: string): AgenticLoopStatus {
     if (!signal.sawAssistantText) {
       return 'continue';
     }
-    if (signal.lastAssistantText && AGENTIC_LOOP_COMPLETION_CUE_RE.test(signal.lastAssistantText)) {
-      return 'complete';
-    }
-    return 'continue';
+    return 'complete';
   }
   return 'unknown';
 }

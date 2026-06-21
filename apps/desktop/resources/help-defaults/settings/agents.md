@@ -54,6 +54,19 @@ Use this section when you want different agents for different roles, models, per
 - **Settings Assistants**
   - Model override for settings helpers (for example Skill Assistant).
 
+## Avatars
+
+Agents can use:
+
+- Styled built-in avatars.
+- Images uploaded from the computer.
+- Cropped image avatars.
+- Character gallery avatars.
+
+Agent images appear in the agent switcher, Settings agent list, and answer avatars when answer avatars are enabled.
+
+Use the preview/crop step to position an uploaded image before saving. If the image disappears after reopening Settings, reapply it and save the agent profile.
+
 ## Automation Rule
 
 Heartbeat can only be enabled when **Active Automation Mode** is enabled.
@@ -68,6 +81,7 @@ If **Allow subagents** is off, that agent cannot spawn child agents from Chat Mo
 - If subagents never appear, confirm subagents are enabled for the active agent.
 - If heartbeat controls are disabled, enable Active Automation Mode first.
 - If an agent behaves unexpectedly, review its persona/system prompt and permission profile.
+- If an uploaded avatar is not visible in Chat Mode, confirm the agent was saved and selected after applying the image.
 
 ## Related Sections
 
@@ -76,3 +90,4 @@ If **Allow subagents** is off, that agent cannot spawn child agents from Chat Mo
 - [Skills](./skills.md)
 - [Runtime Hooks](./runtime-hooks.md)
 - [Subagents](../subagents.md)
+- [Chat Mode](../chat-mode.md)

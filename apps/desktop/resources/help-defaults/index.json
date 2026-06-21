@@ -13,10 +13,22 @@
       "description": "How to use the main task conversation workflow."
     },
     {
+      "id": "prompt-navigator",
+      "title": "Prompt Navigator",
+      "file": "prompt-navigator.md",
+      "description": "Right-side prompt ticks, preview list, jump-to-prompt navigation, and hide/show behavior."
+    },
+    {
       "id": "build-mode",
       "title": "Build Mode",
       "file": "build-mode.md",
       "description": "Workspace, runtime, editor, terminals, logs, AI Build Operator, and project work workflow."
+    },
+    {
+      "id": "build-smoke-testing",
+      "title": "Build Smoke Testing",
+      "file": "build-smoke-testing.md",
+      "description": "Autonomous runtime inspection, screenshots, page snapshots, UI interaction tests, logs, checks, and smoke-test limits."
     },
     {
       "id": "project-management",
@@ -35,6 +47,12 @@
       "title": "Workboard",
       "file": "workboard.md",
       "description": "Table, Kanban, Timeline, Calendar, lists, notes, drawings, documents, and work item tracking."
+    },
+    {
+      "id": "project-work-popup",
+      "title": "Project Work Popup",
+      "file": "project-work-popup.md",
+      "description": "Floating Chat and Build project work popup for lists, notes, drawings, documents, states, and prompt attachments."
     },
     {
       "id": "changes-and-git",
@@ -65,6 +83,12 @@
       "title": "Activity Timeline And Recovery",
       "file": "activity-timeline-and-recovery.md",
       "description": "Task activity events, reasoning bubbles, stalled answer detection, and recovery actions."
+    },
+    {
+      "id": "troubleshooting-agent-loops",
+      "title": "Troubleshooting Agent Loops",
+      "file": "troubleshooting-agent-loops.md",
+      "description": "Repeated tool-call safeguards, loop causes, recovery prompts, and local model capability guidance."
     },
     {
       "id": "images-in-chat",
@@ -113,6 +137,12 @@
       "title": "Settings: Model & API settings",
       "file": "settings/model-api-settings.md",
       "description": "Model selection, provider API keys, and custom provider/model setup."
+    },
+    {
+      "id": "local-models-and-ollama",
+      "title": "Local Models And Ollama",
+      "file": "local-models-and-ollama.md",
+      "description": "Ollama setup, local model capability levels, context limits, and local model troubleshooting."
     },
     {
       "id": "settings-skills",

@@ -41,6 +41,9 @@ export async function prepareResumeTaskExecution(params: {
     workingDirectory?: string;
     attachedFiles?: string[];
     privacyMode?: 'normal' | 'incognito';
+    requiresBrowser?: boolean;
+    buildMode?: boolean;
+    buildWorkspaceRelativePath?: string;
   };
   options?: {
     internal?: {
@@ -62,6 +65,9 @@ export async function prepareResumeTaskExecution(params: {
         params.resume?.privacyMode === 'normal' || params.resume?.privacyMode === 'incognito'
           ? params.resume.privacyMode
           : params.existingTask?.privacyMode,
+      requiresBrowser: params.resume?.requiresBrowser,
+      buildMode: params.resume?.buildMode === true ? true : undefined,
+      buildWorkspaceRelativePath: params.resume?.buildWorkspaceRelativePath,
     },
     params.hookInputPatch
   );
@@ -145,7 +151,10 @@ export async function prepareResumeTaskExecution(params: {
     requiresBrowser: detectTaskNeedsBrowser({
       prompt: params.effectivePrompt,
       systemPromptAppend: prepared.systemPromptAppend,
+      requiresBrowser: patchedResumeConfig.requiresBrowser,
     }),
+    buildMode: patchedResumeConfig.buildMode === true ? true : undefined,
+    buildWorkspaceRelativePath: patchedResumeConfig.buildWorkspaceRelativePath,
     speedMode: getRuntimeSpeedMode(),
   };
 
