@@ -5,7 +5,7 @@
  * Temporarily removes workspace symlinks that cause electron-builder issues.
  */
 
-const { execSync } = require('child_process');
+const { execFileSync, execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
@@ -14,6 +14,30 @@ const iconPngPath = path.join(resourcesDir, 'icon.png');
 const iconIcoPath = path.join(resourcesDir, 'icon.ico');
 const memoryToolsDir = path.join(__dirname, '..', 'skills', 'memory-tools');
 const skillsDir = path.join(__dirname, '..', 'skills');
+const appDir = path.join(__dirname, '..');
+const builderCliPath = path.join(appDir, 'node_modules', 'electron-builder', 'cli.js');
+
+function createPackageEnv() {
+  const env = { ...process.env };
+
+  if (process.platform === 'win32') {
+    const nodeOptions = env.NODE_OPTIONS || '';
+    if (!nodeOptions.split(/\s+/).includes('--use-system-ca')) {
+      env.NODE_OPTIONS = `${nodeOptions} --use-system-ca`.trim();
+    }
+  }
+
+  return env;
+}
+
+function cleanStaleWindowsOutput(args) {
+  if (process.platform !== 'win32' || !args.some((arg) => arg === '--win' || arg === '-w' || arg === 'win')) {
+    return;
+  }
+
+  const winUnpackedDir = path.join(appDir, 'release', 'win-unpacked');
+  fs.rmSync(winUnpackedDir, { recursive: true, force: true });
+}
 
 async function ensureWindowsIcon() {
   if (process.platform !== 'win32') {
@@ -82,6 +106,7 @@ function pruneSkillWorkspaceLinks() {
           && normalized.includes('/node_modules/')
           && (
             normalized.endsWith('/node_modules/accomplish')
+            || normalized.endsWith('/node_modules/opendeskmate')
             || normalized.includes('/node_modules/@accomplish/')
             || normalized.endsWith('/node_modules/@accomplish')
           )
@@ -148,15 +173,18 @@ let replacedWithCopy = false;
   }
 
   // Get command line args (everything after 'node scripts/package.js')
-  const args = process.argv.slice(2).join(' ');
-  // Use npx to run electron-builder to ensure it's found in node_modules
-  const command = `npx electron-builder ${args}`;
+  const args = process.argv.slice(2);
 
     await ensureWindowsIcon();
     pinMemoryToolsBinary();
     pruneSkillWorkspaceLinks();
-    console.log('Running:', command);
-    execSync(command, { stdio: 'inherit', cwd: path.join(__dirname, '..') });
+    cleanStaleWindowsOutput(args);
+    console.log('Running:', `node ${path.relative(appDir, builderCliPath)} ${args.join(' ')}`.trim());
+    execFileSync(process.execPath, [builderCliPath, ...args], {
+      stdio: 'inherit',
+      cwd: appDir,
+      env: createPackageEnv(),
+    });
   } finally {
   // Restore the symlink
   if (symlinkTarget && shouldManageSymlink) {

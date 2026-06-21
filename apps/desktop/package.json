@@ -1,6 +1,7 @@
 {
   "name": "@accomplish/desktop",
   "version": "0.4.1",
+  "packageManager": "pnpm@9.15.0",
   "private": true,
   "type": "module",
   "description": "Open Deskmate Desktop App",
@@ -109,8 +110,8 @@
     "@vitest/coverage-v8": "^4.1.0",
     "autoprefixer": "^10.4.20",
     "electron": "^39.8.5",
-    "electron-builder": "^26.15.3",
-    "electron-builder-squirrel-windows": "^26.15.3",
+    "electron-builder": "^25.1.8",
+    "electron-builder-squirrel-windows": "25.1.8",
     "happy-dom": "^20.8.9",
     "jsdom": "^27.4.0",
     "png-to-ico": "^2.1.1",
@@ -136,8 +137,21 @@
       "buildResources": "resources"
     },
     "files": [
-      "dist/**/*",
-      "dist-electron/**/*",
+      {
+        "from": "dist",
+        "to": "dist",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "dist-electron",
+        "to": "dist-electron",
+        "filter": [
+          "**/*"
+        ]
+      },
+      "package.json",
       "node_modules/opencode-ai/**",
       "node_modules/node-pty/**",
       "node_modules/electron-store/**",
@@ -204,6 +218,8 @@
           "!**/.browser-data/**",
           "!**/node_modules/accomplish",
           "!**/node_modules/accomplish/**",
+          "!**/node_modules/opendeskmate",
+          "!**/node_modules/opendeskmate/**",
           "!**/node_modules/@accomplish",
           "!**/node_modules/@accomplish/**",
           "!**/node_modules/@accomplish/desktop",
