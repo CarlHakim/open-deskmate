@@ -2,9 +2,9 @@
 /**
  * File Permission MCP Server
  *
- * Exposes a `request_file_permission` tool that the agent calls before
- * performing file operations. The tool communicates with the Electron
- * main process via HTTP to show a permission modal and wait for user response.
+ * Exposes a `request_file_permission` tool for file operations outside the
+ * active workspace. The tool communicates with the Electron main process via
+ * HTTP to show a permission modal and wait for user response.
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -197,7 +197,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'request_file_permission',
       description:
-        'Request user permission before performing file operations (create, delete, rename, move, modify, overwrite). Always call this tool BEFORE executing any file modification. Returns "allowed" or "denied".',
+        'Request user permission before performing file operations outside the active workspace (create, delete, rename, move, modify, overwrite). Do not call this for ordinary file operations inside the active workspace. Returns "allowed" or "denied".',
       inputSchema: {
         type: 'object',
         properties: {
@@ -208,7 +208,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           filePath: {
             type: 'string',
-            description: 'Absolute path to the file being operated on',
+            description: 'Absolute path to the file being operated on. Use this tool only when the path is outside the active workspace.',
           },
           targetPath: {
             type: 'string',

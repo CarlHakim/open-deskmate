@@ -12,6 +12,7 @@
  * module behavior.
  */
 
+import http from 'http';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock electron before importing the module
@@ -115,6 +116,70 @@ describe('Permission API Integration', () => {
       expect(server).toBeDefined();
       // Clean up - close the server
       server?.close();
+    });
+
+    it('auto-approves workspace-local relative file operations without showing a modal', async () => {
+      const send = vi.fn();
+      const mockWindow = {
+        isDestroyed: () => false,
+        webContents: {
+          id: 1,
+          send,
+          isDestroyed: () => false,
+        },
+      } as unknown as import('electron').BrowserWindow;
+      const taskId = 'task_workspace_relative_path';
+      const workspaceRoot = process.platform === 'win32'
+        ? 'C:\\Users\\HP\\Desktop\\Opendeskmate-Synthesizer'
+        : '/tmp/opendeskmate-synthesizer';
+
+      initPermissionApi(mockWindow, {
+        resolveTaskId: (requestedTaskId?: string) => requestedTaskId || taskId,
+        resolveTaskWorkspaceRoot: () => workspaceRoot,
+      });
+
+      const server = startPermissionApiServer();
+      try {
+        const result = await new Promise<{ statusCode: number; body: Record<string, unknown> }>((resolve, reject) => {
+          const req = http.request(
+            {
+              hostname: '127.0.0.1',
+              port: PERMISSION_API_PORT,
+              path: '/permission',
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+            },
+            (res) => {
+              let raw = '';
+              res.setEncoding('utf8');
+              res.on('data', (chunk) => {
+                raw += chunk;
+              });
+              res.on('end', () => {
+                resolve({
+                  statusCode: res.statusCode || 0,
+                  body: raw ? JSON.parse(raw) as Record<string, unknown> : {},
+                });
+              });
+            }
+          );
+          req.on('error', reject);
+          req.write(JSON.stringify({
+            taskId,
+            operation: 'create',
+            filePath: 'amd-news-2026-06-23.md',
+          }));
+          req.end();
+        });
+
+        expect(result.statusCode).toBe(200);
+        expect(result.body).toMatchObject({ allowed: true, autoApproved: true });
+        expect(send).not.toHaveBeenCalledWith('permission:request', expect.anything());
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
     });
   });
 });

@@ -155,7 +155,7 @@ export interface DispatchResult {
 }
 
 export interface DispatchTaskOptions {
-  source?: 'schedule' | 'webhook' | 'manual' | 'gateway' | 'heartbeat';
+  source?: 'schedule' | 'webhook' | 'manual' | 'gateway' | 'heartbeat' | 'workboard';
   sessionKey?: string;
   route?: GatewayRouteContext;
   resume?: {
@@ -165,6 +165,8 @@ export interface DispatchTaskOptions {
     requiresBrowser?: boolean;
     buildMode?: boolean;
     buildWorkspaceRelativePath?: string;
+    toolsetOverrideIds?: import('@accomplish/shared').ToolsetId[];
+    deferredToolDiscoveryOverride?: boolean;
   };
   internal?: {
     suppressAgenticLoop?: boolean;
@@ -243,7 +245,10 @@ export async function dispatchTask(
     userMessage: effectivePrompt,
     retrievedText,
     baseSystemPromptAppend,
+    toolsetOverrideIds: patchedConfig.toolsetOverrideIds,
+    deferredToolDiscoveryOverride: patchedConfig.deferredToolDiscoveryOverride,
     requireApiKey: true,
+    buildMode: patchedConfig.buildMode === true,
   });
   trackTaskSkillRun(taskId, {
     agentId: agentContext.agentId,
@@ -257,6 +262,8 @@ export async function dispatchTask(
     agentId: agentContext.agentId,
     workingDirectory,
     systemPromptAppend: prepared.systemPromptAppend,
+    toolsetOverrideIds: patchedConfig.toolsetOverrideIds,
+    deferredToolDiscoveryOverride: patchedConfig.deferredToolDiscoveryOverride,
     requiresBrowser: detectTaskNeedsBrowser({
       prompt: effectivePrompt,
       systemPromptAppend: prepared.systemPromptAppend,

@@ -1,5 +1,10 @@
+import { readFile } from 'fs/promises';
 import { ChannelType, Client, GatewayIntentBits, Partials, type Message } from 'discord.js';
-import type { DiscordConnectorConfig, DiscordConnectorStatus } from '@accomplish/shared';
+import type {
+  ConnectorDeliveryAttachmentRecord,
+  DiscordConnectorConfig,
+  DiscordConnectorStatus,
+} from '@accomplish/shared';
 import { addDiscordDmAllowlistEntry, getDiscordConfig } from '../store/discordConfig';
 import { getDiscordToken } from '../store/secureStorage';
 import { startAgentEngineTask } from '../runtime/agent-engine';
@@ -9,6 +14,15 @@ import { approveDiscordPairing, getOrCreateDiscordPairing } from '../store/disco
 import { resolveGatewayRoute } from './gateway-routing';
 import { getGatewaySession } from '../store/gatewaySessions';
 import { stripReasoningForExternalReply } from '../runtime/task-message-reasoning';
+import {
+  createConnectorDelivery,
+  filterConnectorDeliveryText,
+  markConnectorDeliveryAttachmentFallback,
+  markConnectorDeliveryAttachmentSent,
+  markConnectorDeliveryFailed,
+  sendConnectorDeliveryChunks,
+  splitConnectorMessage,
+} from './connector-delivery';
 
 const DISCORD_MESSAGE_LIMIT = 1900;
 const DEFAULT_RUNTIME_KEY = 'default';
@@ -44,6 +58,18 @@ function normalizeRuntimeKey(value?: string): string {
   return normalized || DEFAULT_RUNTIME_KEY;
 }
 
+function parseDiscordInstanceIdFromRuntimeKey(runtimeKey: string): string | undefined {
+  const normalized = normalizeRuntimeKey(runtimeKey);
+  if (!normalized || normalized === DEFAULT_RUNTIME_KEY || normalized === 'discord') {
+    return undefined;
+  }
+  if (normalized.startsWith('discord::')) {
+    const rawInstanceId = normalized.slice('discord::'.length).trim();
+    return rawInstanceId || undefined;
+  }
+  return undefined;
+}
+
 function getRuntimeState(runtimeKey: string): DiscordRuntimeState {
   const key = normalizeRuntimeKey(runtimeKey);
   const existing = runtimeStates.get(key);
@@ -72,23 +98,12 @@ function setRuntimeStatus(
 }
 
 function splitDiscordMessage(text: string, limit = DISCORD_MESSAGE_LIMIT): string[] {
-  const chunks: string[] = [];
-  let remaining = text.trim();
-  while (remaining.length > limit) {
-    let sliceIndex = remaining.lastIndexOf('\n', limit);
-    if (sliceIndex < limit * 0.6) {
-      sliceIndex = remaining.lastIndexOf(' ', limit);
-    }
-    if (sliceIndex <= 0) {
-      sliceIndex = limit;
-    }
-    chunks.push(remaining.slice(0, sliceIndex).trim());
-    remaining = remaining.slice(sliceIndex).trim();
-  }
-  if (remaining) {
-    chunks.push(remaining);
-  }
-  return chunks.length > 0 ? chunks : [''];
+  return splitConnectorMessage(text, limit);
+}
+
+function filterPublicReplyText(text: string): string {
+  const filtered = filterConnectorDeliveryText(stripReasoningForExternalReply(text));
+  return filtered.silenced ? '' : filtered.text;
 }
 
 function formatPrompt(message: Message, content: string): string {
@@ -111,14 +126,14 @@ function pickDiscordResponseText(resultStatus: string, taskId: string, agentId: 
     .find((msg) => msg.type === 'assistant');
 
   if (lastAssistant?.content) {
-    const publicContent = stripReasoningForExternalReply(lastAssistant.content);
+    const publicContent = filterPublicReplyText(lastAssistant.content);
     if (publicContent) {
       return publicContent;
     }
   }
 
   if (stored?.summary) {
-    const publicSummary = stripReasoningForExternalReply(stored.summary);
+    const publicSummary = filterPublicReplyText(stored.summary);
     if (publicSummary) {
       return publicSummary;
     }
@@ -280,6 +295,40 @@ async function handleDiscordMessage(message: Message, runtimeKey: string): Promi
       await (message.channel as { send: (opts: { content: string }) => Promise<unknown> }).send({ content: text });
     }
   };
+  const deliverReply = async (text: string) => {
+    const delivery = createConnectorDelivery({
+      connectorId: 'discord',
+      connectorInstanceId: parseDiscordInstanceIdFromRuntimeKey(runtimeKey),
+      accountId: route.accountId,
+      targetId: routePeer.id,
+      targetKind: routePeer.kind,
+      direction: 'reply',
+      text,
+      splitLimit: DISCORD_MESSAGE_LIMIT,
+      taskId,
+      threadId: route.sessionKey,
+      metadata: {
+        runtimeKey,
+      },
+    });
+    if (delivery.silenced) return;
+    await sendConnectorDeliveryChunks(delivery.record.id, delivery.chunks, async (chunk, index) => {
+      try {
+        if ('sendTyping' in message.channel) {
+          await message.channel.sendTyping();
+        }
+      } catch {
+        // Ignore typing errors
+      }
+      if (isDm) {
+        await sendToChannel(chunk || 'Task completed.');
+      } else if (index === 0) {
+        await message.reply({ content: chunk || 'Task completed.', allowedMentions: { repliedUser: false } });
+      } else {
+        await sendToChannel(chunk || ' ');
+      }
+    });
+  };
   try {
     const prompt = formatPrompt(message, content);
     const { completion } = await startAgentEngineTask(
@@ -302,26 +351,12 @@ async function handleDiscordMessage(message: Message, runtimeKey: string): Promi
     );
     const result = await completion;
     const responseText = pickDiscordResponseText(result.status, taskId, agentId);
-    const chunks = splitDiscordMessage(responseText);
-    for (let i = 0; i < chunks.length; i += 1) {
-      const chunk = chunks[i];
-      if (isDm) {
-        await sendToChannel(chunk || 'Task completed.');
-      } else if (i === 0) {
-        await message.reply({ content: chunk || 'Task completed.', allowedMentions: { repliedUser: false } });
-      } else {
-        await sendToChannel(chunk);
-      }
-    }
+    await deliverReply(responseText || 'Task completed.');
   } catch (error) {
     const fallback = error instanceof Error ? error.message : 'Unknown error';
     const errorText = `Sorry — I couldn't run that task (${fallback}).`;
     try {
-      if (isDm) {
-        await sendToChannel(errorText);
-      } else {
-        await message.reply({ content: errorText, allowedMentions: { repliedUser: false } });
-      }
+      await deliverReply(errorText);
     } catch {
       // Ignore follow-up errors
     }
@@ -459,11 +494,123 @@ export function getDiscordStatus(runtimeKey?: string): DiscordConnectorStatus {
   return getRuntimeState(key).status;
 }
 
+function parseDataUrl(dataUrl: string): { mimeType: string; buffer: Buffer } | null {
+  const match = /^data:([^;,]+);base64,([\s\S]+)$/i.exec(dataUrl.trim());
+  if (!match) return null;
+  return {
+    mimeType: match[1] || 'application/octet-stream',
+    buffer: Buffer.from(match[2].replace(/\s+/g, ''), 'base64'),
+  };
+}
+
+async function discordJsonApi(
+  token: string,
+  method: 'POST' | 'GET',
+  endpoint: string,
+  body?: Record<string, unknown>
+): Promise<Record<string, any>> {
+  const response = await fetch(`https://discord.com/api/v10${endpoint}`, {
+    method,
+    headers: {
+      Authorization: `Bot ${token}`,
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const payload = await response.json().catch(() => ({} as { message?: string }));
+  if (!response.ok) {
+    throw new Error(payload?.message || response.statusText || `Discord ${endpoint} failed`);
+  }
+  return payload as Record<string, any>;
+}
+
+async function discordFormApi(
+  token: string,
+  endpoint: string,
+  form: FormData
+): Promise<Record<string, any>> {
+  const response = await fetch(`https://discord.com/api/v10${endpoint}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bot ${token}`,
+    },
+    body: form,
+  });
+  const payload = await response.json().catch(() => ({} as { message?: string }));
+  if (!response.ok) {
+    throw new Error(payload?.message || response.statusText || `Discord ${endpoint} failed`);
+  }
+  return payload as Record<string, any>;
+}
+
+async function openDiscordDmChannel(token: string, targetId: string): Promise<string> {
+  const payload = await discordJsonApi(token, 'POST', '/users/@me/channels', {
+    recipient_id: targetId,
+  });
+  const channelId = normalizeText(String(payload.id ?? ''));
+  if (!channelId) {
+    throw new Error('Failed to open Discord DM channel.');
+  }
+  return channelId;
+}
+
+async function sendDiscordTyping(token: string, channelId: string): Promise<void> {
+  try {
+    await discordJsonApi(token, 'POST', `/channels/${encodeURIComponent(channelId)}/typing`);
+  } catch {
+    // Typing indicators are best-effort.
+  }
+}
+
+async function sendDiscordText(token: string, channelId: string, content: string): Promise<void> {
+  await discordJsonApi(token, 'POST', `/channels/${encodeURIComponent(channelId)}/messages`, {
+    content: content || ' ',
+  });
+}
+
+async function sendDiscordAttachment(
+  token: string,
+  channelId: string,
+  attachment: ConnectorDeliveryAttachmentRecord
+): Promise<void> {
+  if (attachment.source === 'url') {
+    throw new Error('Discord URL attachment upload is not supported.');
+  }
+
+  const fileName = attachment.name || (attachment.kind === 'image' ? 'image.png' : 'attachment');
+  let mimeType = attachment.mimeType || (attachment.kind === 'image' ? 'image/png' : 'application/octet-stream');
+  let buffer: Buffer;
+  if (attachment.source === 'data-url' && attachment.dataUrl) {
+    const parsed = parseDataUrl(attachment.dataUrl);
+    if (!parsed) throw new Error('Invalid attachment data URL.');
+    mimeType = attachment.mimeType || parsed.mimeType;
+    buffer = parsed.buffer;
+  } else if (attachment.source === 'path' && attachment.path) {
+    buffer = await readFile(attachment.path);
+  } else {
+    throw new Error('Attachment source is missing.');
+  }
+
+  const form = new FormData();
+  const payload = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer;
+  form.append('payload_json', JSON.stringify({ content: '' }));
+  form.append('files[0]', new Blob([payload], { type: mimeType }), fileName);
+  await discordFormApi(token, `/channels/${encodeURIComponent(channelId)}/messages`, form);
+}
+
 export async function sendDiscordOutboundMessage(params: {
   targetId: string;
   targetKind?: 'dm' | 'group' | 'channel';
   text: string;
   token?: string;
+  chunks?: string[];
+  attachments?: ConnectorDeliveryAttachmentRecord[];
+  deliveryId?: string;
+  connectorInstanceId?: string;
+  accountId?: string;
+  taskId?: string;
+  threadId?: string;
+  metadata?: Record<string, string>;
 }): Promise<void> {
   const token = params.token ?? await getDiscordToken();
   if (!token) {
@@ -478,39 +625,56 @@ export async function sendDiscordOutboundMessage(params: {
     throw new Error('Discord text is required.');
   }
 
-  const chunks = splitDiscordMessage(text, DISCORD_MESSAGE_LIMIT);
   const targetKind = params.targetKind ?? 'channel';
-  let channelId = targetId;
-  if (targetKind === 'dm') {
-    const dmResponse = await fetch('https://discord.com/api/v10/users/@me/channels', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bot ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ recipient_id: targetId }),
-    });
-    const dmPayload = await dmResponse.json().catch(() => ({} as { id?: string; message?: string }));
-    if (!dmResponse.ok || !dmPayload?.id) {
-      throw new Error(dmPayload?.message || dmResponse.statusText || 'Failed to open Discord DM channel.');
-    }
-    channelId = normalizeText(dmPayload.id);
+  const prepared = params.deliveryId
+    ? {
+        record: { id: params.deliveryId },
+        chunks: params.chunks ?? splitDiscordMessage(text, DISCORD_MESSAGE_LIMIT),
+        attachments: params.attachments ?? [],
+        silenced: false,
+      }
+    : createConnectorDelivery({
+        connectorId: 'discord',
+        connectorInstanceId: params.connectorInstanceId,
+        accountId: params.accountId,
+        targetId,
+        targetKind,
+        text,
+        splitLimit: DISCORD_MESSAGE_LIMIT,
+        taskId: params.taskId,
+        threadId: params.threadId,
+        metadata: params.metadata,
+      });
+  if (prepared.silenced) {
+    return;
   }
 
-  for (const chunk of chunks) {
-    const response = await fetch(`https://discord.com/api/v10/channels/${encodeURIComponent(channelId)}/messages`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bot ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        content: chunk || ' ',
-      }),
-    });
-    const payload = await response.json().catch(() => ({} as { message?: string }));
-    if (!response.ok) {
-      throw new Error(payload?.message || response.statusText || 'Discord send failed');
+  let channelId = targetId;
+  if (targetKind === 'dm') {
+    try {
+      channelId = await openDiscordDmChannel(token, targetId);
+    } catch (error) {
+      markConnectorDeliveryFailed(prepared.record.id, error);
+      throw error;
     }
   }
+
+  await sendConnectorDeliveryChunks(prepared.record.id, prepared.chunks, async (chunk) => {
+    await sendDiscordTyping(token, channelId);
+    await sendDiscordText(token, channelId, chunk || ' ');
+  }, {
+    afterChunks: async () => {
+      for (const attachment of prepared.attachments ?? []) {
+        if (attachment.status === 'skipped') continue;
+        try {
+          await sendDiscordTyping(token, channelId);
+          await sendDiscordAttachment(token, channelId, attachment);
+          markConnectorDeliveryAttachmentSent(prepared.record.id, attachment.id);
+        } catch (error) {
+          markConnectorDeliveryAttachmentFallback(prepared.record.id, attachment.id, error);
+          await sendDiscordText(token, channelId, attachment.fallbackText || 'Attachment could not be uploaded.');
+        }
+      }
+    },
+  });
 }

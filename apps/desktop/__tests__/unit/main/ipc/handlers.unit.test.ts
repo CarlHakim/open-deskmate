@@ -69,13 +69,20 @@ vi.mock('electron', () => {
         id: 1,
         isDestroyed: vi.fn(() => false),
       })),
-      getAllWindows: vi.fn(() => [{ id: 1, webContents: { send: vi.fn() } }]),
+      getAllWindows: vi.fn(() => [
+        {
+          id: 1,
+          isDestroyed: vi.fn(() => false),
+          webContents: { send: vi.fn() },
+        },
+      ]),
     },
     shell: {
       openExternal: vi.fn(),
     },
     app: {
       isPackaged: false,
+      once: vi.fn(),
       getPath: vi.fn(() => '/tmp/test-app'),
     },
   };
@@ -116,6 +123,7 @@ const mockTasks: Array<{
 
 vi.mock('@main/store/taskHistory', () => ({
   getTasks: vi.fn(() => mockTasks),
+  getTaskList: vi.fn(() => mockTasks),
   getTask: vi.fn((taskId: string) => mockTasks.find((t) => t.id === taskId)),
   getLatestTask: vi.fn(() => (mockTasks.length ? mockTasks[mockTasks.length - 1] : undefined)),
   saveTask: vi.fn((task: unknown) => {
@@ -136,6 +144,7 @@ vi.mock('@main/store/taskHistory', () => ({
     if (t) (t as unknown as { sessionFilePath?: string }).sessionFilePath = sessionFilePath;
   }),
   addTaskMessage: vi.fn(),
+  addTaskActivity: vi.fn(),
   deleteTask: vi.fn((taskId: string) => {
     const idx = mockTasks.findIndex((t) => t.id === taskId);
     if (idx >= 0) mockTasks.splice(idx, 1);
@@ -173,7 +182,15 @@ vi.mock('@main/store/secureStorage', () => ({
   hasAnyApiKey: vi.fn(() =>
     Promise.resolve(Object.values(mockApiKeys).some((k) => k !== null))
   ),
-  listStoredCredentials: vi.fn(() => mockStoredCredentials),
+  listStoredCredentials: vi.fn(() => {
+    if (mockStoredCredentials.length > 0) return mockStoredCredentials;
+    return Object.entries(mockApiKeys)
+      .filter(([, password]) => Boolean(password))
+      .map(([provider, password]) => ({
+        account: `apiKey:${provider}`,
+        password: password || '',
+      }));
+  }),
 }));
 
 // Mock app settings
@@ -568,11 +585,18 @@ describe('IPC Handlers Integration', () => {
       );
     });
 
-    it('settings:add-api-key should reject unsupported providers', async () => {
-      // Arrange & Act & Assert
-      await expect(
-        invokeHandler('settings:add-api-key', 'unsupported-provider', 'sk-test')
-      ).rejects.toThrow('Unsupported API key provider');
+    it('settings:add-api-key should accept custom user-managed providers', async () => {
+      // Act
+      const result = await invokeHandler('settings:add-api-key', 'unsupported-provider', 'sk-test');
+
+      // Assert
+      expect(result).toEqual(
+        expect.objectContaining({
+          provider: 'unsupported-provider',
+          keyPrefix: 'sk-test...',
+          isActive: true,
+        })
+      );
     });
 
     it('settings:remove-api-key should delete the API key', async () => {
@@ -1021,13 +1045,13 @@ describe('IPC Handlers Integration', () => {
     it('model:set should reject invalid model configuration', async () => {
       // Arrange & Act & Assert
       await expect(invokeHandler('model:set', null)).rejects.toThrow(
-        'Invalid model configuration'
+        'selectedModel must be an object'
       );
       await expect(invokeHandler('model:set', { provider: 'test' })).rejects.toThrow(
-        'Invalid model configuration'
+        'selectedModel.model must be a string'
       );
       await expect(invokeHandler('model:set', { model: 'test' })).rejects.toThrow(
-        'Invalid model configuration'
+        'selectedModel.provider must be a string'
       );
     });
   });
@@ -1275,7 +1299,7 @@ describe('IPC Handlers Integration', () => {
       vi.useRealTimers();
     });
 
-    it('task:start should initialize permission API on first call', async () => {
+    it('task:start should not initialize permission API directly', async () => {
       // Arrange
       const config = { prompt: 'Test task prompt' };
       mockTaskManager.startTask.mockResolvedValue({
@@ -1291,11 +1315,11 @@ describe('IPC Handlers Integration', () => {
 
       // Assert
       const { initPermissionApi, startPermissionApiServer } = await import('@main/permission-api');
-      expect(initPermissionApi).toHaveBeenCalled();
-      expect(startPermissionApiServer).toHaveBeenCalled();
+      expect(initPermissionApi).not.toHaveBeenCalled();
+      expect(startPermissionApiServer).not.toHaveBeenCalled();
     });
 
-    it('task:start should only initialize permission API once', async () => {
+    it('task:start should continue without direct permission API initialization', async () => {
       // Arrange
       const config = { prompt: 'Test task' };
       mockTaskManager.startTask.mockResolvedValue({
@@ -1310,9 +1334,9 @@ describe('IPC Handlers Integration', () => {
       await invokeHandler('task:start', config);
       await invokeHandler('task:start', { prompt: 'Second task' });
 
-      // Assert - should only be called once
+      // Assert - runtime services own permission setup now.
       const { initPermissionApi } = await import('@main/permission-api');
-      expect(initPermissionApi).toHaveBeenCalledTimes(1);
+      expect(initPermissionApi).not.toHaveBeenCalled();
     });
 
     it('task:start should create initial user message', async () => {
@@ -1807,7 +1831,7 @@ describe('IPC Handlers Integration', () => {
       vi.unstubAllGlobals();
     });
 
-    it('api-key:validate-provider should reject unsupported provider', async () => {
+    it('api-key:validate-provider should skip validation for unknown custom providers', async () => {
       // Act
       const result = await invokeHandler('api-key:validate-provider', 'invalid-provider', 'key') as {
         valid: boolean;
@@ -1815,8 +1839,7 @@ describe('IPC Handlers Integration', () => {
       };
 
       // Assert
-      expect(result.valid).toBe(false);
-      expect(result.error).toBe('Unsupported provider');
+      expect(result.valid).toBe(true);
     });
 
     it('api-key:validate-provider should skip validation for custom provider', async () => {

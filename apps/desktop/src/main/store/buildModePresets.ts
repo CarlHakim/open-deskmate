@@ -1,10 +1,13 @@
 import Store from 'electron-store';
-import type {
-  BuildStartEntry,
-  BuildEnvProfile,
-  BuildProjectPreset,
-  BuildProjectPresetInput,
-  BuildProjectPresetListResult,
+import {
+  DEFAULT_BUILD_PRESET_TOOLSET_IDS,
+  FORMAL_TOOLSET_IDS,
+  type BuildStartEntry,
+  type BuildEnvProfile,
+  type BuildProjectPreset,
+  type BuildProjectPresetInput,
+  type BuildProjectPresetListResult,
+  type ToolsetId,
 } from '@accomplish/shared';
 
 interface BuildModePresetsStoreSchema {
@@ -19,6 +22,8 @@ const store = new Store<BuildModePresetsStoreSchema>({
     activePresetByAgent: {},
   },
 });
+
+const KNOWN_TOOLSET_IDS = new Set<string>(FORMAL_TOOLSET_IDS);
 
 function normalizeId(input: string, fallback = 'preset'): string {
   const normalized = String(input || '')
@@ -48,6 +53,22 @@ function normalizeAssigneeIds(value: unknown): string[] | null | undefined {
     seen.add(id);
     ids.push(id);
     if (ids.length >= 80) break;
+  }
+  return ids;
+}
+
+function normalizeToolsetIds(
+  value: unknown,
+  fallback: readonly ToolsetId[] = DEFAULT_BUILD_PRESET_TOOLSET_IDS
+): ToolsetId[] {
+  if (!Array.isArray(value)) return [...fallback];
+  const seen = new Set<ToolsetId>();
+  const ids: ToolsetId[] = [];
+  for (const entry of value) {
+    const id = typeof entry === 'string' ? entry.trim() : '';
+    if (!KNOWN_TOOLSET_IDS.has(id) || seen.has(id as ToolsetId)) continue;
+    seen.add(id as ToolsetId);
+    ids.push(id as ToolsetId);
   }
   return ids;
 }
@@ -168,6 +189,8 @@ function listAllPresets(): BuildProjectPreset[] {
         name: normalizeText(entry.name, 'Build preset').slice(0, 120) || 'Build preset',
         workspaceRelativePath: normalizeText(entry.workspaceRelativePath, '.').slice(0, 300) || '.',
         usageProjectId: normalizeId(entry.usageProjectId || '', '') || null,
+        executionProfileId: normalizeId(entry.executionProfileId || '', '') || null,
+        toolsetIds: normalizeToolsetIds(entry.toolsetIds),
         assigneeIds: normalizeAssigneeIds(entry.assigneeIds) ?? null,
         commands,
         envProfiles,
@@ -182,6 +205,8 @@ function listAllPresets(): BuildProjectPreset[] {
         || next.name !== entry.name
         || next.workspaceRelativePath !== entry.workspaceRelativePath
         || next.usageProjectId !== (entry.usageProjectId ?? null)
+        || next.executionProfileId !== (entry.executionProfileId ?? null)
+        || JSON.stringify(next.toolsetIds) !== JSON.stringify(entry.toolsetIds ?? DEFAULT_BUILD_PRESET_TOOLSET_IDS)
         || JSON.stringify(next.assigneeIds || null) !== JSON.stringify(entry.assigneeIds ?? null)
         || next.commands.startCommand !== entry.commands?.startCommand
         || JSON.stringify(next.commands.startEntries || []) !== JSON.stringify(entry.commands?.startEntries || [])
@@ -259,6 +284,12 @@ export function upsertBuildModePreset(input: BuildProjectPresetInput): BuildProj
     usageProjectId: input.usageProjectId !== undefined
       ? (normalizeId(input.usageProjectId || '', '') || null)
       : (existing?.usageProjectId ?? null),
+    executionProfileId: input.executionProfileId !== undefined
+      ? (normalizeId(input.executionProfileId || '', '') || null)
+      : (existing?.executionProfileId ?? null),
+    toolsetIds: input.toolsetIds !== undefined
+      ? normalizeToolsetIds(input.toolsetIds, [])
+      : normalizeToolsetIds(existing?.toolsetIds),
     assigneeIds: input.assigneeIds !== undefined
       ? (normalizeAssigneeIds(input.assigneeIds) ?? null)
       : (existing?.assigneeIds ?? null),

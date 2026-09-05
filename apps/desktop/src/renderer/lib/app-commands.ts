@@ -13,6 +13,15 @@ export const APP_COMMAND_EVENTS = {
   buildRuntimeRestart: 'opendeskmate:command:build-runtime-restart',
   buildRuntimeBuild: 'opendeskmate:command:build-runtime-build',
   buildRuntimeOpenPreview: 'opendeskmate:command:build-runtime-open-preview',
+  promptPickerOpen: 'opendeskmate:command:prompt-picker-open',
+  recipePickerOpen: 'opendeskmate:command:recipe-picker-open',
+  backgroundPickerOpen: 'opendeskmate:command:background-picker-open',
+  agentPickerOpen: 'opendeskmate:command:agent-picker-open',
+  projectPickerOpen: 'opendeskmate:command:project-picker-open',
+  workboardOpen: 'opendeskmate:command:workboard-open',
+  saveNote: 'opendeskmate:command:save-note',
+  exportOpen: 'opendeskmate:command:export-open',
+  searchOpen: 'opendeskmate:command:search-open',
 } as const;
 
 type AppSlashCommandAction = {
@@ -353,6 +362,135 @@ export function createAppSlashCommands(options: AppSlashCommandOptions): SlashCo
   }
 
   commands.push(
+    {
+      id: 'prompt',
+      command: 'prompt',
+      title: 'Saved Prompt',
+      description: 'Open saved prompts for insertion.',
+      group: 'Prompts',
+      intent: 'inspect',
+      previewText: 'Will open the saved prompt picker.',
+      aliases: ['prompts'],
+      keywords: ['saved prompt', 'prompt library', 'prompt card'],
+      execute: () => {
+        void window.dispatchEvent(new CustomEvent(APP_COMMAND_EVENTS.promptPickerOpen));
+      },
+    },
+    {
+      id: 'recipe',
+      command: 'recipe',
+      title: 'Recipe',
+      description: 'Open bundled recipes for insertion.',
+      group: 'Prompts',
+      intent: 'inspect',
+      previewText: 'Will open the prompt picker with recipes included.',
+      aliases: ['recipes'],
+      keywords: ['prompt recipe', 'build recipe', 'prompt card'],
+      execute: () => {
+        void window.dispatchEvent(new CustomEvent(APP_COMMAND_EVENTS.recipePickerOpen));
+      },
+    },
+    {
+      id: 'background',
+      command: 'background',
+      title: 'Background',
+      description: 'Open the chat background picker.',
+      group: 'Chat',
+      intent: 'inspect',
+      previewText: 'Will open the Chat Mode background picker.',
+      aliases: ['wallpaper', 'theme'],
+      keywords: ['chat background', 'background picker', 'appearance', 'wallpaper', 'theme'],
+      visible: options.context !== 'build',
+      execute: () => {
+        void window.dispatchEvent(new CustomEvent(APP_COMMAND_EVENTS.backgroundPickerOpen));
+      },
+    },
+    {
+      id: 'agent',
+      command: 'agent',
+      title: 'Agent',
+      description: 'Open the agent selector.',
+      group: 'Chat',
+      intent: 'inspect',
+      previewText: 'Will open agent selection for the current chat context.',
+      aliases: ['agents', 'persona'],
+      keywords: ['agent picker', 'agent selector', 'assistant', 'persona', 'profile'],
+      execute: () => {
+        void window.dispatchEvent(new CustomEvent(APP_COMMAND_EVENTS.agentPickerOpen));
+      },
+    },
+    {
+      id: 'project',
+      command: 'project',
+      title: 'Project',
+      description: 'Open project selection for the current chat.',
+      group: 'Projects',
+      intent: 'inspect',
+      previewText: 'Will open the project selector for chat budget and context.',
+      aliases: ['budget', 'usage'],
+      keywords: ['usage project', 'project selector', 'budget project', 'billing', 'client'],
+      execute: () => {
+        void window.dispatchEvent(new CustomEvent(APP_COMMAND_EVENTS.projectPickerOpen));
+      },
+    },
+    {
+      id: 'workboard',
+      command: 'workboard',
+      title: 'Workboard',
+      description: 'Open linked project work items.',
+      group: 'Projects',
+      intent: 'inspect',
+      previewText: 'Will open project Workboard items for the current chat context.',
+      aliases: ['board', 'tasks'],
+      keywords: ['work items', 'kanban', 'project work', 'task board', 'checklist'],
+      execute: () => {
+        void window.dispatchEvent(new CustomEvent(APP_COMMAND_EVENTS.workboardOpen));
+      },
+    },
+    {
+      id: 'save-note',
+      command: 'save-note',
+      title: 'Save Note',
+      description: 'Save the latest answer as a project note.',
+      group: 'Projects',
+      intent: 'mutate',
+      previewText: 'Will start the flow for saving the latest answer to a Workboard note.',
+      aliases: ['note', 'save-answer'],
+      keywords: ['answer note', 'project note', 'workboard note', 'save response', 'capture'],
+      visible: options.context === 'chat',
+      execute: () => {
+        void window.dispatchEvent(new CustomEvent(APP_COMMAND_EVENTS.saveNote));
+      },
+    },
+    {
+      id: 'export',
+      command: 'export',
+      title: 'Export',
+      description: 'Open export options for the current chat.',
+      group: 'Chat',
+      intent: 'mutate',
+      previewText: 'Will open available export actions for the current chat or answer.',
+      aliases: ['download', 'share'],
+      keywords: ['export chat', 'download', 'save file', 'rtf', 'postcard', 'share'],
+      visible: options.context === 'chat',
+      execute: () => {
+        void window.dispatchEvent(new CustomEvent(APP_COMMAND_EVENTS.exportOpen));
+      },
+    },
+    {
+      id: 'search',
+      command: 'search',
+      title: 'Search',
+      description: 'Open local search.',
+      group: 'System',
+      intent: 'inspect',
+      previewText: 'Will open local search across history, Workboard, memory, skills, Git, and audit.',
+      aliases: ['find', 'audit'],
+      keywords: ['local search', 'search audit', 'history search', 'memory search', 'workboard search'],
+      execute: () => {
+        void window.dispatchEvent(new CustomEvent(APP_COMMAND_EVENTS.searchOpen));
+      },
+    },
     {
       id: 'subagents-active',
       command: 'subagents-active',

@@ -214,6 +214,14 @@ export type UsageProjectNote = {
   updatedAt?: string;
 };
 
+export type UsageProjectChatTheme = {
+  backgroundId?: string;
+  accentColor?: string;
+  defaultPromptCategory?: string;
+  defaultPromptIds?: string[];
+  avatarFrame?: string;
+};
+
 export type UsageProject = {
   id: string;
   name: string;
@@ -231,6 +239,7 @@ export type UsageProject = {
   noteEntries?: UsageProjectNote[];
   links?: UsageProjectLink[];
   tags?: string[];
+  chatTheme?: UsageProjectChatTheme;
   /** Default people doing the work for this budget. Chat projects and Build presets can override it. */
   assigneeIds?: string[];
   createdAt: string;
@@ -253,6 +262,7 @@ export type UsageProjectInput = {
   noteEntries?: UsageProjectNote[];
   links?: UsageProjectLink[];
   tags?: string[];
+  chatTheme?: UsageProjectChatTheme | null;
   assigneeIds?: string[];
 };
 
@@ -272,6 +282,7 @@ export type UsageProjectUpdate = {
   noteEntries?: UsageProjectNote[];
   links?: UsageProjectLink[];
   tags?: string[];
+  chatTheme?: UsageProjectChatTheme | null;
   assigneeIds?: string[];
 };
 
@@ -480,6 +491,27 @@ export type WorkItemNotePromptGenerateRequest = {
 
 export type WorkItemNotePromptGenerateResponse = ChecklistListPromptGenerateResponse;
 
+export type ChatPostcardDraftGenerateRequest = {
+  agentId?: string | null;
+  source: 'answer' | 'conversation';
+  templateId?: string;
+  titleHint?: string;
+  content: string;
+  sources?: string[];
+  agentName?: string;
+  agentRole?: string;
+  projectName?: string;
+};
+
+export type ChatPostcardDraftGenerateResponse = {
+  ok: boolean;
+  title: string;
+  summary: string;
+  highlights: string[];
+  model?: SelectedModel | null;
+  error?: string;
+};
+
 export type UsageProjectWorkItemNote = {
   id: string;
   title?: string;
@@ -532,6 +564,15 @@ export type UsageProjectWorkItemDocumentLink = {
   createdAt: string;
 };
 
+export type UsageProjectWorkItemSourceLink = {
+  id: string;
+  title: string;
+  url: string;
+  description?: string;
+  createdAt: string;
+  updatedAt?: string;
+};
+
 export type UsageProjectWorkItem = {
   id: string;
   usageProjectId: string;
@@ -554,6 +595,7 @@ export type UsageProjectWorkItem = {
   notes: UsageProjectWorkItemNote[];
   drawings?: UsageProjectWorkItemDrawing[];
   documents?: UsageProjectWorkItemDocumentLink[];
+  sources?: UsageProjectWorkItemSourceLink[];
   archived: boolean;
   createdAt: string;
   updatedAt: string;
@@ -580,6 +622,7 @@ export type UsageProjectWorkItemInput = {
   notes?: UsageProjectWorkItemNote[];
   drawings?: UsageProjectWorkItemDrawing[];
   documents?: UsageProjectWorkItemDocumentLink[];
+  sources?: UsageProjectWorkItemSourceLink[];
   archived?: boolean;
 };
 

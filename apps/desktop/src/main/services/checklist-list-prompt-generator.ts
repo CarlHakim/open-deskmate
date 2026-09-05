@@ -3,6 +3,8 @@ import type {
   ChecklistListPromptGenerateRequest,
   ChecklistListPromptGenerateResponse,
   ChecklistListPromptPurpose,
+  ChatPostcardDraftGenerateRequest,
+  ChatPostcardDraftGenerateResponse,
   ProviderType,
   SelectedModel,
   WorkItemNotePromptGenerateRequest,
@@ -46,6 +48,21 @@ const NOTE_SYSTEM_PROMPT = [
   '- Convert note fragments into a coherent instruction, not a summary of the note.',
 ].join('\n');
 
+const POSTCARD_SYSTEM_PROMPT = [
+  'You are Open Deskmate Postcard Assistant.',
+  'You turn a chat answer or conversation into a concise visual summary card.',
+  '',
+  'Rules:',
+  '- Return only strict JSON. Do not wrap it in markdown fences and do not explain your process.',
+  '- The JSON shape must be: {"title":"...","summary":"...","highlights":["...","...","..."]}.',
+  '- Create a neat overview, not a cropped excerpt.',
+  '- The title must be short, clean, and presentation-ready. Strip markdown markers such as #, ###, ---, bullets, or table syntax.',
+  '- The summary must be 1-3 short sentences and fit on a postcard.',
+  '- Highlights must be 3-5 concise bullets capturing the most useful outcomes, decisions, findings, or next steps.',
+  '- Preserve the meaning of important tables, lists, findings, dates, source context, and recommendations without copying the entire answer.',
+  '- Do not invent facts. If the content is thin, summarize only what is present.',
+].join('\n');
+
 function normalizeText(input: unknown, maxLength: number): string {
   const text = String(input ?? '').trim();
   if (!text) return '';
@@ -69,6 +86,27 @@ function stripPromptWrapper(value: string): string {
   const text = normalizeText(value, 12000);
   const fenced = text.match(/^```(?:[a-zA-Z]+)?\s*([\s\S]*?)\s*```$/);
   return normalizeText(fenced?.[1] ?? text, 12000);
+}
+
+function stripJsonWrapper(value: string): string {
+  const text = stripPromptWrapper(value);
+  const objectMatch = text.match(/\{[\s\S]*\}/);
+  return normalizeText(objectMatch?.[0] ?? text, 20000);
+}
+
+function normalizePostcardDraftJson(raw: string): Pick<ChatPostcardDraftGenerateResponse, 'title' | 'summary' | 'highlights'> | null {
+  try {
+    const parsed = JSON.parse(stripJsonWrapper(raw)) as Record<string, unknown>;
+    const title = normalizeText(parsed.title, 160);
+    const summary = normalizeText(parsed.summary, 900);
+    const highlights = Array.isArray(parsed.highlights)
+      ? parsed.highlights.map((highlight) => normalizeText(highlight, 260)).filter(Boolean).slice(0, 5)
+      : [];
+    if (!title || !summary || highlights.length === 0) return null;
+    return { title, summary, highlights };
+  } catch {
+    return null;
+  }
 }
 
 function normalizeItems(items: unknown): ChecklistListPromptGenerateItem[] {
@@ -393,6 +431,102 @@ export async function generateWorkItemNotePrompt(
       prompt: '',
       model: selectedModel,
       error: error instanceof Error ? error.message : 'Prompt generation failed.',
+    };
+  }
+}
+
+export async function generateChatPostcardDraft(
+  req: ChatPostcardDraftGenerateRequest
+): Promise<ChatPostcardDraftGenerateResponse> {
+  const selectedModel = getUserSkillAssistantModel() ?? resolveSelectedModelForAgent(normalizeText(req.agentId, 128) || undefined);
+  if (!selectedModel) {
+    return {
+      ok: false,
+      title: '',
+      summary: '',
+      highlights: [],
+      model: null,
+      error: 'Choose a Settings Assistant model before creating AI postcards.',
+    };
+  }
+
+  const content = normalizeText(req.content, 20000);
+  if (!content) {
+    return {
+      ok: false,
+      title: '',
+      summary: '',
+      highlights: [],
+      model: selectedModel,
+      error: 'There is no answer content to turn into a postcard.',
+    };
+  }
+
+  const provider = selectedModel.provider as ProviderType;
+  const providerConfig = getModelProvider(provider);
+  const model = modelIdFromSelectedModel(selectedModel);
+  const apiKey = provider === 'ollama' ? null : await getApiKey(provider);
+  if (!apiKey && provider !== 'ollama' && providerConfig?.requiresApiKey !== false) {
+    return {
+      ok: false,
+      title: '',
+      summary: '',
+      highlights: [],
+      model: selectedModel,
+      error: `No API key is configured for the Settings Assistant provider (${provider}).`,
+    };
+  }
+
+  const payload = {
+    source: req.source === 'conversation' ? 'conversation' : 'answer',
+    templateId: normalizeText(req.templateId, 80),
+    titleHint: normalizeText(req.titleHint, 240),
+    agentName: normalizeText(req.agentName, 160),
+    agentRole: normalizeText(req.agentRole, 160),
+    projectName: normalizeText(req.projectName, 160),
+    sources: Array.isArray(req.sources)
+      ? req.sources.map((source) => normalizeText(source, 1000)).filter(Boolean).slice(0, 12)
+      : [],
+    content,
+  };
+
+  const userText = [
+    'Create a postcard draft from this chat content.',
+    'The result will be rendered in a fixed-size visual card, so it must be a concise overview.',
+    'Do not return the original answer. Condense it into a title, short summary, and highlights.',
+    '',
+    'Postcard request data (JSON):',
+    JSON.stringify(payload, null, 2),
+    '',
+    'Return only strict JSON with title, summary, and highlights.',
+  ].join('\n');
+
+  try {
+    const raw = await callPromptModel(provider, providerConfig, selectedModel, apiKey, model, userText, POSTCARD_SYSTEM_PROMPT);
+    const draft = normalizePostcardDraftJson(raw);
+    if (!draft) {
+      return {
+        ok: false,
+        title: '',
+        summary: '',
+        highlights: [],
+        model: selectedModel,
+        error: 'The Settings Assistant did not return a valid postcard draft.',
+      };
+    }
+    return {
+      ok: true,
+      ...draft,
+      model: selectedModel,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      title: '',
+      summary: '',
+      highlights: [],
+      model: selectedModel,
+      error: error instanceof Error ? error.message : 'Postcard generation failed.',
     };
   }
 }

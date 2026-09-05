@@ -1,5 +1,5 @@
 import Store from 'electron-store';
-import type { ModelConfig, ProviderConfig } from '@accomplish/shared';
+import { FORMAL_TOOLSET_IDS, type ModelConfig, type ProviderConfig, type ToolsetId } from '@accomplish/shared';
 
 interface ModelProvidersStoreSchema {
   customProviders: ProviderConfig[];
@@ -9,6 +9,7 @@ interface ModelProvidersStoreSchema {
 const BUILTIN_PROVIDER_IDS = new Set(['anthropic', 'openai', 'google', 'xai', 'ollama', 'custom']);
 const BUILTIN_EXTENDABLE_PROVIDER_IDS = new Set(['anthropic', 'openai', 'google', 'xai']);
 const PROVIDER_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const KNOWN_TOOLSET_IDS = new Set<string>(FORMAL_TOOLSET_IDS);
 
 const modelProvidersStore = new Store<ModelProvidersStoreSchema>({
   name: 'model-providers',
@@ -35,15 +36,30 @@ function sanitizeModelId(value: string): string {
   return value.trim();
 }
 
+function normalizeToolsetIds(value: unknown): ToolsetId[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const seen = new Set<ToolsetId>();
+  const ids: ToolsetId[] = [];
+  for (const entry of value) {
+    const id = typeof entry === 'string' ? entry.trim() : '';
+    if (!KNOWN_TOOLSET_IDS.has(id) || seen.has(id as ToolsetId)) continue;
+    seen.add(id as ToolsetId);
+    ids.push(id as ToolsetId);
+  }
+  return ids.length > 0 ? ids : undefined;
+}
+
 function normalizeModel(providerId: string, model: ModelConfig): ModelConfig {
   const id = sanitizeModelId(model.id);
   const fullId = model.fullId?.trim() || `${providerId}/${id}`;
+  const toolsetIds = normalizeToolsetIds(model.toolsetIds);
   return {
     ...model,
     id,
     fullId,
     provider: providerId,
     displayName: model.displayName?.trim() || id,
+    toolsetIds,
   };
 }
 

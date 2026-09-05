@@ -1,5 +1,11 @@
 import Store from 'electron-store';
-import type { AgentConfig, AgentProfile } from '@accomplish/shared';
+import {
+  DEFAULT_AGENT_TOOLSET_IDS,
+  FORMAL_TOOLSET_IDS,
+  type AgentConfig,
+  type AgentProfile,
+  type ToolsetId,
+} from '@accomplish/shared';
 
 interface AgentsStoreSchema {
   agents: AgentProfile[];
@@ -20,17 +26,24 @@ const DEFAULT_HEARTBEAT_TIME_ZONE = 'system';
 const DEFAULT_HEARTBEAT_WINDOW_ENABLED = false;
 const DEFAULT_HEARTBEAT_WINDOW_START_TIME = '09:00';
 const DEFAULT_HEARTBEAT_WINDOW_END_TIME = '17:00';
-const DEFAULT_AUTO_SKILL_ENABLED = false;
-const DEFAULT_AUTO_SKILL_AUTO_PROMOTE_LOW_RISK = false;
+const DEFAULT_ALWAYS_ON_ENABLED = false;
+const DEFAULT_ALWAYS_ON_WORKBOARD_DISPATCH_ENABLED = false;
+const DEFAULT_DEFERRED_TOOL_DISCOVERY_ENABLED = false;
+const DEFAULT_AUTO_SKILL_ENABLED = true;
+const DEFAULT_AUTO_SKILL_AUTO_PROMOTE_LOW_RISK = true;
+const DEFAULT_MEMORY_WRITE_MODE: AgentProfile['memoryWriteMode'] = 'automatic';
+const DEFAULT_MEMORY_NOTIFICATIONS_ENABLED = true;
+const DEFAULT_SKILL_AUTOMATION_MODE: AgentProfile['skillAutomationMode'] = 'automatic';
 const DEFAULT_SUBAGENTS_ENABLED = false;
 const DEFAULT_SUBAGENT_MAX_CHILDREN = 3;
 const DEFAULT_SUBAGENT_MAX_DEPTH = 1;
 const DEFAULT_SUBAGENT_AUTO_RELAY_COMPLETIONS = true;
-const DEFAULT_SUBAGENT_RUN_TIMEOUT_MS = 5 * 60 * 1000;
+const DEFAULT_SUBAGENT_RUN_TIMEOUT_MS = 20 * 60 * 1000;
 const DEFAULT_SUBAGENT_DEFAULT_MODE: 'run' | 'session' = 'run';
 const DEFAULT_SUBAGENT_INHERIT_WORKING_DIRECTORY = true;
 const DEFAULT_SUBAGENT_INHERIT_ATTACHED_FILES = true;
 const DEFAULT_SUBAGENT_INHERIT_PRIVACY_MODE = true;
+const KNOWN_TOOLSET_IDS = new Set<string>(FORMAL_TOOLSET_IDS);
 
 const VALID_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
 const INVALID_CHARS_RE = /[^a-z0-9_-]+/g;
@@ -108,6 +121,22 @@ function normalizeHeartbeatPrompt(value: unknown): string | undefined {
   return trimmed || undefined;
 }
 
+function normalizeMemoryWriteMode(value: unknown): AgentProfile['memoryWriteMode'] {
+  return value === 'approval' || value === 'off' || value === 'automatic'
+    ? value
+    : DEFAULT_MEMORY_WRITE_MODE;
+}
+
+function normalizeSkillAutomationMode(
+  value: unknown,
+  legacyAutoSkillEnabled: unknown,
+  fallback: AgentProfile['skillAutomationMode'] = DEFAULT_SKILL_AUTOMATION_MODE
+): AgentProfile['skillAutomationMode'] {
+  if (value === 'approval' || value === 'off' || value === 'automatic') return value;
+  if (typeof legacyAutoSkillEnabled === 'boolean') return legacyAutoSkillEnabled ? 'automatic' : 'off';
+  return fallback;
+}
+
 function normalizeOptionalShortText(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
@@ -121,6 +150,33 @@ function normalizeAvatarImageDataUrl(value: unknown): string | undefined {
   return AVATAR_IMAGE_DATA_URL_RE.test(trimmed) ? trimmed : undefined;
 }
 
+function normalizeAppearanceString(value: unknown, maxLength = 80): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim().replace(/\s+/g, ' ').slice(0, maxLength);
+  return trimmed || undefined;
+}
+
+function normalizeReactionMode(value: unknown): NonNullable<AgentProfile['appearance']>['reactionMode'] {
+  return value === 'off' || value === 'minimal' || value === 'standard' || value === 'playful'
+    ? value
+    : undefined;
+}
+
+function normalizeAgentAppearance(value: unknown): AgentProfile['appearance'] {
+  if (!value || typeof value !== 'object') return undefined;
+  const source = value as NonNullable<AgentProfile['appearance']>;
+  const appearance: NonNullable<AgentProfile['appearance']> = {
+    avatarFrame: normalizeAppearanceString(source.avatarFrame),
+    accentColor: normalizeAppearanceString(source.accentColor, 32),
+    answerStyle: normalizeAppearanceString(source.answerStyle),
+    chatBackgroundId: normalizeAppearanceString(source.chatBackgroundId),
+    showAvatarOnAnswers: typeof source.showAvatarOnAnswers === 'boolean' ? source.showAvatarOnAnswers : undefined,
+    presenceAnimation: normalizeAppearanceString(source.presenceAnimation),
+    reactionMode: normalizeReactionMode(source.reactionMode),
+  };
+  return Object.values(appearance).some((entry) => entry !== undefined) ? appearance : undefined;
+}
+
 function normalizeAgentIdList(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
@@ -130,6 +186,32 @@ function normalizeAgentIdList(value: unknown): string[] {
     if (!normalized || seen.has(normalized)) continue;
     seen.add(normalized);
     next.push(normalized);
+  }
+  return next;
+}
+
+function normalizeWorkboardProjectIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const next: string[] = [];
+  for (const entry of value) {
+    const id = typeof entry === 'string' ? entry.trim().slice(0, 128) : '';
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    next.push(id);
+  }
+  return next;
+}
+
+function normalizeToolsetIds(value: unknown, fallback: readonly ToolsetId[] = DEFAULT_AGENT_TOOLSET_IDS): ToolsetId[] {
+  if (!Array.isArray(value)) return [...fallback];
+  const seen = new Set<ToolsetId>();
+  const next: ToolsetId[] = [];
+  for (const entry of value) {
+    const id = typeof entry === 'string' ? entry.trim() : '';
+    if (!KNOWN_TOOLSET_IDS.has(id) || seen.has(id as ToolsetId)) continue;
+    seen.add(id as ToolsetId);
+    next.push(id as ToolsetId);
   }
   return next;
 }
@@ -192,8 +274,16 @@ function createDefaultAgent(now: string): AgentProfile {
     heartbeatWindowEnabled: DEFAULT_HEARTBEAT_WINDOW_ENABLED,
     heartbeatWindowStartTime: DEFAULT_HEARTBEAT_WINDOW_START_TIME,
     heartbeatWindowEndTime: DEFAULT_HEARTBEAT_WINDOW_END_TIME,
+    alwaysOnEnabled: DEFAULT_ALWAYS_ON_ENABLED,
+    alwaysOnWorkboardDispatchEnabled: DEFAULT_ALWAYS_ON_WORKBOARD_DISPATCH_ENABLED,
+    alwaysOnWorkboardProjectIds: [],
+    deferredToolDiscoveryEnabled: DEFAULT_DEFERRED_TOOL_DISCOVERY_ENABLED,
     autoSkillEnabled: DEFAULT_AUTO_SKILL_ENABLED,
     autoSkillAutoPromoteLowRisk: DEFAULT_AUTO_SKILL_AUTO_PROMOTE_LOW_RISK,
+    toolsetIds: [...DEFAULT_AGENT_TOOLSET_IDS],
+    skillAutomationMode: DEFAULT_SKILL_AUTOMATION_MODE,
+    memoryWriteMode: DEFAULT_MEMORY_WRITE_MODE,
+    memoryNotificationsEnabled: DEFAULT_MEMORY_NOTIFICATIONS_ENABLED,
     subagentsEnabled: DEFAULT_SUBAGENTS_ENABLED,
     subagentMaxChildren: DEFAULT_SUBAGENT_MAX_CHILDREN,
     subagentMaxDepth: DEFAULT_SUBAGENT_MAX_DEPTH,
@@ -248,6 +338,7 @@ export function listAgents(): AgentProfile[] {
       ...agent,
       roleName: normalizeOptionalShortText(agent.roleName),
       avatarImageDataUrl: normalizeAvatarImageDataUrl(agent.avatarImageDataUrl),
+      appearance: normalizeAgentAppearance(agent.appearance),
       agenticLoopEnabled: loopEnabled,
       agenticLoopMaxIterations: normalizeAgenticLoopMaxIterations(
         agent.agenticLoopMaxIterations,
@@ -273,8 +364,16 @@ export function listAgents(): AgentProfile[] {
       heartbeatWindowStartTime: normalizeTimeOfDay(agent.heartbeatWindowStartTime, DEFAULT_HEARTBEAT_WINDOW_START_TIME),
       heartbeatWindowEndTime: normalizeTimeOfDay(agent.heartbeatWindowEndTime, DEFAULT_HEARTBEAT_WINDOW_END_TIME),
       heartbeatPrompt: normalizeHeartbeatPrompt(agent.heartbeatPrompt),
+      alwaysOnEnabled: agent.alwaysOnEnabled ?? DEFAULT_ALWAYS_ON_ENABLED,
+      alwaysOnWorkboardDispatchEnabled: agent.alwaysOnWorkboardDispatchEnabled ?? DEFAULT_ALWAYS_ON_WORKBOARD_DISPATCH_ENABLED,
+      alwaysOnWorkboardProjectIds: normalizeWorkboardProjectIds(agent.alwaysOnWorkboardProjectIds),
+      deferredToolDiscoveryEnabled: agent.deferredToolDiscoveryEnabled ?? DEFAULT_DEFERRED_TOOL_DISCOVERY_ENABLED,
       autoSkillEnabled: agent.autoSkillEnabled ?? DEFAULT_AUTO_SKILL_ENABLED,
       autoSkillAutoPromoteLowRisk: agent.autoSkillAutoPromoteLowRisk ?? DEFAULT_AUTO_SKILL_AUTO_PROMOTE_LOW_RISK,
+      toolsetIds: normalizeToolsetIds(agent.toolsetIds),
+      skillAutomationMode: normalizeSkillAutomationMode(agent.skillAutomationMode, agent.autoSkillEnabled),
+      memoryWriteMode: normalizeMemoryWriteMode(agent.memoryWriteMode),
+      memoryNotificationsEnabled: agent.memoryNotificationsEnabled ?? DEFAULT_MEMORY_NOTIFICATIONS_ENABLED,
       subagentsEnabled: agent.subagentsEnabled ?? DEFAULT_SUBAGENTS_ENABLED,
       subagentMaxChildren: clampInteger(agent.subagentMaxChildren, DEFAULT_SUBAGENT_MAX_CHILDREN, 1, 12),
       subagentMaxDepth: clampInteger(agent.subagentMaxDepth, DEFAULT_SUBAGENT_MAX_DEPTH, 1, 4),
@@ -290,6 +389,7 @@ export function listAgents(): AgentProfile[] {
     if (
       next.roleName !== agent.roleName
       || next.avatarImageDataUrl !== agent.avatarImageDataUrl
+      || JSON.stringify(next.appearance ?? null) !== JSON.stringify(agent.appearance ?? null)
       || next.agenticLoopEnabled !== agent.agenticLoopEnabled
       || next.agenticLoopMaxIterations !== agent.agenticLoopMaxIterations
       || next.agenticLoopTimeoutMs !== agent.agenticLoopTimeoutMs
@@ -303,8 +403,16 @@ export function listAgents(): AgentProfile[] {
       || next.heartbeatWindowStartTime !== agent.heartbeatWindowStartTime
       || next.heartbeatWindowEndTime !== agent.heartbeatWindowEndTime
       || next.heartbeatPrompt !== agent.heartbeatPrompt
+      || next.alwaysOnEnabled !== agent.alwaysOnEnabled
+      || next.alwaysOnWorkboardDispatchEnabled !== agent.alwaysOnWorkboardDispatchEnabled
+      || JSON.stringify(next.alwaysOnWorkboardProjectIds) !== JSON.stringify(agent.alwaysOnWorkboardProjectIds ?? [])
+      || next.deferredToolDiscoveryEnabled !== agent.deferredToolDiscoveryEnabled
       || next.autoSkillEnabled !== agent.autoSkillEnabled
       || next.autoSkillAutoPromoteLowRisk !== agent.autoSkillAutoPromoteLowRisk
+      || JSON.stringify(next.toolsetIds) !== JSON.stringify(agent.toolsetIds ?? DEFAULT_AGENT_TOOLSET_IDS)
+      || next.skillAutomationMode !== agent.skillAutomationMode
+      || next.memoryWriteMode !== agent.memoryWriteMode
+      || next.memoryNotificationsEnabled !== agent.memoryNotificationsEnabled
       || next.subagentsEnabled !== agent.subagentsEnabled
       || next.subagentMaxChildren !== agent.subagentMaxChildren
       || next.subagentMaxDepth !== agent.subagentMaxDepth
@@ -352,6 +460,7 @@ export function upsertAgent(config: AgentConfig): AgentProfile {
   const now = new Date().toISOString();
   const existingIds = new Set(agents.map((agent) => agent.id));
   const hasSelectedModel = Object.prototype.hasOwnProperty.call(config, 'selectedModel');
+  const hasAppearance = Object.prototype.hasOwnProperty.call(config, 'appearance');
   const hasAgenticLoopEnabled = Object.prototype.hasOwnProperty.call(config, 'agenticLoopEnabled');
   const hasAgenticLoopMaxIterations = Object.prototype.hasOwnProperty.call(config, 'agenticLoopMaxIterations');
   const hasAgenticLoopTimeoutMs = Object.prototype.hasOwnProperty.call(config, 'agenticLoopTimeoutMs');
@@ -365,6 +474,10 @@ export function upsertAgent(config: AgentConfig): AgentProfile {
   const hasHeartbeatWindowStartTime = Object.prototype.hasOwnProperty.call(config, 'heartbeatWindowStartTime');
   const hasHeartbeatWindowEndTime = Object.prototype.hasOwnProperty.call(config, 'heartbeatWindowEndTime');
   const hasHeartbeatPrompt = Object.prototype.hasOwnProperty.call(config, 'heartbeatPrompt');
+  const hasAlwaysOnEnabled = Object.prototype.hasOwnProperty.call(config, 'alwaysOnEnabled');
+  const hasAlwaysOnWorkboardDispatchEnabled = Object.prototype.hasOwnProperty.call(config, 'alwaysOnWorkboardDispatchEnabled');
+  const hasAlwaysOnWorkboardProjectIds = Object.prototype.hasOwnProperty.call(config, 'alwaysOnWorkboardProjectIds');
+  const hasDeferredToolDiscoveryEnabled = Object.prototype.hasOwnProperty.call(config, 'deferredToolDiscoveryEnabled');
   const hasSubagentsEnabled = Object.prototype.hasOwnProperty.call(config, 'subagentsEnabled');
   const hasSubagentMaxChildren = Object.prototype.hasOwnProperty.call(config, 'subagentMaxChildren');
   const hasSubagentMaxDepth = Object.prototype.hasOwnProperty.call(config, 'subagentMaxDepth');
@@ -379,6 +492,17 @@ export function upsertAgent(config: AgentConfig): AgentProfile {
   const hasPermissionProfile = Object.prototype.hasOwnProperty.call(config, 'permissionProfile');
   const hasAutoSkillEnabled = Object.prototype.hasOwnProperty.call(config, 'autoSkillEnabled');
   const hasAutoSkillAutoPromoteLowRisk = Object.prototype.hasOwnProperty.call(config, 'autoSkillAutoPromoteLowRisk');
+  const hasToolsetIds = Object.prototype.hasOwnProperty.call(config, 'toolsetIds');
+  const hasSkillAutomationMode = Object.prototype.hasOwnProperty.call(config, 'skillAutomationMode');
+  const hasMemoryWriteMode = Object.prototype.hasOwnProperty.call(config, 'memoryWriteMode');
+  const hasMemoryNotificationsEnabled = Object.prototype.hasOwnProperty.call(config, 'memoryNotificationsEnabled');
+  const hasRoleName = Object.prototype.hasOwnProperty.call(config, 'roleName');
+  const hasDescription = Object.prototype.hasOwnProperty.call(config, 'description');
+  const hasAvatar = Object.prototype.hasOwnProperty.call(config, 'avatar');
+  const hasAvatarColor = Object.prototype.hasOwnProperty.call(config, 'avatarColor');
+  const hasAvatarImageDataUrl = Object.prototype.hasOwnProperty.call(config, 'avatarImageDataUrl');
+  const hasWorkspaceRoot = Object.prototype.hasOwnProperty.call(config, 'workspaceRoot');
+  const hasSystemPromptAppend = Object.prototype.hasOwnProperty.call(config, 'systemPromptAppend');
 
   const hasExplicitId = typeof config.id === 'string' && config.id.trim();
   const baseId = normalizeAgentId(hasExplicitId ? config.id : config.name);
@@ -398,13 +522,18 @@ export function upsertAgent(config: AgentConfig): AgentProfile {
     const updated: AgentProfile = {
       ...agents[existingIndex],
       name: config.name || agents[existingIndex].name,
-      roleName: normalizeOptionalShortText(config.roleName),
-      description: config.description,
-      avatar: config.avatar,
-      avatarColor: config.avatarColor,
-      avatarImageDataUrl: normalizeAvatarImageDataUrl(config.avatarImageDataUrl),
-      workspaceRoot: config.workspaceRoot,
-      systemPromptAppend: config.systemPromptAppend,
+      roleName: hasRoleName ? normalizeOptionalShortText(config.roleName) : agents[existingIndex].roleName,
+      description: hasDescription ? config.description : agents[existingIndex].description,
+      avatar: hasAvatar ? config.avatar : agents[existingIndex].avatar,
+      avatarColor: hasAvatarColor ? config.avatarColor : agents[existingIndex].avatarColor,
+      avatarImageDataUrl: hasAvatarImageDataUrl
+        ? normalizeAvatarImageDataUrl(config.avatarImageDataUrl)
+        : agents[existingIndex].avatarImageDataUrl,
+      appearance: hasAppearance
+        ? normalizeAgentAppearance(config.appearance)
+        : agents[existingIndex].appearance,
+      workspaceRoot: hasWorkspaceRoot ? config.workspaceRoot : agents[existingIndex].workspaceRoot,
+      systemPromptAppend: hasSystemPromptAppend ? config.systemPromptAppend : agents[existingIndex].systemPromptAppend,
       selectedModel: hasSelectedModel
         ? (config.selectedModel ?? undefined)
         : agents[existingIndex].selectedModel,
@@ -455,6 +584,18 @@ export function upsertAgent(config: AgentConfig): AgentProfile {
       heartbeatPrompt: hasHeartbeatPrompt
         ? normalizeHeartbeatPrompt(config.heartbeatPrompt)
         : agents[existingIndex].heartbeatPrompt,
+      alwaysOnEnabled: hasAlwaysOnEnabled
+        ? Boolean(config.alwaysOnEnabled)
+        : (agents[existingIndex].alwaysOnEnabled ?? DEFAULT_ALWAYS_ON_ENABLED),
+      alwaysOnWorkboardDispatchEnabled: hasAlwaysOnWorkboardDispatchEnabled
+        ? Boolean(config.alwaysOnWorkboardDispatchEnabled)
+        : (agents[existingIndex].alwaysOnWorkboardDispatchEnabled ?? DEFAULT_ALWAYS_ON_WORKBOARD_DISPATCH_ENABLED),
+      alwaysOnWorkboardProjectIds: hasAlwaysOnWorkboardProjectIds
+        ? normalizeWorkboardProjectIds(config.alwaysOnWorkboardProjectIds)
+        : normalizeWorkboardProjectIds(agents[existingIndex].alwaysOnWorkboardProjectIds),
+      deferredToolDiscoveryEnabled: hasDeferredToolDiscoveryEnabled
+        ? Boolean(config.deferredToolDiscoveryEnabled)
+        : (agents[existingIndex].deferredToolDiscoveryEnabled ?? DEFAULT_DEFERRED_TOOL_DISCOVERY_ENABLED),
       subagentsEnabled: hasSubagentsEnabled
         ? Boolean(config.subagentsEnabled)
         : (agents[existingIndex].subagentsEnabled ?? DEFAULT_SUBAGENTS_ENABLED),
@@ -493,10 +634,24 @@ export function upsertAgent(config: AgentConfig): AgentProfile {
         : agents[existingIndex].permissionProfile,
       autoSkillEnabled: hasAutoSkillEnabled
         ? Boolean(config.autoSkillEnabled)
+        : hasSkillAutomationMode
+          ? normalizeSkillAutomationMode(config.skillAutomationMode, config.autoSkillEnabled) !== 'off'
         : (agents[existingIndex].autoSkillEnabled ?? DEFAULT_AUTO_SKILL_ENABLED),
       autoSkillAutoPromoteLowRisk: hasAutoSkillAutoPromoteLowRisk
         ? Boolean(config.autoSkillAutoPromoteLowRisk)
         : (agents[existingIndex].autoSkillAutoPromoteLowRisk ?? DEFAULT_AUTO_SKILL_AUTO_PROMOTE_LOW_RISK),
+      toolsetIds: hasToolsetIds
+        ? normalizeToolsetIds(config.toolsetIds, [])
+        : normalizeToolsetIds(agents[existingIndex].toolsetIds),
+      skillAutomationMode: hasSkillAutomationMode
+        ? normalizeSkillAutomationMode(config.skillAutomationMode, config.autoSkillEnabled)
+        : normalizeSkillAutomationMode(agents[existingIndex].skillAutomationMode, agents[existingIndex].autoSkillEnabled),
+      memoryWriteMode: hasMemoryWriteMode
+        ? normalizeMemoryWriteMode(config.memoryWriteMode)
+        : normalizeMemoryWriteMode(agents[existingIndex].memoryWriteMode),
+      memoryNotificationsEnabled: hasMemoryNotificationsEnabled
+        ? Boolean(config.memoryNotificationsEnabled)
+        : (agents[existingIndex].memoryNotificationsEnabled ?? DEFAULT_MEMORY_NOTIFICATIONS_ENABLED),
       updatedAt: now,
     };
     const next = [...agents];
@@ -522,6 +677,7 @@ export function upsertAgent(config: AgentConfig): AgentProfile {
     avatar: config.avatar,
     avatarColor: config.avatarColor,
     avatarImageDataUrl: normalizeAvatarImageDataUrl(config.avatarImageDataUrl),
+    appearance: hasAppearance ? normalizeAgentAppearance(config.appearance) : undefined,
     workspaceRoot: config.workspaceRoot,
     systemPromptAppend: config.systemPromptAppend,
     selectedModel: config.selectedModel ?? undefined,
@@ -554,6 +710,16 @@ export function upsertAgent(config: AgentConfig): AgentProfile {
     heartbeatWindowStartTime: normalizeTimeOfDay(config.heartbeatWindowStartTime, DEFAULT_HEARTBEAT_WINDOW_START_TIME),
     heartbeatWindowEndTime: normalizeTimeOfDay(config.heartbeatWindowEndTime, DEFAULT_HEARTBEAT_WINDOW_END_TIME),
     heartbeatPrompt: normalizeHeartbeatPrompt(config.heartbeatPrompt),
+    alwaysOnEnabled: hasAlwaysOnEnabled ? Boolean(config.alwaysOnEnabled) : DEFAULT_ALWAYS_ON_ENABLED,
+    alwaysOnWorkboardDispatchEnabled: hasAlwaysOnWorkboardDispatchEnabled
+      ? Boolean(config.alwaysOnWorkboardDispatchEnabled)
+      : DEFAULT_ALWAYS_ON_WORKBOARD_DISPATCH_ENABLED,
+    alwaysOnWorkboardProjectIds: hasAlwaysOnWorkboardProjectIds
+      ? normalizeWorkboardProjectIds(config.alwaysOnWorkboardProjectIds)
+      : [],
+    deferredToolDiscoveryEnabled: hasDeferredToolDiscoveryEnabled
+      ? Boolean(config.deferredToolDiscoveryEnabled)
+      : DEFAULT_DEFERRED_TOOL_DISCOVERY_ENABLED,
     subagentsEnabled: hasSubagentsEnabled ? Boolean(config.subagentsEnabled) : DEFAULT_SUBAGENTS_ENABLED,
     subagentMaxChildren: clampInteger(config.subagentMaxChildren, DEFAULT_SUBAGENT_MAX_CHILDREN, 1, 12),
     subagentMaxDepth: clampInteger(config.subagentMaxDepth, DEFAULT_SUBAGENT_MAX_DEPTH, 1, 4),
@@ -574,10 +740,26 @@ export function upsertAgent(config: AgentConfig): AgentProfile {
       ? Boolean(config.subagentInheritPrivacyMode)
       : DEFAULT_SUBAGENT_INHERIT_PRIVACY_MODE,
     permissionProfile: hasPermissionProfile ? normalizeAgentPermissionProfile(config.permissionProfile) : undefined,
-    autoSkillEnabled: hasAutoSkillEnabled ? Boolean(config.autoSkillEnabled) : DEFAULT_AUTO_SKILL_ENABLED,
+    autoSkillEnabled: hasAutoSkillEnabled
+      ? Boolean(config.autoSkillEnabled)
+      : hasSkillAutomationMode
+        ? normalizeSkillAutomationMode(config.skillAutomationMode, config.autoSkillEnabled) !== 'off'
+        : DEFAULT_AUTO_SKILL_ENABLED,
     autoSkillAutoPromoteLowRisk: hasAutoSkillAutoPromoteLowRisk
       ? Boolean(config.autoSkillAutoPromoteLowRisk)
       : DEFAULT_AUTO_SKILL_AUTO_PROMOTE_LOW_RISK,
+    toolsetIds: hasToolsetIds
+      ? normalizeToolsetIds(config.toolsetIds, [])
+      : [...DEFAULT_AGENT_TOOLSET_IDS],
+    skillAutomationMode: hasSkillAutomationMode
+      ? normalizeSkillAutomationMode(config.skillAutomationMode, config.autoSkillEnabled)
+      : DEFAULT_SKILL_AUTOMATION_MODE,
+    memoryWriteMode: hasMemoryWriteMode
+      ? normalizeMemoryWriteMode(config.memoryWriteMode)
+      : DEFAULT_MEMORY_WRITE_MODE,
+    memoryNotificationsEnabled: hasMemoryNotificationsEnabled
+      ? Boolean(config.memoryNotificationsEnabled)
+      : DEFAULT_MEMORY_NOTIFICATIONS_ENABLED,
     createdAt: now,
     updatedAt: now,
   };

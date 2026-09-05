@@ -29,6 +29,8 @@ export interface StoredTask {
   usageProjectId?: string | null;
   hiddenFromHistory?: boolean;
   parentTaskId?: string;
+  buildMode?: boolean;
+  buildWorkspaceRelativePath?: string;
   miniMaxHistoricalImageSessionResetAt?: string;
 }
 
@@ -212,6 +214,8 @@ function compactTaskForList(task: StoredTask): StoredTask {
     usageProjectId: task.usageProjectId,
     hiddenFromHistory: task.hiddenFromHistory,
     parentTaskId: task.parentTaskId,
+    buildMode: task.buildMode,
+    buildWorkspaceRelativePath: task.buildWorkspaceRelativePath,
   };
 }
 
@@ -270,6 +274,8 @@ export function saveTask(task: Task): void {
       privacyMode,
       hiddenFromHistory: task.hiddenFromHistory,
       parentTaskId: task.parentTaskId,
+      buildMode: task.buildMode,
+      buildWorkspaceRelativePath: task.buildWorkspaceRelativePath,
     };
     const previous = incognitoTasks.get(task.id)?.task;
     if (previous) {
@@ -289,6 +295,8 @@ export function saveTask(task: Task): void {
       storedTask.activity = mergedActivity.slice(-MAX_TASK_ACTIVITY_EVENTS);
       storedTask.createdAt = previous.createdAt;
       storedTask.startedAt = previous.startedAt ?? storedTask.startedAt;
+      storedTask.buildMode = storedTask.buildMode ?? previous.buildMode;
+      storedTask.buildWorkspaceRelativePath = storedTask.buildWorkspaceRelativePath ?? previous.buildWorkspaceRelativePath;
       storedTask.miniMaxHistoricalImageSessionResetAt =
         storedTask.miniMaxHistoricalImageSessionResetAt ?? previous.miniMaxHistoricalImageSessionResetAt;
     }
@@ -321,6 +329,8 @@ export function saveTask(task: Task): void {
     miniMaxHistoricalImageSessionResetAt: task.miniMaxHistoricalImageSessionResetAt,
     hiddenFromHistory: task.hiddenFromHistory,
     parentTaskId: task.parentTaskId,
+    buildMode: task.buildMode,
+    buildWorkspaceRelativePath: task.buildWorkspaceRelativePath,
     createdAt: task.createdAt,
     startedAt: task.startedAt,
     completedAt: task.completedAt,
@@ -340,6 +350,8 @@ export function saveTask(task: Task): void {
       ...storedTask,
       messages: mergedMessages,
       activity: mergeTaskActivity(existing.activity, storedTask.activity),
+      buildMode: storedTask.buildMode ?? existing.buildMode,
+      buildWorkspaceRelativePath: storedTask.buildWorkspaceRelativePath ?? existing.buildWorkspaceRelativePath,
       miniMaxHistoricalImageSessionResetAt: storedTask.miniMaxHistoricalImageSessionResetAt ?? existing.miniMaxHistoricalImageSessionResetAt,
       createdAt: existing.createdAt,
       startedAt: existing.startedAt ?? storedTask.startedAt,

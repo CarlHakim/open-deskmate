@@ -1,6 +1,10 @@
 import { app } from 'electron';
 import fs from 'fs';
 import path from 'path';
+import type {
+  ToolDiscoveryCustomMcpRegistrySummary,
+  ToolDiscoveryCustomMcpServerSummary,
+} from '@accomplish/shared';
 
 export type OpenCodeMcpServerConfig = {
   type?: 'local' | 'remote';
@@ -140,4 +144,56 @@ export function loadCustomMcpRegistry(): CustomMcpServerRecord {
     console.warn('[OpenCode Config] Failed reading custom MCP registry:', error);
     return {};
   }
+}
+
+function summarizeCustomMcpServer(id: string, server: OpenCodeMcpServerConfig): ToolDiscoveryCustomMcpServerSummary {
+  const environmentKeys = Object.keys(server.environment ?? {}).slice(0, 20);
+  if (server.type === 'remote') {
+    let urlHost: string | undefined;
+    try {
+      urlHost = server.url ? new URL(server.url).host : undefined;
+    } catch {
+      urlHost = undefined;
+    }
+    return {
+      id,
+      type: 'remote',
+      enabled: server.enabled !== false,
+      transport: 'url',
+      urlHost,
+      timeout: server.timeout,
+      hasEnvironment: environmentKeys.length > 0,
+      environmentKeys,
+    };
+  }
+
+  const command = server.command ?? [];
+  return {
+    id,
+    type: 'local',
+    enabled: server.enabled !== false,
+    transport: 'command',
+    commandName: command[0] ? path.basename(command[0]) : undefined,
+    commandArgCount: Math.max(0, command.length - 1),
+    timeout: server.timeout,
+    hasEnvironment: environmentKeys.length > 0,
+    environmentKeys,
+  };
+}
+
+export function summarizeCustomMcpRegistry(
+  registry: CustomMcpServerRecord = loadCustomMcpRegistry(),
+  registryPath: string = getCustomMcpRegistryPath()
+): ToolDiscoveryCustomMcpRegistrySummary {
+  const servers = Object.entries(registry)
+    .map(([id, server]) => summarizeCustomMcpServer(id, server))
+    .sort((a, b) => a.id.localeCompare(b.id));
+
+  return {
+    registryPath,
+    serverCount: servers.length,
+    enabledServerCount: servers.filter((server) => server.enabled).length,
+    servers,
+    note: 'This is a safe summary of registered custom MCP servers. Individual custom MCP tools become visible only after enabling the custom toolset and resuming the task if config regeneration is requested.',
+  };
 }

@@ -12,16 +12,21 @@ export interface SavedPrompt {
   title: string;
   content: string;
   category: PromptCategory;
+  description?: string;
+  icon?: string;
+  color?: string;
   createdAt: string;
   updatedAt: string;
 }
+
+export type SavedPromptMetadata = Pick<SavedPrompt, 'description' | 'icon' | 'color'>;
 
 interface SavedPromptsState {
   prompts: SavedPrompt[];
   categories: PromptCategory[];
   loadPrompts: () => void;
-  savePrompt: (title: string, content: string, category?: PromptCategory) => SavedPrompt;
-  updatePrompt: (id: string, title: string, content: string, category?: PromptCategory) => void;
+  savePrompt: (title: string, content: string, category?: PromptCategory, metadata?: SavedPromptMetadata) => SavedPrompt;
+  updatePrompt: (id: string, title: string, content: string, category?: PromptCategory, metadata?: SavedPromptMetadata) => void;
   deletePrompt: (id: string) => void;
   createCategory: (name: string) => void;
   renameCategory: (from: string, to: string) => void;
@@ -83,6 +88,16 @@ function saveCategoriesToStorage(categories: PromptCategory[]): void {
   }
 }
 
+function normalizeOptionalText(input: unknown, maxLength: number): string | undefined {
+  const value = String(input ?? '').trim().replace(/\s+/g, ' ').slice(0, maxLength);
+  return value || undefined;
+}
+
+function normalizeColor(input: unknown): string | undefined {
+  const value = String(input ?? '').trim();
+  return /^#[0-9a-f]{6}$/i.test(value) ? value : undefined;
+}
+
 function normalizePrompt(input: unknown): SavedPrompt | null {
   const record = input && typeof input === 'object' ? (input as Record<string, unknown>) : null;
   if (!record) return null;
@@ -99,6 +114,9 @@ function normalizePrompt(input: unknown): SavedPrompt | null {
     title,
     content,
     category,
+    description: normalizeOptionalText(record.description, 240),
+    icon: normalizeOptionalText(record.icon, 12),
+    color: normalizeColor(record.color),
     createdAt: createdAt || nowIso,
     updatedAt: updatedAt || nowIso,
   };
@@ -205,12 +223,20 @@ export const useSavedPromptsStore = create<SavedPromptsState>((set, get) => ({
     })();
   },
 
-  savePrompt: (title: string, content: string, category: PromptCategory = DEFAULT_PROMPT_CATEGORY) => {
+  savePrompt: (
+    title: string,
+    content: string,
+    category: PromptCategory = DEFAULT_PROMPT_CATEGORY,
+    metadata: SavedPromptMetadata = {}
+  ) => {
     const newPrompt: SavedPrompt = {
       id: generateId(),
       title: title.trim(),
       content: content.trim(),
       category: normalizePromptCategory(category),
+      description: normalizeOptionalText(metadata.description, 240),
+      icon: normalizeOptionalText(metadata.icon, 12),
+      color: normalizeColor(metadata.color),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -239,7 +265,7 @@ export const useSavedPromptsStore = create<SavedPromptsState>((set, get) => ({
     return newPrompt;
   },
 
-  updatePrompt: (id: string, title: string, content: string, category?: PromptCategory) => {
+  updatePrompt: (id: string, title: string, content: string, category?: PromptCategory, metadata: SavedPromptMetadata = {}) => {
     const prompts = sortPrompts(get().prompts.map((p) =>
       p.id === id
         ? {
@@ -247,6 +273,9 @@ export const useSavedPromptsStore = create<SavedPromptsState>((set, get) => ({
           title: title.trim(),
           content: content.trim(),
           category: normalizePromptCategory(category, p.category),
+          description: normalizeOptionalText(metadata.description, 240),
+          icon: normalizeOptionalText(metadata.icon, 12),
+          color: normalizeColor(metadata.color),
           updatedAt: new Date().toISOString(),
         }
         : p

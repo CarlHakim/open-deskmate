@@ -16,6 +16,7 @@ import { UsageBudgetPill } from '../usage/UsageBudgetPill';
 import type { ContextWindowEstimateResponse } from '@accomplish/shared';
 import InlineSlashCommandMenu from '../commands/InlineSlashCommandMenu';
 import { filterSlashCommands, type SlashCommandDefinition } from '../../lib/slash-commands';
+import { APP_COMMAND_EVENTS } from '../../lib/app-commands';
 import { registerPromptAttachmentTarget, registerPromptInsertionTarget } from '../../lib/prompt-insertion';
 import {
   addPromptHistoryEntry,
@@ -131,6 +132,7 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
   const previousDefaultRef = useRef<string | null>(defaultWorkingFolder);
   const [showSavedPromptsDialog, setShowSavedPromptsDialog] = useState(false);
   const [savedPromptsMode, setSavedPromptsMode] = useState<'select' | 'manage'>('select');
+  const [savedPromptsIncludeRecipes, setSavedPromptsIncludeRecipes] = useState(true);
   const [projectWorkPopupOpen, setProjectWorkPopupOpen] = useState(false);
   const attachedFiles = useAttachmentStore((state) => state.files);
   const addAttachedFiles = useAttachmentStore((state) => state.addFiles);
@@ -156,6 +158,41 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
     };
     window.addEventListener('opendeskmate:new-chat-task', handleNewChatTask);
     return () => window.removeEventListener('opendeskmate:new-chat-task', handleNewChatTask);
+  }, []);
+
+  useEffect(() => {
+    const openPromptPicker = () => {
+      setSavedPromptsIncludeRecipes(false);
+      setSavedPromptsMode('select');
+      setShowSavedPromptsDialog(true);
+    };
+    const openRecipePicker = () => {
+      setSavedPromptsIncludeRecipes(true);
+      setSavedPromptsMode('select');
+      setShowSavedPromptsDialog(true);
+    };
+    const openProjectWork = () => {
+      setProjectWorkPopupOpen(true);
+    };
+    const openAgentSettings = () => {
+      window.dispatchEvent(new CustomEvent('opendeskmate:open-settings', { detail: { query: 'agent' } }));
+    };
+    const focusProjectPicker = () => {
+      const selector = document.querySelector<HTMLSelectElement>('select[data-usage-project-selector="chat"]');
+      selector?.focus();
+    };
+    window.addEventListener(APP_COMMAND_EVENTS.promptPickerOpen, openPromptPicker);
+    window.addEventListener(APP_COMMAND_EVENTS.recipePickerOpen, openRecipePicker);
+    window.addEventListener(APP_COMMAND_EVENTS.workboardOpen, openProjectWork);
+    window.addEventListener(APP_COMMAND_EVENTS.agentPickerOpen, openAgentSettings);
+    window.addEventListener(APP_COMMAND_EVENTS.projectPickerOpen, focusProjectPicker);
+    return () => {
+      window.removeEventListener(APP_COMMAND_EVENTS.promptPickerOpen, openPromptPicker);
+      window.removeEventListener(APP_COMMAND_EVENTS.recipePickerOpen, openRecipePicker);
+      window.removeEventListener(APP_COMMAND_EVENTS.workboardOpen, openProjectWork);
+      window.removeEventListener(APP_COMMAND_EVENTS.agentPickerOpen, openAgentSettings);
+      window.removeEventListener(APP_COMMAND_EVENTS.projectPickerOpen, focusProjectPicker);
+    };
   }, []);
 
   useEffect(() => {
@@ -652,6 +689,7 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
           <button
             type="button"
             onClick={() => {
+              setSavedPromptsIncludeRecipes(true);
               setSavedPromptsMode('select');
               setShowSavedPromptsDialog(true);
             }}
@@ -670,6 +708,7 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
           <button
             type="button"
             onClick={() => {
+              setSavedPromptsIncludeRecipes(true);
               setSavedPromptsMode('manage');
               setShowSavedPromptsDialog(true);
             }}
@@ -781,6 +820,7 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
         onOpenChange={setShowSavedPromptsDialog}
         onSelectPrompt={handleSelectSavedPrompt}
         mode={savedPromptsMode}
+        includeRecipes={savedPromptsIncludeRecipes}
       />
       <BuildProjectWorkPopup
         open={projectWorkPopupOpen}

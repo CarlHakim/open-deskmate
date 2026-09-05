@@ -19,6 +19,7 @@ import type {
   UsageProjectWorkItemDrawingElementKind,
   UsageProjectWorkItemDrawingLineStyle,
   UsageProjectWorkItemNote,
+  UsageProjectWorkItemSourceLink,
   UsageProjectWorkItemSourceType,
   WorkItemNotePromptGenerateRequest,
 } from '@accomplish/shared';
@@ -73,6 +74,7 @@ type WorkItemDraft = {
   notes: UsageProjectWorkItemNote[];
   drawings: UsageProjectWorkItemDrawing[];
   documents: UsageProjectWorkItemDocumentLink[];
+  sources: UsageProjectWorkItemSourceLink[];
   archived: boolean;
   newListName: string;
   newChecklistTextByListId: Record<string, string>;
@@ -80,6 +82,9 @@ type WorkItemDraft = {
   newNoteText: string;
   newDocumentLabel: string;
   newDocumentUrl: string;
+  newSourceTitle: string;
+  newSourceUrl: string;
+  newSourceDescription: string;
 };
 
 type ColumnDraft = {
@@ -1422,6 +1427,7 @@ function createDraft(projectId: string, statusId: string, color = '#3b82f6'): Wo
     notes: [],
     drawings: [],
     documents: [],
+    sources: [],
     archived: false,
     newListName: '',
     newChecklistTextByListId: {},
@@ -1429,6 +1435,9 @@ function createDraft(projectId: string, statusId: string, color = '#3b82f6'): Wo
     newNoteText: '',
     newDocumentLabel: '',
     newDocumentUrl: '',
+    newSourceTitle: '',
+    newSourceUrl: '',
+    newSourceDescription: '',
   };
 }
 
@@ -1455,6 +1464,7 @@ function draftFromItem(item: UsageProjectWorkItem): WorkItemDraft {
     notes: item.notes || [],
     drawings: item.drawings || [],
     documents: item.documents || [],
+    sources: item.sources || [],
     archived: item.archived,
     newListName: '',
     newChecklistTextByListId: {},
@@ -1462,6 +1472,9 @@ function draftFromItem(item: UsageProjectWorkItem): WorkItemDraft {
     newNoteText: '',
     newDocumentLabel: '',
     newDocumentUrl: '',
+    newSourceTitle: '',
+    newSourceUrl: '',
+    newSourceDescription: '',
   };
 }
 
@@ -2170,8 +2183,8 @@ export function RichWorkItemNoteEditor({
     }
   };
 
-  const toolbarButtonClass = 'h-7 w-7 rounded border border-border bg-background text-muted-foreground hover:text-foreground';
-  const toolbarTextButtonClass = 'h-7 rounded border border-border bg-background px-2 text-[11px] text-muted-foreground hover:text-foreground';
+  const toolbarButtonClass = 'h-7 w-7 rounded border border-border bg-background text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50';
+  const toolbarTextButtonClass = 'h-7 rounded border border-border bg-background px-2 text-[11px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50';
 
   const insertTable = (targetRef: React.RefObject<HTMLDivElement | null>) => {
     const editor = targetRef.current;
@@ -3355,7 +3368,7 @@ export function DrawingEditor({
   const toolButton = (value: DrawingTool, icon: React.ReactNode, label: string) => (
     <button
       type="button"
-      className={cn('flex h-8 items-center gap-1 rounded border border-border px-2 text-[11px] text-muted-foreground hover:text-foreground', tool === value && 'border-primary bg-primary/10 text-primary')}
+      className={cn('flex h-8 items-center gap-1 rounded border border-border bg-background px-2 text-[11px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground', tool === value && 'border-primary bg-primary/10 text-primary')}
       onClick={() => setTool(value)}
       title={label}
     >
@@ -3617,16 +3630,16 @@ export function DrawingEditor({
   const attachButtonLabel = attachingPng ? 'Attaching...' : attachNotice?.kind === 'success' ? 'Attached' : 'Attach PNG';
   const attachButtonClass = cn(
     'h-8 gap-1 px-2 text-xs transition-colors',
-    attachNotice?.kind === 'success' && 'border-emerald-500/70 bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/20',
-    attachNotice?.kind === 'error' && 'border-red-500/70 bg-red-500/15 text-red-200 hover:bg-red-500/20'
+    attachNotice?.kind === 'success' && 'border-emerald-500/70 bg-emerald-500/15 text-emerald-700 hover:bg-emerald-500/20 dark:text-emerald-200',
+    attachNotice?.kind === 'error' && 'border-red-500/70 bg-red-500/15 text-red-700 hover:bg-red-500/20 dark:text-red-200'
   );
   const renderAttachNotice = (className?: string) => attachNotice ? (
     <div
       className={cn(
         'flex items-center gap-2 rounded-md border px-2.5 py-2 text-xs font-medium shadow-sm',
         attachNotice.kind === 'success'
-          ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-100'
-          : 'border-red-500/50 bg-red-500/15 text-red-100',
+          ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-700 dark:text-emerald-100'
+          : 'border-red-500/50 bg-red-500/15 text-red-700 dark:text-red-100',
         className
       )}
       role="status"
@@ -3985,6 +3998,7 @@ export default function ProjectWorkboardTab({
       notes: draft.notes,
       drawings: draft.drawings,
       documents: draft.documents,
+      sources: draft.sources,
       archived: draft.archived,
     };
     try {
@@ -4064,6 +4078,43 @@ export default function ProjectWorkboardTab({
       newDocumentLabel: '',
       newDocumentUrl: '',
     });
+  };
+
+  const addSourceLink = () => {
+    if (!draft) return;
+    const url = draft.newSourceUrl.trim();
+    if (!/^https?:\/\//i.test(url)) {
+      setError('Source link must start with http:// or https://.');
+      return;
+    }
+    const title = draft.newSourceTitle.trim() || labelForDocumentTarget(url);
+    const description = draft.newSourceDescription.trim();
+    setDraft({
+      ...draft,
+      sources: [{
+        id: localId(),
+        title,
+        url,
+        description: description || undefined,
+        createdAt: nowIso(),
+      }, ...draft.sources],
+      newSourceTitle: '',
+      newSourceUrl: '',
+      newSourceDescription: '',
+    });
+    setError('');
+  };
+
+  const openSourceLink = async (source: UsageProjectWorkItemSourceLink) => {
+    try {
+      await api.openExternal(source.url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const copySourceLink = (source: UsageProjectWorkItemSourceLink) => {
+    void navigator.clipboard?.writeText(source.url).catch(() => undefined);
   };
 
   const startEditingDocument = (documentLink: UsageProjectWorkItemDocumentLink) => {
@@ -5610,8 +5661,8 @@ export default function ProjectWorkboardTab({
                             size="sm"
                             className={cn(
                               'h-7 gap-1 px-2 text-[11px]',
-                              promptNotice?.kind === 'success' && 'border-emerald-500/60 bg-emerald-500/10 text-emerald-200',
-                              promptNotice?.kind === 'error' && 'border-red-500/60 bg-red-500/10 text-red-200'
+                              promptNotice?.kind === 'success' && 'border-emerald-500/60 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200',
+                              promptNotice?.kind === 'error' && 'border-red-500/60 bg-red-500/10 text-red-700 dark:text-red-200'
                             )}
                             onClick={() => attachDocumentToPrompt(documentLink)}
                             title={documentLink.kind === 'local'
@@ -5650,8 +5701,8 @@ export default function ProjectWorkboardTab({
                       <div className={cn(
                         'mt-2 flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-[11px]',
                         promptNotice.kind === 'success'
-                          ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-100'
-                          : 'border-red-500/40 bg-red-500/10 text-red-100'
+                          ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-100'
+                          : 'border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-100'
                       )}>
                         {promptNotice.kind === 'success' ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : <X className="h-3.5 w-3.5 shrink-0" />}
                         <span>{promptNotice.text}</span>
@@ -5660,6 +5711,130 @@ export default function ProjectWorkboardTab({
                   </div>
                   );
                 })}
+              </div>
+            </div>
+
+            <div className="rounded-md border border-border/70 bg-background p-3">
+              <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <div className="flex items-center gap-2 text-xs font-semibold text-foreground">
+                    <Search className="h-3.5 w-3.5" />
+                    Sources
+                  </div>
+                  <div className="mt-1 text-[11px] text-muted-foreground">
+                    Save research sources as title, link, and description on this work item.
+                  </div>
+                </div>
+              </div>
+              <div className="grid gap-2 rounded-md border border-border/60 bg-card/50 p-2">
+                <div className="grid gap-2 sm:grid-cols-[minmax(0,0.75fr)_minmax(0,1.1fr)_auto]">
+                  <input
+                    value={draft.newSourceTitle}
+                    onChange={(event) => setDraft({ ...draft, newSourceTitle: event.target.value })}
+                    className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                    placeholder="Source title"
+                  />
+                  <input
+                    value={draft.newSourceUrl}
+                    onChange={(event) => setDraft({ ...draft, newSourceUrl: event.target.value })}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault();
+                        addSourceLink();
+                      }
+                    }}
+                    className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                    placeholder="https://example.com/source"
+                  />
+                  <Button type="button" variant="outline" size="sm" className="h-8 gap-1.5 px-2 text-xs" onClick={addSourceLink}>
+                    <Plus className="h-3.5 w-3.5" />
+                    Add source
+                  </Button>
+                </div>
+                <textarea
+                  value={draft.newSourceDescription}
+                  onChange={(event) => setDraft({ ...draft, newSourceDescription: event.target.value })}
+                  className="min-h-16 rounded-md border border-input bg-background px-2 py-1.5 text-xs"
+                  placeholder="Why this source matters, what it supports, or citation notes"
+                />
+              </div>
+              <div className="mt-3 max-h-64 space-y-2 overflow-y-auto">
+                {draft.sources.length === 0 ? (
+                  <div className="rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">
+                    No sources saved yet.
+                  </div>
+                ) : draft.sources.map((source) => (
+                  <div key={source.id} className="rounded-md border border-border/60 bg-card/50 p-2 text-xs">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="grid min-w-0 flex-1 gap-2">
+                        <input
+                          value={source.title}
+                          onChange={(event) => setDraft({
+                            ...draft,
+                            sources: draft.sources.map((entry) => entry.id === source.id ? { ...entry, title: event.target.value, updatedAt: nowIso() } : entry),
+                          })}
+                          className="h-8 min-w-0 rounded-md border border-input bg-background px-2 text-xs font-medium"
+                          placeholder="Source title"
+                          title={source.title}
+                        />
+                        <input
+                          value={source.url}
+                          onChange={(event) => setDraft({
+                            ...draft,
+                            sources: draft.sources.map((entry) => entry.id === source.id ? { ...entry, url: event.target.value, updatedAt: nowIso() } : entry),
+                          })}
+                          className="h-8 min-w-0 rounded-md border border-input bg-background px-2 font-mono text-[11px]"
+                          placeholder="https://example.com/source"
+                          title={source.url}
+                        />
+                        <textarea
+                          value={source.description || ''}
+                          onChange={(event) => setDraft({
+                            ...draft,
+                            sources: draft.sources.map((entry) => entry.id === source.id ? { ...entry, description: event.target.value || undefined, updatedAt: nowIso() } : entry),
+                          })}
+                          className="min-h-14 rounded-md border border-input bg-background px-2 py-1.5 text-xs"
+                          placeholder="Description"
+                        />
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-7 w-7 p-0"
+                          title="Open source"
+                          aria-label="Open source"
+                          onClick={() => void openSourceLink(source)}
+                        >
+                          <Link className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-7 w-7 p-0"
+                          title="Copy source link"
+                          aria-label="Copy source link"
+                          onClick={() => copySourceLink(source)}
+                        >
+                          <ClipboardCopy className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-7 w-7 p-0"
+                          title="Delete source"
+                          aria-label="Delete source"
+                          onClick={() => setDraft({ ...draft, sources: draft.sources.filter((entry) => entry.id !== source.id) })}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           </div>

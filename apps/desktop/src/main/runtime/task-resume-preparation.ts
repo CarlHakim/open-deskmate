@@ -44,6 +44,8 @@ export async function prepareResumeTaskExecution(params: {
     requiresBrowser?: boolean;
     buildMode?: boolean;
     buildWorkspaceRelativePath?: string;
+    toolsetOverrideIds?: import('@accomplish/shared').ToolsetId[];
+    deferredToolDiscoveryOverride?: boolean;
   };
   options?: {
     internal?: {
@@ -68,6 +70,8 @@ export async function prepareResumeTaskExecution(params: {
       requiresBrowser: params.resume?.requiresBrowser,
       buildMode: params.resume?.buildMode === true ? true : undefined,
       buildWorkspaceRelativePath: params.resume?.buildWorkspaceRelativePath,
+      toolsetOverrideIds: params.resume?.toolsetOverrideIds,
+      deferredToolDiscoveryOverride: params.resume?.deferredToolDiscoveryOverride,
     },
     params.hookInputPatch
   );
@@ -100,8 +104,11 @@ export async function prepareResumeTaskExecution(params: {
     sessionFilePath: params.sessionFilePath,
     userMessage: params.validatedPrompt,
     baseSystemPromptAppend: baseSystemPromptAppendNoFlush,
+    toolsetOverrideIds: patchedResumeConfig.toolsetOverrideIds,
+    deferredToolDiscoveryOverride: patchedResumeConfig.deferredToolDiscoveryOverride,
     requireApiKey: false,
     compactionMode: 'unsafeOnly',
+    buildMode: patchedResumeConfig.buildMode === true,
   });
   const shouldFlush = Boolean(params.allowMemoryFlush) && shouldRunMemoryFlushFromContext({
     memoryFlushCount: params.existingTask?.memoryFlushCount,
@@ -123,8 +130,11 @@ export async function prepareResumeTaskExecution(params: {
     userMessage: params.effectivePrompt,
     retrievedText,
     baseSystemPromptAppend,
+    toolsetOverrideIds: patchedResumeConfig.toolsetOverrideIds,
+    deferredToolDiscoveryOverride: patchedResumeConfig.deferredToolDiscoveryOverride,
     requireApiKey: true,
     compactionMode: shouldFlush ? 'unsafeOnly' : 'preemptive',
+    buildMode: patchedResumeConfig.buildMode === true,
   });
   const sessionIntegrity = inspectOpenCodeSessionIntegrity(params.validatedSessionId);
   const sessionResetReason = sessionIntegrity.healthy
@@ -148,6 +158,8 @@ export async function prepareResumeTaskExecution(params: {
     privacyMode: effectivePrivacyMode,
     usageProjectId: params.existingTask?.usageProjectId ?? null,
     systemPromptAppend: prepared.systemPromptAppend,
+    toolsetOverrideIds: patchedResumeConfig.toolsetOverrideIds,
+    deferredToolDiscoveryOverride: patchedResumeConfig.deferredToolDiscoveryOverride,
     requiresBrowser: detectTaskNeedsBrowser({
       prompt: params.effectivePrompt,
       systemPromptAppend: prepared.systemPromptAppend,

@@ -19,6 +19,9 @@ export interface SavedPromptRecord {
   title: string;
   content: string;
   category: SavedPromptCategory;
+  description?: string;
+  icon?: string;
+  color?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -50,6 +53,16 @@ function normalizeSavedPromptCategory(
   return normalizeCategoryName(input) || normalizeCategoryName(fallback) || DEFAULT_SAVED_PROMPT_CATEGORY;
 }
 
+function normalizeOptionalText(input: unknown, maxLength: number): string | undefined {
+  const value = String(input ?? '').trim().replace(/\s+/g, ' ').slice(0, maxLength);
+  return value || undefined;
+}
+
+function normalizeColor(input: unknown): string | undefined {
+  const value = String(input ?? '').trim();
+  return /^#[0-9a-f]{6}$/i.test(value) ? value : undefined;
+}
+
 function normalizePromptRecord(input: SavedPromptRecord): SavedPromptRecord | null {
   const id = String(input.id || '').trim();
   const title = String(input.title || '').trim();
@@ -58,7 +71,17 @@ function normalizePromptRecord(input: SavedPromptRecord): SavedPromptRecord | nu
   const createdAt = String(input.createdAt || '').trim();
   const updatedAt = String(input.updatedAt || '').trim();
   if (!id || !title || !content || !createdAt || !updatedAt) return null;
-  return { id, title, content, category, createdAt, updatedAt };
+  return {
+    id,
+    title,
+    content,
+    category,
+    description: normalizeOptionalText(input.description, 240),
+    icon: normalizeOptionalText(input.icon, 12),
+    color: normalizeColor(input.color),
+    createdAt,
+    updatedAt,
+  };
 }
 
 function sortPrompts(prompts: SavedPromptRecord[]): SavedPromptRecord[] {
@@ -161,6 +184,9 @@ export function upsertSavedPrompt(input: {
   title: string;
   content: string;
   category?: string;
+  description?: string;
+  icon?: string;
+  color?: string;
   createdAt?: string;
   updatedAt?: string;
 }): SavedPromptRecord {
@@ -182,6 +208,9 @@ export function upsertSavedPrompt(input: {
     title,
     content,
     category: normalizeSavedPromptCategory(input.category, existing?.category || DEFAULT_SAVED_PROMPT_CATEGORY),
+    description: normalizeOptionalText(input.description, 240),
+    icon: normalizeOptionalText(input.icon, 12),
+    color: normalizeColor(input.color),
     createdAt: existing ? existing.createdAt : createdAt,
     updatedAt,
   };

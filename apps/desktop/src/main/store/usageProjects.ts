@@ -10,6 +10,7 @@ import type {
   UsageProjectBudgetWindow,
   UsageProjectBudgetWindowInput,
   UsageProjectBudgetWindowUpdate,
+  UsageProjectChatTheme,
   UsageProjectKanbanColumn,
   UsageProjectKanbanColumnInput,
   UsageProjectKanbanColumnUpdate,
@@ -26,6 +27,7 @@ import type {
   UsageProjectWorkItemDrawingElement,
   UsageProjectWorkItemInput,
   UsageProjectWorkItemNote,
+  UsageProjectWorkItemSourceLink,
   UsageProjectWorkItemSourceType,
   UsageProjectWorkItemUpdate,
 } from '@accomplish/shared';
@@ -133,6 +135,22 @@ function normalizeProjectTags(value: unknown): string[] {
     if (tags.length >= 20) break;
   }
   return tags;
+}
+
+function normalizeProjectChatTheme(value: unknown): UsageProjectChatTheme | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const source = value as Partial<UsageProjectChatTheme>;
+  const theme: UsageProjectChatTheme = {
+    backgroundId: normalizeText(source.backgroundId).slice(0, 80) || undefined,
+    accentColor: normalizeColor(source.accentColor),
+    defaultPromptCategory: normalizeText(source.defaultPromptCategory).slice(0, 80) || undefined,
+    defaultPromptIds: normalizeIdList(source.defaultPromptIds).slice(0, 20),
+    avatarFrame: normalizeText(source.avatarFrame).slice(0, 80) || undefined,
+  };
+  if (theme.defaultPromptIds?.length === 0) {
+    delete theme.defaultPromptIds;
+  }
+  return Object.values(theme).some((entry) => entry !== undefined) ? theme : undefined;
 }
 
 function normalizeIdList(value: unknown): string[] {
@@ -371,6 +389,31 @@ function normalizeWorkItemDocuments(value: unknown): UsageProjectWorkItemDocumen
   }).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
+function normalizeWorkItemSources(value: unknown): UsageProjectWorkItemSourceLink[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 100).flatMap((entry): UsageProjectWorkItemSourceLink[] => {
+    if (!entry || typeof entry !== 'object') return [];
+    const source = entry as Partial<UsageProjectWorkItemSourceLink>;
+    const url = normalizeLongText(source.url).slice(0, 2048);
+    if (!/^https?:\/\//i.test(url)) return [];
+    let fallbackTitle = 'Source';
+    try {
+      fallbackTitle = new URL(url).hostname.replace(/^www\./i, '') || fallbackTitle;
+    } catch {
+      fallbackTitle = url.replace(/^https?:\/\//i, '').split(/[/?#]/)[0] || fallbackTitle;
+    }
+    const createdAt = normalizeDateString(source.createdAt, nowIso());
+    return [{
+      id: normalizeText(source.id).slice(0, 80) || randomUUID(),
+      title: normalizeText(source.title, fallbackTitle).slice(0, 180) || fallbackTitle,
+      url,
+      description: normalizeLongText(source.description).slice(0, 1000) || undefined,
+      createdAt,
+      updatedAt: source.updatedAt ? normalizeDateString(source.updatedAt, createdAt) : undefined,
+    }];
+  }).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
 function normalizeLimit(value: unknown): number | null {
   if (value == null || value === '') return null;
   const num = typeof value === 'number' ? value : Number(value);
@@ -417,6 +460,7 @@ function normalizeProject(input: UsageProject): UsageProject {
     noteEntries: normalizeProjectNotes(input.noteEntries, input.notes),
     links: normalizeProjectLinks(input.links),
     tags: normalizeProjectTags(input.tags),
+    chatTheme: normalizeProjectChatTheme(input.chatTheme),
     assigneeIds: normalizeIdList(input.assigneeIds),
     createdAt,
     updatedAt: normalizeDateString(input.updatedAt, createdAt),
@@ -485,6 +529,7 @@ function normalizeWorkItem(input: UsageProjectWorkItem): UsageProjectWorkItem {
     notes: normalizeWorkItemNotes(input.notes),
     drawings: normalizeWorkItemDrawings(input.drawings),
     documents: normalizeWorkItemDocuments(input.documents),
+    sources: normalizeWorkItemSources(input.sources),
     archived: input.archived === true,
     createdAt,
     updatedAt: normalizeDateString(input.updatedAt, createdAt),
@@ -598,6 +643,7 @@ export function createUsageProject(input: UsageProjectInput): UsageProject {
     noteEntries: input.noteEntries,
     links: input.links,
     tags: input.tags,
+    chatTheme: input.chatTheme ?? undefined,
     assigneeIds: input.assigneeIds,
     createdAt: now,
     updatedAt: now,
@@ -629,6 +675,7 @@ export function updateUsageProject(projectId: string, update: UsageProjectUpdate
     noteEntries: update.noteEntries !== undefined ? update.noteEntries : existing.noteEntries,
     links: update.links !== undefined ? update.links : existing.links,
     tags: update.tags !== undefined ? update.tags : existing.tags,
+    chatTheme: update.chatTheme === null ? undefined : update.chatTheme !== undefined ? update.chatTheme : existing.chatTheme,
     assigneeIds: update.assigneeIds !== undefined ? update.assigneeIds : existing.assigneeIds,
     updatedAt: nowIso(),
     archivedAt: update.status === 'archived' ? nowIso() : update.status === 'active' ? undefined : existing.archivedAt,
@@ -897,6 +944,7 @@ export function createUsageProjectWorkItem(input: UsageProjectWorkItemInput): Us
     notes: input.notes || [],
     drawings: input.drawings || [],
     documents: input.documents || [],
+    sources: input.sources || [],
     archived: input.archived === true,
     createdAt: now,
     updatedAt: now,
@@ -948,6 +996,7 @@ export function updateUsageProjectWorkItem(itemId: string, update: UsageProjectW
     notes: update.notes !== undefined ? update.notes : existing.notes,
     drawings: update.drawings !== undefined ? update.drawings : existing.drawings,
     documents: update.documents !== undefined ? update.documents : existing.documents,
+    sources: update.sources !== undefined ? update.sources : existing.sources,
     archived: update.archived !== undefined ? update.archived : existing.archived,
     updatedAt: nowIso(),
   });

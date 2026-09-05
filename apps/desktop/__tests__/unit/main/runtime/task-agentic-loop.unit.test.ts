@@ -1,10 +1,14 @@
-import { describe, expect, test, vi } from 'vitest';
-import type { OpenCodeMessage, TaskResult } from '@accomplish/shared';
+import { afterEach, describe, expect, test, vi } from 'vitest';
+import { DEFAULT_AGENT_TOOLSET_IDS, type OpenCodeMessage, type TaskResult } from '@accomplish/shared';
 import {
   initAgenticRunSignal,
   recordAgenticRunSignal,
   runAgenticLoop,
 } from '../../../../src/main/runtime/task-agentic-loop';
+import {
+  enableTaskScopedTools,
+  resetAllTaskScopedToolDiscovery,
+} from '../../../../src/main/services/toolsets';
 
 const successResult: TaskResult = { status: 'success', sessionId: 'session-1' };
 
@@ -72,6 +76,10 @@ function runLoop(taskId: string, resumeSession = vi.fn()) {
 }
 
 describe('runAgenticLoop', () => {
+  afterEach(() => {
+    resetAllTaskScopedToolDiscovery();
+  });
+
   test('does not continue after tool use when the assistant already answered', async () => {
     const taskId = 'task-agentic-tool-answer';
     const resumeSession = vi.fn();
@@ -94,5 +102,50 @@ describe('runAgenticLoop', () => {
 
     await expect(runLoop(taskId, resumeSession)).resolves.toEqual(successResult);
     expect(resumeSession).toHaveBeenCalledTimes(1);
+  });
+
+  test('auto-resumes once when deferred tool enablement requires config reload', async () => {
+    const taskId = 'task-agentic-tool-config-reload';
+    await enableTaskScopedTools({
+      taskId,
+      agentId: 'agent-1',
+      deferredToolDiscoveryEnabled: true,
+      requestedToolsetIds: DEFAULT_AGENT_TOOLSET_IDS,
+      request: {
+        toolsetIds: ['coding'],
+        reason: 'Need to list files in the workspace.',
+      },
+    });
+
+    const resumeSession = vi.fn().mockResolvedValue({ completion: Promise.resolve(successResult) });
+    await expect(runAgenticLoop({
+      taskId,
+      agentId: 'agent-1',
+      sessionIdHint: 'session-1',
+      completion: Promise.resolve(successResult),
+      agent: {
+        deferredToolDiscoveryEnabled: true,
+        toolsetIds: DEFAULT_AGENT_TOOLSET_IDS,
+        agenticLoopEnabled: false,
+      },
+      resolveSessionId: () => 'session-1',
+      resumeSession,
+      isTaskActive: () => false,
+      interruptTask: () => Promise.resolve(),
+    })).resolves.toEqual(successResult);
+
+    expect(resumeSession).toHaveBeenCalledTimes(1);
+    expect(resumeSession.mock.calls[0]?.[0]).toMatchObject({
+      sessionId: 'session-1',
+      taskId,
+      agentId: 'agent-1',
+      options: {
+        internal: {
+          suppressAgenticLoop: true,
+          hiddenPrompt: true,
+        },
+      },
+    });
+    expect(resumeSession.mock.calls[0]?.[0]?.prompt).toContain('tool configuration has been reloaded');
   });
 });

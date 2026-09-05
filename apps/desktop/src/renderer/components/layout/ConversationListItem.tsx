@@ -17,10 +17,12 @@ import {
   FolderPlus,
   Folder,
   Pencil,
+  ExternalLink,
 } from 'lucide-react';
 import { getIconByName } from './ProjectIconPicker';
 import { useTaskStore } from '@/stores/taskStore';
 import { useFolderStore } from '@/stores/folderStore';
+import { getAccomplish } from '@/lib/accomplish';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -141,6 +143,17 @@ export default function ConversationListItem({ task, draggable = true }: Convers
     setShowRenameDialog(false);
   };
 
+  const handleOpenInWindow = () => {
+    void getAccomplish().openTaskWindow({
+      kind: 'chat-task',
+      taskId: task.id,
+      agentId: task.agentId,
+      title: getTaskDisplayTitle(task),
+    }).catch((err) => {
+      console.error('Failed to open task window:', err);
+    });
+  };
+
   const getStatusIcon = () => {
     switch (task.status) {
       case 'running':
@@ -220,6 +233,10 @@ export default function ConversationListItem({ task, draggable = true }: Convers
             <DropdownMenuItem onClick={() => setShowRenameDialog(true)}>
               <Pencil className="h-4 w-4 mr-2" />
               Rename
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={handleOpenInWindow}>
+              <ExternalLink className="h-4 w-4 mr-2" />
+              Open in window
             </DropdownMenuItem>
 
             <DropdownMenuSeparator />

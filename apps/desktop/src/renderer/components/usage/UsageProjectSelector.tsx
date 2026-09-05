@@ -52,6 +52,7 @@ export function UsageProjectSelector({
       <select
         value={selected || ''}
         disabled={disabled}
+        data-usage-project-selector={mode}
         onChange={(event) => {
           const next = event.target.value || null;
           if (persistSelection) {

@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useSavedPromptsStore, SavedPrompt } from '../../stores/savedPromptsStore';
-import { X, FileText, Search, Settings } from 'lucide-react';
+import { BookOpen, X, FileText, Search, Settings } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { springs } from '@/lib/animations';
 import { BUILD_RECIPES } from '@/lib/build-recipes';
@@ -36,7 +36,26 @@ type PromptSelectItem = {
   category: PromptCategory;
   source: 'recipe' | 'saved';
   description?: string;
+  icon?: string;
+  color?: string;
 };
+
+const CATEGORY_VISUALS: Record<string, { icon: string; color: string }> = {
+  Build: { icon: 'B', color: '#2563eb' },
+  Research: { icon: 'R', color: '#0891b2' },
+  Automation: { icon: 'A', color: '#7c3aed' },
+  Files: { icon: 'F', color: '#16a34a' },
+  Connectors: { icon: 'C', color: '#ea580c' },
+  Troubleshooting: { icon: 'T', color: '#dc2626' },
+};
+
+function getPromptVisual(prompt: PromptSelectItem | SavedPrompt): { icon: string; color: string } {
+  const fallback = CATEGORY_VISUALS[prompt.category] || { icon: 'P', color: '#64748b' };
+  return {
+    icon: prompt.icon?.trim() || fallback.icon,
+    color: prompt.color || fallback.color,
+  };
+}
 
 export default function SavedPromptsDialog({
   open,
@@ -51,6 +70,9 @@ export default function SavedPromptsDialog({
   const [manageTitle, setManageTitle] = useState('');
   const [manageContent, setManageContent] = useState('');
   const [manageCategory, setManageCategory] = useState<PromptCategory>(DEFAULT_PROMPT_CATEGORY);
+  const [manageDescription, setManageDescription] = useState('');
+  const [manageIcon, setManageIcon] = useState('');
+  const [manageColor, setManageColor] = useState('#2563eb');
 
   // Select mode state
   const [searchQuery, setSearchQuery] = useState('');
@@ -71,6 +93,9 @@ export default function SavedPromptsDialog({
         setManageTitle('');
         setManageContent('');
         setManageCategory(DEFAULT_PROMPT_CATEGORY);
+        setManageDescription('');
+        setManageIcon('');
+        setManageColor(CATEGORY_VISUALS[DEFAULT_PROMPT_CATEGORY]?.color || '#2563eb');
       }
     }
   }, [open, loadPrompts, mode]);
@@ -100,6 +125,9 @@ export default function SavedPromptsDialog({
       content: prompt.content,
       category: prompt.category,
       source: 'saved',
+      description: prompt.description,
+      icon: prompt.icon,
+      color: prompt.color,
     }));
     return [...recipeItems, ...savedItems];
   }, [prompts, shouldIncludeRecipes]);
@@ -180,6 +208,9 @@ export default function SavedPromptsDialog({
     setManageTitle(prompt.title);
     setManageContent(prompt.content);
     setManageCategory(prompt.category);
+    setManageDescription(prompt.description || '');
+    setManageIcon(prompt.icon || '');
+    setManageColor(prompt.color || CATEGORY_VISUALS[prompt.category]?.color || '#2563eb');
   };
 
   const handleManageNew = () => {
@@ -187,22 +218,33 @@ export default function SavedPromptsDialog({
     setManageTitle('');
     setManageContent('');
     setManageCategory(DEFAULT_PROMPT_CATEGORY);
+    setManageDescription('');
+    setManageIcon('');
+    setManageColor(CATEGORY_VISUALS[DEFAULT_PROMPT_CATEGORY]?.color || '#2563eb');
   };
 
   const handleManageSave = () => {
     const content = manageContent.trim();
     if (!content) return;
     const title = manageTitle.trim() || content.slice(0, 64);
+    const metadata = {
+      description: manageDescription,
+      icon: manageIcon,
+      color: manageColor,
+    };
     if (activePromptId) {
-      updatePrompt(activePromptId, title, content, manageCategory);
+      updatePrompt(activePromptId, title, content, manageCategory, metadata);
       return;
     }
-    const created = savePrompt(title, content, manageCategory);
+    const created = savePrompt(title, content, manageCategory, metadata);
     if (created && created.id) {
       setActivePromptId(created.id);
       setManageTitle(created.title);
       setManageContent(created.content);
       setManageCategory(created.category);
+      setManageDescription(created.description || '');
+      setManageIcon(created.icon || '');
+      setManageColor(created.color || CATEGORY_VISUALS[created.category]?.color || '#2563eb');
     }
   };
 
@@ -213,6 +255,9 @@ export default function SavedPromptsDialog({
     setManageTitle('');
     setManageContent('');
     setManageCategory(DEFAULT_PROMPT_CATEGORY);
+    setManageDescription('');
+    setManageIcon('');
+    setManageColor(CATEGORY_VISUALS[DEFAULT_PROMPT_CATEGORY]?.color || '#2563eb');
   };
 
   const openCategorySettings = () => {
@@ -310,55 +355,71 @@ export default function SavedPromptsDialog({
                           : shouldIncludeRecipes ? 'No prompts or recipes yet' : 'No saved prompts yet'}
                       </div>
                     ) : (
-                      filteredPrompts.map((prompt, index) => (
+                      filteredPrompts.map((prompt, index) => {
+                        const visual = getPromptVisual(prompt);
+                        return (
                         <button
                           key={prompt.id}
                           onClick={() => handleSelectByIndex(index)}
                           className={cn(
-                            'w-full text-left px-3 py-2 rounded-md text-sm transition-colors duration-100',
-                            'flex flex-col gap-1',
+                            'relative w-full overflow-hidden rounded-md border px-3 py-2 text-left text-sm transition-colors duration-100',
+                            'grid grid-cols-[2rem_minmax(0,1fr)] gap-2.5',
                             selectedIndex === index
-                              ? 'bg-primary text-primary-foreground'
-                              : 'text-foreground hover:bg-accent'
+                              ? 'border-primary/50 bg-primary text-primary-foreground'
+                              : 'border-border/60 bg-background/70 text-foreground hover:bg-accent'
                           )}
                         >
-                          <span className="flex min-w-0 items-center gap-2">
-                            <span className="truncate font-medium">{prompt.title}</span>
-                            <span
-                              className={cn(
-                                'shrink-0 rounded-full px-1.5 py-0.5 text-[10px]',
-                                selectedIndex === index
-                                  ? 'bg-primary-foreground/15 text-primary-foreground/80'
-                                  : 'bg-muted text-muted-foreground'
-                              )}
-                            >
-                              {prompt.category}
-                            </span>
-                            <span
-                              className={cn(
-                                'shrink-0 rounded-full px-1.5 py-0.5 text-[10px]',
-                                selectedIndex === index
-                                  ? 'bg-primary-foreground/15 text-primary-foreground/80'
-                                  : prompt.source === 'recipe'
-                                    ? 'bg-teal-500/10 text-teal-200'
-                                    : 'bg-muted text-muted-foreground'
-                              )}
-                            >
-                              {prompt.source === 'recipe' ? 'Recipe' : 'Saved'}
-                            </span>
-                          </span>
+                          <span className="absolute inset-y-0 left-0 w-1" style={{ backgroundColor: visual.color }} />
                           <span
                             className={cn(
-                              'text-xs line-clamp-2',
-                              selectedIndex === index
-                                ? 'text-primary-foreground/70'
-                                : 'text-muted-foreground'
+                              'flex h-8 w-8 items-center justify-center rounded-md text-xs font-semibold',
+                              selectedIndex === index ? 'bg-primary-foreground/15 text-primary-foreground' : 'text-white'
                             )}
+                            style={selectedIndex === index ? undefined : { backgroundColor: visual.color }}
                           >
-                            {prompt.description || prompt.content}
+                            {visual.icon}
+                          </span>
+                          <span className="min-w-0">
+                            <span className="flex min-w-0 items-center gap-2">
+                              <span className="truncate font-medium">{prompt.title}</span>
+                              <span
+                                className={cn(
+                                  'shrink-0 rounded-full px-1.5 py-0.5 text-[10px]',
+                                  selectedIndex === index
+                                    ? 'bg-primary-foreground/15 text-primary-foreground/80'
+                                    : 'bg-muted text-muted-foreground'
+                                )}
+                              >
+                                {prompt.category}
+                              </span>
+                              <span
+                                className={cn(
+                                  'inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px]',
+                                  selectedIndex === index
+                                    ? 'bg-primary-foreground/15 text-primary-foreground/80'
+                                    : prompt.source === 'recipe'
+                                      ? 'bg-teal-500/10 text-teal-700 dark:text-teal-200'
+                                      : 'bg-muted text-muted-foreground'
+                                )}
+                              >
+                                {prompt.source === 'recipe' ? <BookOpen className="h-3 w-3" /> : <FileText className="h-3 w-3" />}
+                                {prompt.source === 'recipe' ? 'Recipe' : 'Saved'}
+                              </span>
+                            </span>
+                            <span
+                              className={cn(
+                                'mt-1 block text-xs line-clamp-2',
+                                selectedIndex === index
+                                  ? 'text-primary-foreground/70'
+                                  : 'text-muted-foreground'
+                              )}
+                            >
+                              {prompt.description || prompt.content}
+                            </span>
                           </span>
                         </button>
-                      ))
+                        );
+                      })
                     )}
                   </div>
 
@@ -408,23 +469,31 @@ export default function SavedPromptsDialog({
                   No saved prompts yet.
                 </div>
               ) : (
-                prompts.map((prompt) => (
-                  <button
-                    key={prompt.id}
-                    type="button"
-                    onClick={() => handleManageSelectPrompt(prompt)}
-                    className={cn(
-                      'w-full rounded-md px-3 py-2 text-left transition-colors',
-                      activePromptId === prompt.id ? 'bg-primary/10' : 'hover:bg-accent'
-                    )}
-                  >
-                    <div className="truncate text-sm font-semibold text-foreground">{prompt.title}</div>
-                    <div className="mt-1 inline-flex rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                      {prompt.category}
-                    </div>
-                    <div className="line-clamp-2 text-xs text-muted-foreground">{prompt.content}</div>
-                  </button>
-                ))
+                prompts.map((prompt) => {
+                  const visual = getPromptVisual(prompt);
+                  return (
+                    <button
+                      key={prompt.id}
+                      type="button"
+                      onClick={() => handleManageSelectPrompt(prompt)}
+                      className={cn(
+                        'grid w-full grid-cols-[2rem_minmax(0,1fr)] gap-2 rounded-md px-3 py-2 text-left transition-colors',
+                        activePromptId === prompt.id ? 'bg-primary/10' : 'hover:bg-accent'
+                      )}
+                    >
+                      <span className="flex h-8 w-8 items-center justify-center rounded-md text-xs font-semibold text-white" style={{ backgroundColor: visual.color }}>
+                        {visual.icon}
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-semibold text-foreground">{prompt.title}</span>
+                        <span className="mt-1 inline-flex rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                          {prompt.category}
+                        </span>
+                        <span className="block line-clamp-2 text-xs text-muted-foreground">{prompt.description || prompt.content}</span>
+                      </span>
+                    </button>
+                  );
+                })
               )}
             </div>
           </ScrollArea>
@@ -447,6 +516,31 @@ export default function SavedPromptsDialog({
                 </option>
               ))}
             </select>
+            <Input
+              value={manageDescription}
+              onChange={(e) => setManageDescription(e.target.value)}
+              placeholder="Short description"
+              maxLength={240}
+              className="mt-2"
+            />
+            <div className="mt-2 grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+              <Input
+                value={manageIcon}
+                onChange={(e) => setManageIcon(e.target.value)}
+                placeholder="Icon text"
+                maxLength={12}
+              />
+              <label className="flex h-9 items-center gap-2 rounded-md border border-input bg-background px-2 text-xs text-muted-foreground">
+                <span>Color</span>
+                <input
+                  type="color"
+                  value={manageColor}
+                  onChange={(e) => setManageColor(e.target.value)}
+                  className="h-5 w-7 cursor-pointer border-0 bg-transparent p-0"
+                  aria-label="Prompt card color"
+                />
+              </label>
+            </div>
             <textarea
               value={manageContent}
               onChange={(e) => setManageContent(e.target.value)}

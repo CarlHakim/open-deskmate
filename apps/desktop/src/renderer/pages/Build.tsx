@@ -85,6 +85,7 @@ import {
   FolderOpen,
   GitBranch,
   Github,
+  Eye,
   Info,
   Loader2,
   Maximize2,
@@ -133,6 +134,11 @@ import ModeSwitch from '@/components/layout/ModeSwitch';
 import SavedPromptsDialog from '@/components/layout/SavedPromptsDialog';
 import ContextWindowIndicator from '@/components/chat/ContextWindowIndicator';
 import ContextInspector from '@/components/chat/ContextInspector';
+import AgentToolStateIndicator, {
+  getLatestToolPresenceFromMessages,
+  getToolActivityStepsFromMessages,
+} from '@/components/chat/AgentToolStateIndicator';
+import { AgentAvatarIcon } from '@/components/layout/AgentAvatarPicker';
 import PromptNavigator, { createPromptPreview, type PromptNavigatorEntry } from '@/components/chat/PromptNavigator';
 import { UsageProjectSelector } from '@/components/usage/UsageProjectSelector';
 import BuildProjectWorkPopup from '@/components/build/BuildProjectWorkPopup';
@@ -150,6 +156,7 @@ import {
   shouldHandlePromptHistoryRecall,
 } from '@/lib/prompt-history';
 import { normalizeMarkdownTables } from '@/lib/markdown-tables';
+import { isAgentCharacterAvatar } from '@/lib/agent-character-gallery';
 import {
   BUILD_RECIPE_CATEGORIES,
   BUILD_RECIPES,
@@ -161,6 +168,7 @@ import {
   SELECTED_MODEL_CHANGED_EVENT,
 } from '@/lib/selected-model-events';
 import { buildAiTestsInstruction } from '@/lib/build-ai-tests-instruction';
+import { buildWordFriendlyRtfWithRenderedIcons } from '@/lib/rich-text-export';
 import { useTopBarControls } from '@/stores/topBarControlsStore';
 
 const TERMINAL_TASK_STATES = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
@@ -194,8 +202,9 @@ const BUILD_TERMINAL_PANEL_MIN_WIDTH = 280;
 const BUILD_RUNTIME_LOGS_PANEL_DEFAULT_WIDTH = 340;
 const BUILD_RUNTIME_LOGS_PANEL_MIN_WIDTH = 260;
 const BUILD_DIFF_PANEL_MIN_WIDTH = 320;
-const BUILD_RUNNING_GIT_SUMMARY_REFRESH_INTERVAL_MS = 3000;
+const BUILD_RUNNING_GIT_SUMMARY_REFRESH_INTERVAL_MS = 6000;
 const BUILD_RUNNING_GIT_DIFF_MAX_CHARS = 80_000;
+const BUILD_TOOL_STATE_MESSAGE_SCAN_LIMIT = 80;
 const BUILD_LOWER_PANEL_GRID_GAP = 12;
 const BUILD_RUNTIME_GET_WORKSPACE_SWITCH_ERROR = "Error invoking remote method 'build-mode:runtime:get': Error: Cannot switch workspace path while process is running. Stop runtime first.";
 const BUILD_HOVER_TOOLTIP_ATTR = 'data-build-hover-tooltip';
@@ -1279,26 +1288,8 @@ function getClipboardRtfBlocksFromNodes(nodes: Node[]): string {
   }).join('');
 }
 
-function buildWordFriendlyClipboardRtf(source: HTMLElement | null, fallbackText: string): string {
-  const sourceContent = source
-    ? getClipboardRtfBlocksFromNodes(Array.from(source.childNodes))
-    : '';
-  const content = sourceContent.trim()
-    ? sourceContent
-    : getClipboardRtfBlocksFromMarkdown(fallbackText);
-
-  return `{\\rtf1\\ansi\\deff0
-{\\fonttbl{\\f0 Arial;}{\\f1 Consolas;}}
-{\\stylesheet
-{\\s0 Normal;}
-{\\s1\\b\\fs40\\outlinelevel0 Heading 1;}
-{\\s2\\b\\fs32\\outlinelevel1 Heading 2;}
-{\\s3\\b\\fs28\\outlinelevel2 Heading 3;}
-{\\s4\\b\\fs24\\outlinelevel3 Heading 4;}
-{\\s5\\b\\fs22\\outlinelevel4 Heading 5;}
-{\\s6\\b\\fs20\\outlinelevel5 Heading 6;}
-}
-${content}}`;
+function buildWordFriendlyClipboardRtf(source: HTMLElement | null, fallbackText: string): Promise<string> {
+  return buildWordFriendlyRtfWithRenderedIcons(source, fallbackText);
 }
 
 function buildWordFriendlyClipboardHtml(source: HTMLElement | null, fallbackText: string): string {
@@ -2744,121 +2735,635 @@ function formatSubagentModeLabel(run: Pick<SubagentRunRecord, 'mode' | 'sessionS
   return parts.join(' · ');
 }
 
-function areSubagentRunListsEquivalent(a: SubagentRunRecord[], b: SubagentRunRecord[]): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i += 1) {
-    const left = a[i];
-    const right = b[i];
-    if (
-      left.runId !== right.runId
-      || left.status !== right.status
-      || left.resultStatus !== right.resultStatus
-      || left.updatedAt !== right.updatedAt
-      || left.archivedAt !== right.archivedAt
-      || left.closedAt !== right.closedAt
-      || left.sessionState !== right.sessionState
-      || left.reuseCount !== right.reuseCount
-    ) {
-      return false;
-    }
-  }
-  return true;
+function isActiveSubagentRun(run: Pick<SubagentRunRecord, 'status'>): boolean {
+  return run.status === 'running' || run.status === 'accepted';
 }
 
-function areSubagentRunTreesEquivalent(a: SubagentRunTreeNode[], b: SubagentRunTreeNode[]): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i += 1) {
-    const left = a[i];
-    const right = b[i];
-    if (
-      left.runId !== right.runId
-      || left.status !== right.status
-      || left.resultStatus !== right.resultStatus
-      || left.updatedAt !== right.updatedAt
-      || left.archivedAt !== right.archivedAt
-      || left.closedAt !== right.closedAt
-      || left.sessionState !== right.sessionState
-      || left.reuseCount !== right.reuseCount
-    ) {
-      return false;
-    }
-    if (!areSubagentRunTreesEquivalent(left.children, right.children)) {
-      return false;
-    }
+function formatSubagentShortDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return 'n/a';
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return '<1m';
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ${minutes % 60}m`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ${hours % 24}h`;
+}
+
+function formatSubagentElapsed(run: Pick<SubagentRunRecord, 'createdAt' | 'updatedAt' | 'completedAt' | 'status'>): string {
+  const started = Date.parse(run.createdAt);
+  if (!Number.isFinite(started)) return 'n/a';
+  const updated = Date.parse(run.updatedAt);
+  const completed = run.completedAt ? Date.parse(run.completedAt) : Number.NaN;
+  const ended = Number.isFinite(completed)
+    ? completed
+    : isActiveSubagentRun(run)
+      ? Date.now()
+      : Number.isFinite(updated)
+        ? updated
+        : Date.now();
+  return formatSubagentShortDuration(ended - started);
+}
+
+function formatSubagentUpdatedAge(value?: string): string {
+  if (!value) return 'n/a';
+  const updated = Date.parse(value);
+  if (!Number.isFinite(updated)) return 'n/a';
+  return `${formatSubagentShortDuration(Date.now() - updated)} ago`;
+}
+
+function compactSubagentActivitySummary(value: string): string {
+  const normalized = String(value || '').replace(/\s+/g, ' ').trim();
+  if (normalized.length <= 420) return normalized;
+  return `${normalized.slice(0, 420).trimEnd()}...`;
+}
+
+function getSubagentLatestProgressEvent(run: Pick<SubagentRunRecord, 'progressEvents'>): NonNullable<SubagentRunRecord['progressEvents']>[number] | null {
+  const events = run.progressEvents || [];
+  if (events.length === 0) return null;
+  return events.reduce((latest, event) => {
+    const latestTime = Date.parse(latest.timestamp);
+    const eventTime = Date.parse(event.timestamp);
+    if (!Number.isFinite(eventTime)) return latest;
+    if (!Number.isFinite(latestTime) || eventTime >= latestTime) return event;
+    return latest;
+  }, events[0]);
+}
+
+function formatSubagentProgressEvent(run: Pick<SubagentRunRecord, 'progressEvents'>): string | null {
+  const event = getSubagentLatestProgressEvent(run);
+  if (!event) return null;
+  const parts = [
+    event.title || event.currentStep || event.type,
+    typeof event.percentage === 'number' ? `${Math.round(event.percentage)}%` : null,
+    typeof event.completedSteps === 'number' && typeof event.totalSteps === 'number'
+      ? `${event.completedSteps}/${event.totalSteps}`
+      : null,
+    event.detail,
+  ].filter(Boolean);
+  return compactSubagentActivitySummary(parts.join(' · '));
+}
+
+function getSubagentRecoverySummary(run: Pick<SubagentRunRecord, 'recoveryHistory'>): string | null {
+  const history = run.recoveryHistory || [];
+  if (history.length === 0) return null;
+  const latest = history[history.length - 1];
+  return `${history.length} recovery ${history.length === 1 ? 'attempt' : 'attempts'} · ${latest.action} ${latest.status}`;
+}
+
+function getSubagentResultBundleSummary(run: Pick<SubagentRunRecord, 'resultBundle'>): string | null {
+  const bundle = run.resultBundle;
+  if (!bundle) return null;
+  const itemCount = bundle.items?.length || 0;
+  const missingCount = bundle.missingExpectedOutputIds?.length || 0;
+  if (missingCount > 0) return `${itemCount} outputs · ${missingCount} missing`;
+  return `${itemCount} outputs`;
+}
+
+function getSubagentBuildHandoffSummary(run: Pick<SubagentRunRecord, 'buildHandoff'>): string | null {
+  const handoff = run.buildHandoff;
+  if (!handoff) return null;
+  const changedCount = handoff.changedFiles?.length ?? handoff.gitSummary?.changedFileCount ?? 0;
+  const stats = handoff.gitSummary
+    ? `+${handoff.gitSummary.totalAddedLines} -${handoff.gitSummary.totalDeletedLines}`
+    : null;
+  const mode = handoff.diffMode || (handoff.baselineId ? 'synthetic' : 'workspace');
+  const generated = handoff.generatedAt ? ` · refreshed ${new Date(handoff.generatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : '';
+  return `Build handoff: ${changedCount} file${changedCount === 1 ? '' : 's'}${stats ? ` · ${stats}` : ''} · ${mode}${generated}`;
+}
+
+function getSubagentRunIndicators(run: SubagentRunRecord): Array<{ label: string; title: string; className: string }> {
+  const latestProgress = getSubagentLatestProgressEvent(run);
+  const heartbeatAt = Date.parse(run.supervisor?.heartbeatAt || run.supervisor?.lastCheckedAt || run.updatedAt);
+  const latestProgressAt = latestProgress ? Date.parse(latestProgress.timestamp) : Number.NaN;
+  const latestActivityAt = Math.max(
+    Number.isFinite(heartbeatAt) ? heartbeatAt : 0,
+    Number.isFinite(latestProgressAt) ? latestProgressAt : 0
+  );
+  const stale = isActiveSubagentRun(run) && latestActivityAt > 0 && Date.now() - latestActivityAt > 10 * 60_000;
+  const stuck = Boolean(run.supervisor?.stallDetectedAt || run.supervisor?.stalledReason || latestProgress?.type === 'blocked');
+  const recovering = Boolean((run.recoveryHistory || []).some((entry) => entry.status === 'planned' || entry.status === 'running'));
+  const indicators: Array<{ label: string; title: string; className: string }> = [];
+  if (stale) {
+    indicators.push({
+      label: 'Stale',
+      title: `No heartbeat or progress for ${formatSubagentShortDuration(Date.now() - latestActivityAt)}`,
+      className: 'bg-amber-500/10 text-amber-700 dark:text-amber-300',
+    });
   }
-  return true;
+  if (stuck) {
+    indicators.push({
+      label: 'Stuck',
+      title: run.supervisor?.stalledReason || latestProgress?.detail || 'Supervisor marked this run as blocked',
+      className: 'bg-destructive/10 text-destructive',
+    });
+  }
+  if (recovering) {
+    indicators.push({
+      label: 'Recovering',
+      title: getSubagentRecoverySummary(run) || 'Recovery is in progress',
+      className: 'bg-sky-500/10 text-sky-700 dark:text-sky-300',
+    });
+  }
+  if (run.replacesRunId) {
+    indicators.push({
+      label: `Replaces ${run.replacesRunId.slice(0, 8)}`,
+      title: `Replacement for run ${run.replacesRunId}`,
+      className: 'bg-violet-500/10 text-violet-700 dark:text-violet-300',
+    });
+  }
+  if (run.replacedByRunId) {
+    indicators.push({
+      label: `Replaced by ${run.replacedByRunId.slice(0, 8)}`,
+      title: `Superseded by run ${run.replacedByRunId}`,
+      className: 'bg-muted text-muted-foreground',
+    });
+  }
+  return indicators;
+}
+
+function canRequestSubagentRecovery(run: SubagentRunRecord): boolean {
+  const latestProgress = getSubagentLatestProgressEvent(run);
+  return isActiveSubagentRun(run) && Boolean(run.supervisor?.recoveryEligible || latestProgress?.recoverable || run.supervisor?.stallDetectedAt);
+}
+
+function getSubagentLatestActivitySummary(run: SubagentRunRecord & { childTaskSummary?: string; childTaskStatus?: string }): string | null {
+  const finalReport = run.finalReport?.trim();
+  if (finalReport) return compactSubagentActivitySummary(finalReport);
+  const progressSummary = formatSubagentProgressEvent(run);
+  if (progressSummary) return progressSummary;
+  const childSummary = run.childTaskSummary?.trim();
+  if (childSummary) return compactSubagentActivitySummary(childSummary);
+  const lastPrompt = run.lastPrompt?.trim();
+  if (lastPrompt && lastPrompt !== run.task.trim()) return `Latest prompt: ${lastPrompt}`;
+  if (run.childTaskStatus) return `Child task ${run.childTaskStatus}`;
+  return null;
+}
+
+type RelayedSubagentCompletionMeta = {
+  childAgentId: string;
+  label?: string;
+};
+
+function getRelayedSubagentCompletionMeta(message: Pick<TaskMessage, 'type' | 'content'>): RelayedSubagentCompletionMeta | null {
+  const content = String(message.content || '').trim();
+  if (
+    message.type !== 'assistant'
+    || !/\nStatus:\s*\S+/i.test(content)
+    || !/\nSession:\s*\S+/i.test(content)
+  ) {
+    return null;
+  }
+  const firstLine = content.split(/\r?\n/, 1)[0] || '';
+  const match = firstLine.match(/^Subagent\s+(.+?)\s+completed\./i);
+  if (!match) return null;
+  const rawChildLabel = match[1].trim();
+  const labelledChild = rawChildLabel.match(/^(.*?)\s+\((.*?)\)$/);
+  const childAgentId = (labelledChild?.[1] || rawChildLabel).trim();
+  if (!childAgentId) return null;
+  return {
+    childAgentId,
+    label: labelledChild?.[2]?.trim() || undefined,
+  };
+}
+
+function isRelayedSubagentCompletionMessage(message: Pick<TaskMessage, 'type' | 'content'>): boolean {
+  return Boolean(getRelayedSubagentCompletionMeta(message));
+}
+
+function isPictureAvatar(avatar: string | undefined, imageDataUrl: string | undefined): boolean {
+  return Boolean(imageDataUrl || isAgentCharacterAvatar(avatar));
+}
+
+function compactSubagentTextSignature(value: string | undefined | null, maxInlineChars = 160): string {
+  if (!value) return '';
+  return value.length <= maxInlineChars ? value : hashForRenderVersion(value);
+}
+
+function buildSubagentPartSignature(parts: Array<string | number | boolean | null | undefined>): string {
+  return parts.map((part) => part ?? '').join('\u001f');
+}
+
+function getSubagentProgressEventsSignature(events: SubagentRunRecord['progressEvents']): string {
+  if (!events?.length) return '0';
+  const recentEvents = events.slice(-8).map((event) => buildSubagentPartSignature([
+    event.id,
+    event.type,
+    event.timestamp,
+    event.status,
+    event.toolName,
+    event.messageId,
+    event.percentage,
+    event.currentStep,
+    event.totalSteps,
+    event.completedSteps,
+    event.recoverable,
+    event.domain,
+    event.httpStatus,
+    event.failureKind,
+    compactSubagentTextSignature(event.title, 80),
+    compactSubagentTextSignature(event.detail, 80),
+    compactSubagentTextSignature(event.fallbackSuggested, 80),
+  ]));
+  return `${events.length}\u001e${recentEvents.join('\u001e')}`;
+}
+
+function getSubagentSupervisorSignature(supervisor: SubagentRunRecord['supervisor']): string {
+  if (!supervisor) return '';
+  return buildSubagentPartSignature([
+    supervisor.state,
+    supervisor.lastCheckedAt,
+    supervisor.nextCheckAt,
+    supervisor.heartbeatAt,
+    supervisor.lastProgressAt,
+    supervisor.lastMeaningfulProgressAt,
+    supervisor.stallDetectedAt,
+    supervisor.stalledReason,
+    supervisor.staleReason,
+    supervisor.stuckReason,
+    supervisor.blockedReason,
+    supervisor.repeatedToolName,
+    supervisor.repeatedToolCount,
+    supervisor.blockedSourceDomain,
+    supervisor.blockedSourceUrl,
+    supervisor.blockedHttpStatus,
+    supervisor.blockedFailureKind,
+    supervisor.blockedSourceCount,
+    supervisor.recommendedAction,
+    supervisor.recoveryEligible,
+    supervisor.recoveryAttempts,
+    compactSubagentTextSignature(supervisor.notes, 120),
+  ]);
+}
+
+function getSubagentResultBundleSignature(bundle: SubagentRunRecord['resultBundle']): string {
+  if (!bundle) return '';
+  const itemSignature = (bundle.items || []).map((item) => buildSubagentPartSignature([
+    item.id,
+    item.kind,
+    item.label,
+    item.path,
+    compactSubagentTextSignature(item.content, 120),
+  ])).join('\u001e');
+  return buildSubagentPartSignature([
+    bundle.generatedAt,
+    bundle.finalReportTruncated,
+    compactSubagentTextSignature(bundle.summary, 160),
+    compactSubagentTextSignature(bundle.partialReport, 160),
+    compactSubagentTextSignature(bundle.finalReport, 160),
+    bundle.missingExpectedOutputIds?.join(',') || '',
+    bundle.items?.length || 0,
+    itemSignature,
+  ]);
+}
+
+function getSubagentRecoveryHistorySignature(history: SubagentRunRecord['recoveryHistory']): string {
+  if (!history?.length) return '0';
+  return history.map((entry) => buildSubagentPartSignature([
+    entry.id,
+    entry.action,
+    entry.status,
+    entry.startedAt,
+    entry.completedAt,
+    entry.replacementRunId,
+    compactSubagentTextSignature(entry.reason, 100),
+    compactSubagentTextSignature(entry.error, 100),
+    compactSubagentTextSignature(entry.notes, 100),
+  ])).join('\u001e');
+}
+
+function getSubagentInheritedContextSignature(context: SubagentRunRecord['inheritedContext']): string {
+  if (!context) return '';
+  return buildSubagentPartSignature([
+    context.workingDirectory,
+    context.privacyMode,
+    context.buildMode,
+    context.buildWorkspaceRelativePath,
+    context.attachedFiles?.join(',') || '',
+    context.toolsetIds?.join(',') || '',
+    context.deferredToolDiscoveryEnabled,
+    context.enabledToolsetIds?.join(',') || '',
+    context.availableToolsetIds?.join(',') || '',
+    context.inheritedToolsetIds?.join(',') || '',
+  ]);
+}
+
+function getSubagentSharedContextSignature(context: SubagentRunRecord['sharedContext']): string {
+  if (!context) return '';
+  const blockedSources = (context.blockedSources || []).map((source) => buildSubagentPartSignature([
+    source.domain,
+    source.sourceUrl,
+    source.httpStatus,
+    source.failureKind,
+    source.count,
+    source.lastSeenAt,
+    compactSubagentTextSignature(source.example, 80),
+  ])).join('\u001e');
+  return buildSubagentPartSignature([
+    context.generatedAt,
+    blockedSources,
+    context.blockedTools?.join(',') || '',
+    context.successfulFallbacks?.join(',') || '',
+    context.confirmedFindings?.length || 0,
+    context.openGaps?.length || 0,
+  ]);
+}
+
+function getSubagentBuildHandoffSignature(handoff: SubagentRunRecord['buildHandoff']): string {
+  if (!handoff) return '';
+  const changedFiles = (handoff.changedFiles || []).slice(0, 80).map((file) => buildSubagentPartSignature([
+    file.relativePath,
+    file.changeType,
+    file.addedLines,
+    file.deletedLines,
+    file.beforeTruncated,
+    file.afterTruncated,
+  ])).join('\u001e');
+  return buildSubagentPartSignature([
+    handoff.workspaceAgentId,
+    handoff.workspaceRelativePath,
+    handoff.baselineId,
+    handoff.diffMode,
+    handoff.diffAvailable,
+    handoff.diffSummary,
+    handoff.changedFiles?.length || 0,
+    changedFiles,
+    handoff.patchTruncated,
+    compactSubagentTextSignature(handoff.patchExcerpt, 120),
+    handoff.gitSummary?.branch,
+    handoff.gitSummary?.dirty,
+    handoff.gitSummary?.changedFileCount,
+    handoff.gitSummary?.totalAddedLines,
+    handoff.gitSummary?.totalDeletedLines,
+    handoff.generatedAt,
+  ]);
+}
+
+function getSubagentRunSignature(run: SubagentRunRecord): string {
+  return buildSubagentPartSignature([
+    run.runId,
+    run.childTaskId,
+    run.childSessionKey,
+    run.sessionId,
+    run.sessionState,
+    run.parentTaskId,
+    run.parentRunId,
+    run.parentSessionKey,
+    run.parentAgentId,
+    run.childAgentId,
+    run.persistentKey,
+    run.label,
+    compactSubagentTextSignature(run.task, 160),
+    compactSubagentTextSignature(run.lastPrompt, 160),
+    run.depth,
+    run.mode,
+    run.reuseCount,
+    run.status,
+    run.resultStatus,
+    compactSubagentTextSignature(run.error, 160),
+    compactSubagentTextSignature(run.finalReport, 160),
+    run.finalReportTruncated,
+    getSubagentProgressEventsSignature(run.progressEvents),
+    getSubagentSupervisorSignature(run.supervisor),
+    run.expectedOutputs?.length || 0,
+    getSubagentResultBundleSignature(run.resultBundle),
+    getSubagentRecoveryHistorySignature(run.recoveryHistory),
+    run.replacesRunId,
+    run.replacedByRunId,
+    run.replacementReason,
+    run.model?.provider,
+    run.model?.model,
+    run.executionPolicy?.mode,
+    run.executionPolicy?.maxChildren,
+    run.executionPolicy?.maxDepth,
+    run.executionPolicy?.runTimeoutMs,
+    run.executionPolicy?.autoRelayCompletions,
+    getSubagentInheritedContextSignature(run.inheritedContext),
+    getSubagentSharedContextSignature(run.sharedContext),
+    getSubagentBuildHandoffSignature(run.buildHandoff),
+    run.createdAt,
+    run.updatedAt,
+    run.completedAt,
+    run.lastResumedAt,
+    run.archivedAt,
+    run.closedAt,
+  ]);
+}
+
+function preserveEquivalentSubagentRunReferences<T extends SubagentRunRecord>(current: T[], incoming: T[]): T[] {
+  if (incoming.length === 0) return current.length === 0 ? current : incoming;
+  const currentById = new Map(current.map((run) => [run.runId, run]));
+  let changed = incoming.length !== current.length;
+  const next = incoming.map((run, index) => {
+    const existing = currentById.get(run.runId);
+    if (existing && getSubagentRunSignature(existing) === getSubagentRunSignature(run)) {
+      if (current[index] !== existing) changed = true;
+      return existing as T;
+    }
+    changed = true;
+    return run;
+  });
+  return changed ? next : current;
+}
+
+function preserveEquivalentSubagentTreeReferences(current: SubagentRunTreeNode[], incoming: SubagentRunTreeNode[]): SubagentRunTreeNode[] {
+  if (incoming.length === 0) return current.length === 0 ? current : incoming;
+  const currentById = new Map(current.map((run) => [run.runId, run]));
+  let changed = incoming.length !== current.length;
+  const next = incoming.map((run, index) => {
+    const existing = currentById.get(run.runId);
+    const children = preserveEquivalentSubagentTreeReferences(existing?.children || [], run.children || []);
+    const sameRun = existing && getSubagentRunSignature(existing) === getSubagentRunSignature(run);
+    if (sameRun && children === existing.children) {
+      if (current[index] !== existing) changed = true;
+      return existing;
+    }
+    changed = true;
+    return children === run.children ? run : { ...run, children };
+  });
+  return changed ? next : current;
 }
 
 function BuildSubagentTreeList({
   nodes,
   level = 0,
   stoppingSubagentRunId,
+  agentNames,
   onOpen,
+  onInspect,
   onStop,
   onCloseSession,
+  onArchive,
+  onRecover,
+  onReplace,
 }: {
   nodes: SubagentRunTreeNode[];
   level?: number;
   stoppingSubagentRunId: string | null;
+  agentNames: Map<string, string>;
   onOpen: (run: SubagentRunRecord) => void;
+  onInspect: (run: SubagentRunRecord) => void;
   onStop: (runId: string) => void;
   onCloseSession: (runId: string) => void;
+  onArchive: (runId: string) => void;
+  onRecover: (run: SubagentRunRecord) => void;
+  onReplace: (run: SubagentRunRecord) => void;
 }): ReactElement | null {
   if (nodes.length === 0) return null;
   return (
-    <div className={cn('space-y-1.5', level > 0 ? 'ml-4 border-l border-border/50 pl-3' : '')}>
+    <div className={cn('space-y-1.5', level > 0 ? 'ml-3 border-l border-border/50 pl-3 sm:ml-4' : '')}>
       {nodes.map((run) => {
-        const stoppable = run.status === 'running' || run.status === 'accepted';
+        const stoppable = isActiveSubagentRun(run);
+        const childAgentName = agentNames.get(run.childAgentId) || run.childAgentId;
+        const activitySummary = getSubagentLatestActivitySummary(run);
+        const progressSummary = formatSubagentProgressEvent(run);
+        const recoverySummary = getSubagentRecoverySummary(run);
+        const resultBundleSummary = getSubagentResultBundleSummary(run);
+        const buildHandoffSummary = getSubagentBuildHandoffSummary(run);
+        const indicators = getSubagentRunIndicators(run);
+        const canRecover = canRequestSubagentRecovery(run);
+        const canReplace = canRecover && !run.replacedByRunId;
+        const relayEnabled = run.status === 'done' && run.executionPolicy?.autoRelayCompletions === true;
         return (
-          <div key={run.runId} className="rounded-md border border-border/50 bg-background/70 px-2 py-1.5">
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                <div className="truncate text-xs font-medium text-foreground">
-                  {run.label || run.childAgentId}
+          <div key={run.runId} className="rounded-md border border-border/50 bg-card/70 px-2 py-1.5 shadow-sm backdrop-blur-sm">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+              <div className="min-w-0 flex-1">
+                <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                  <div className="truncate text-xs font-semibold text-foreground" title={run.label || run.task}>
+                    {run.label || run.childAgentId}
+                  </div>
+                  <span className={cn('rounded-full px-1.5 py-0.5 text-[10px] font-medium', getSubagentRunStatusClasses(run.status, run.resultStatus))}>
+                    {formatSubagentRunStatus(run.status, run.resultStatus)}
+                  </span>
+                  {relayEnabled ? (
+                    <span className="rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
+                      Relay enabled
+                    </span>
+                  ) : null}
+                  {indicators.map((indicator) => (
+                    <span
+                      key={`${run.runId}-${indicator.label}`}
+                      className={cn('rounded-full px-1.5 py-0.5 text-[10px] font-medium', indicator.className)}
+                      title={indicator.title}
+                    >
+                      {indicator.label}
+                    </span>
+                  ))}
                 </div>
-                <div className="truncate text-[10px] text-muted-foreground">
-                  Agent: {run.childAgentId}
-                  {run.model ? ` · ${run.model.provider}:${run.model.model}` : ''}
+                <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
+                  <span className="truncate">Child: {childAgentName}</span>
+                  {run.model ? <span className="truncate">{run.model.provider}:{run.model.model}</span> : null}
+                  <span>{formatSubagentModeLabel(run)}</span>
+                  <span>Elapsed {formatSubagentElapsed(run)}</span>
+                  <span>Updated {formatSubagentUpdatedAge(run.updatedAt)}</span>
                 </div>
-                <div className="truncate text-[10px] text-muted-foreground">
-                  {formatSubagentModeLabel(run)}
+                <div className="mt-1 truncate text-[10px] text-muted-foreground" title={run.task}>
+                  Goal: {run.task}
                 </div>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-medium', getSubagentRunStatusClasses(run.status, run.resultStatus))}>
-                  {formatSubagentRunStatus(run.status, run.resultStatus)}
-                </span>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-6 px-2 text-[10px]"
-                  onClick={() => onOpen(run)}
-                >
-                  Open
-                </Button>
-                {stoppable ? (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-6 px-2 text-[10px]"
-                    onClick={() => onStop(run.runId)}
-                    disabled={stoppingSubagentRunId === run.runId}
+                {activitySummary ? (
+                  <div className="mt-0.5 truncate text-[10px] text-muted-foreground" title={activitySummary}>
+                    Latest: {activitySummary}
+                  </div>
+                ) : null}
+                {progressSummary && progressSummary !== activitySummary ? (
+                  <div className="mt-0.5 truncate text-[10px] text-muted-foreground" title={progressSummary}>
+                    Progress: {progressSummary}
+                  </div>
+                ) : null}
+                {recoverySummary || resultBundleSummary ? (
+                  <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
+                    {recoverySummary ? <span className="truncate" title={recoverySummary}>{recoverySummary}</span> : null}
+                    {resultBundleSummary ? <span className="truncate" title={resultBundleSummary}>Results: {resultBundleSummary}</span> : null}
+                  </div>
+                ) : null}
+                {buildHandoffSummary ? (
+                  <div
+                    className="mt-1 rounded-md border border-amber-500/20 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-800 dark:text-amber-200"
+                    title={run.buildHandoff?.diffSummary || buildHandoffSummary}
                   >
-                    {stoppingSubagentRunId === run.runId ? 'Stopping' : 'Stop'}
+                    {buildHandoffSummary}
+                  </div>
+                ) : null}
+              </div>
+              <div className="flex shrink-0 flex-wrap items-center gap-1 sm:justify-end">
+                {canRecover ? (
+                  <Button
+                    size="icon"
+                    variant="outline"
+                    className="h-6 w-6"
+                    onClick={() => onRecover(run)}
+                    title="Ask subagent to recover"
+                    aria-label="Ask subagent to recover"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" />
+                  </Button>
+                ) : null}
+                {canReplace ? (
+                  <Button
+                    size="icon"
+                    variant="outline"
+                    className="h-6 w-6"
+                    onClick={() => onReplace(run)}
+                    title="Ask subagent to prepare replacement handoff"
+                    aria-label="Ask subagent to prepare replacement handoff"
+                  >
+                    <Play className="h-3.5 w-3.5" />
                   </Button>
                 ) : null}
                 <Button
-                  size="sm"
+                  size="icon"
                   variant="outline"
-                  className="h-6 px-2 text-[10px]"
-                  onClick={() => onCloseSession(run.runId)}
+                  className="h-6 w-6"
+                  onClick={() => onOpen(run)}
+                  title="Open subagent transcript"
+                  aria-label="Open subagent transcript"
                 >
-                  Close session
+                  <Eye className="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                  size="icon"
+                  variant="outline"
+                  className="h-6 w-6"
+                  onClick={() => onInspect(run)}
+                  title="Inspect in Subagents"
+                  aria-label="Inspect in Subagents"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </Button>
+                {stoppable ? (
+                  <Button
+                    size="icon"
+                    variant="outline"
+                    className="h-6 w-6"
+                    onClick={() => onStop(run.runId)}
+                    disabled={stoppingSubagentRunId === run.runId}
+                    title="Cancel child run"
+                    aria-label="Cancel child run"
+                  >
+                    {stoppingSubagentRunId === run.runId ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Square className="h-3.5 w-3.5" />}
+                  </Button>
+                ) : null}
+                <Button
+                  size="icon"
+                  variant="outline"
+                  className="h-6 w-6"
+                  onClick={() => onCloseSession(run.runId)}
+                  title="Close child session"
+                  aria-label="Close child session"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                  size="icon"
+                  variant="outline"
+                  className="h-6 w-6"
+                  onClick={() => onArchive(run.runId)}
+                  title="Archive subagent run"
+                  aria-label="Archive subagent run"
+                >
+                  <Archive className="h-3.5 w-3.5" />
                 </Button>
               </div>
-            </div>
-            <div className="mt-1 truncate text-[10px] text-muted-foreground" title={run.task}>
-              {run.task}
             </div>
             {run.children.length > 0 ? (
               <div className="mt-2">
@@ -2866,9 +3371,14 @@ function BuildSubagentTreeList({
                   nodes={run.children}
                   level={level + 1}
                   stoppingSubagentRunId={stoppingSubagentRunId}
+                  agentNames={agentNames}
                   onOpen={onOpen}
+                  onInspect={onInspect}
                   onStop={onStop}
                   onCloseSession={onCloseSession}
+                  onArchive={onArchive}
+                  onRecover={onRecover}
+                  onReplace={onReplace}
                 />
               </div>
             ) : null}
@@ -2887,6 +3397,9 @@ function isBuildModeGoalPanelMessage(message: TaskMessage): boolean {
 function formatBuildAssistantPanelMessageType(message: TaskMessage): string {
   if (isBuildModeGoalPanelMessage(message)) {
     return 'Build Mode Goal';
+  }
+  if (isRelayedSubagentCompletionMessage(message)) {
+    return 'Relayed Child Completion';
   }
   if (message.type === 'assistant') return 'Assistant';
   if (message.type === 'tool') return 'Tool';
@@ -3931,6 +4444,13 @@ type BuildAssistantMessageItemProps = {
   savingProjectNote: boolean;
   savingRtf: boolean;
   proseClasses: string;
+  relayedSubagentAgentName?: string;
+  relayedSubagentAgentRoleName?: string;
+  relayedSubagentAgentAvatar?: string;
+  relayedSubagentAgentAvatarColor?: string;
+  relayedSubagentAgentAvatarImageDataUrl?: string;
+  relayedSubagentAvatarFrame?: string;
+  relayedSubagentLabel?: string;
   onCopy: (messageId: string, content: string, sourceElement?: HTMLElement | null) => void;
   onSaveAsProjectNote: (messageId: string, content: string, sourceElement?: HTMLElement | null) => void;
   onSaveAsRtf: (messageId: string, content: string, sourceElement?: HTMLElement | null) => void;
@@ -4250,6 +4770,13 @@ const BuildAssistantMessageItem = memo(function BuildAssistantMessageItem({
   savingProjectNote,
   savingRtf,
   proseClasses,
+  relayedSubagentAgentName,
+  relayedSubagentAgentRoleName,
+  relayedSubagentAgentAvatar,
+  relayedSubagentAgentAvatarColor,
+  relayedSubagentAgentAvatarImageDataUrl,
+  relayedSubagentAvatarFrame = 'none',
+  relayedSubagentLabel,
   onCopy,
   onSaveAsProjectNote,
   onSaveAsRtf,
@@ -4257,6 +4784,8 @@ const BuildAssistantMessageItem = memo(function BuildAssistantMessageItem({
   onContentRef,
 }: BuildAssistantMessageItemProps) {
   const isAssistantMessage = message.type === 'assistant';
+  const relayedSubagentMeta = getRelayedSubagentCompletionMeta(message);
+  const isRelayedSubagentCompletion = Boolean(relayedSubagentMeta);
   const assistantReasoningParts = isAssistantMessage
     ? splitAssistantReasoningContent(message.content || '')
     : null;
@@ -4280,6 +4809,13 @@ const BuildAssistantMessageItem = memo(function BuildAssistantMessageItem({
   const [answerPopoutFullscreen, setAnswerPopoutFullscreen] = useState(false);
   const answerPopoutContentRef = useRef<HTMLDivElement | null>(null);
   const messageContentElementRef = useRef<HTMLDivElement | null>(null);
+  const relayedSubagentFrameClass = relayedSubagentAvatarFrame === 'circle'
+    ? 'rounded-full'
+    : relayedSubagentAvatarFrame === 'badge'
+      ? 'rounded-2xl ring-2 ring-offset-2 ring-offset-card'
+      : relayedSubagentAvatarFrame === 'soft'
+        ? 'rounded-2xl'
+        : 'rounded-xl';
 
   const renderCopyButton = (content: string) => (
     <BuildTooltip content={copied ? 'Copied' : 'Copy message'}>
@@ -4413,6 +4949,9 @@ const BuildAssistantMessageItem = memo(function BuildAssistantMessageItem({
       className={cn(
         'group rounded-md border border-border/60 bg-background px-2 py-1.5',
         isUserPanelMessage ? 'ml-3 border-primary/35 bg-primary/10' : null,
+        isRelayedSubagentCompletion
+          ? 'border-emerald-500/45 bg-card text-card-foreground shadow-[0_10px_34px_rgba(16,185,129,0.16)] ring-1 ring-emerald-500/15'
+          : null,
         muted ? 'bg-muted/30 text-muted-foreground' : null,
       )}
     >
@@ -4421,9 +4960,11 @@ const BuildAssistantMessageItem = memo(function BuildAssistantMessageItem({
           className={cn(
             'flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted-foreground',
             isUserPanelMessage ? 'text-primary/90' : null,
+            isRelayedSubagentCompletion ? 'font-semibold text-emerald-700 dark:text-emerald-300' : null,
           )}
         >
           {muted ? <Brain className="h-3.5 w-3.5" /> : null}
+          {isRelayedSubagentCompletion ? <CheckCircle2 className="h-3.5 w-3.5" /> : null}
           {label}
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
@@ -4433,6 +4974,33 @@ const BuildAssistantMessageItem = memo(function BuildAssistantMessageItem({
           {showCopy ? renderCopyButton(content) : null}
         </div>
       </div>
+      {isRelayedSubagentCompletion ? (
+        <div className="mb-2 flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-background/75 px-2.5 py-2 text-card-foreground">
+          <div
+            className={cn(
+              'flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden border border-border/70 bg-muted/70',
+              relayedSubagentFrameClass
+            )}
+            style={{ backgroundColor: relayedSubagentAgentAvatarColor ? `${relayedSubagentAgentAvatarColor}18` : undefined }}
+            aria-hidden="true"
+          >
+            <AgentAvatarIcon
+              avatar={relayedSubagentAgentAvatar}
+              color={relayedSubagentAgentAvatarColor || 'hsl(var(--primary))'}
+              imageDataUrl={relayedSubagentAgentAvatarImageDataUrl}
+              className={isPictureAvatar(relayedSubagentAgentAvatar, relayedSubagentAgentAvatarImageDataUrl) ? 'h-full w-full' : 'h-5 w-5'}
+            />
+          </div>
+          <div className="min-w-0">
+            <div className="truncate text-sm font-semibold text-foreground">
+              {relayedSubagentAgentName || relayedSubagentMeta?.childAgentId || 'Subagent'}
+            </div>
+            <div className="truncate text-xs text-muted-foreground">
+              {[relayedSubagentAgentRoleName, relayedSubagentLabel].filter(Boolean).join(' • ') || 'Subagent'}
+            </div>
+          </div>
+        </div>
+      ) : null}
       {renderPlanOrMarkdown(content, items, attachContentRef, muted)}
     </div>
   );
@@ -4581,6 +5149,13 @@ const BuildAssistantMessageItem = memo(function BuildAssistantMessageItem({
   && prev.savingProjectNote === next.savingProjectNote
   && prev.savingRtf === next.savingRtf
   && prev.proseClasses === next.proseClasses
+  && prev.relayedSubagentAgentName === next.relayedSubagentAgentName
+  && prev.relayedSubagentAgentRoleName === next.relayedSubagentAgentRoleName
+  && prev.relayedSubagentAgentAvatar === next.relayedSubagentAgentAvatar
+  && prev.relayedSubagentAgentAvatarColor === next.relayedSubagentAgentAvatarColor
+  && prev.relayedSubagentAgentAvatarImageDataUrl === next.relayedSubagentAgentAvatarImageDataUrl
+  && prev.relayedSubagentAvatarFrame === next.relayedSubagentAvatarFrame
+  && prev.relayedSubagentLabel === next.relayedSubagentLabel
   && prev.onCopy === next.onCopy
   && prev.onSaveAsProjectNote === next.onSaveAsProjectNote
   && prev.onSaveAsRtf === next.onSaveAsRtf
@@ -5626,13 +6201,17 @@ export default function BuildPage() {
   } | null>(null);
   const diffPanelRef = useRef<HTMLDivElement | null>(null);
   const activeRunDiffBaselineIdRef = useRef<string | null>(null);
+  const activeRunSummaryIdRef = useRef<string | null>(null);
   const lastRunningGitSummaryRefreshAtRef = useRef(0);
+  const runningChangeRefreshInFlightRef = useRef(false);
   const workspaceTreeRequestIdRef = useRef(0);
   const buildLowerPanelHeightRef = useRef(buildLowerPanelHeight);
   const workspacePanelWidthRef = useRef(workspacePanelWidth);
   const operatorPanelWidthRef = useRef(operatorPanelWidth);
   const terminalPanelWidthRef = useRef(terminalPanelWidth);
   const runtimeLogsPanelWidthRef = useRef(runtimeLogsPanelWidth);
+  const aiBusyRef = useRef(aiBusy);
+  const aiTaskIdRef = useRef<string | null>(aiTaskId);
   const goalPromptDraftRef = useRef('');
   const aiMessagesRef = useRef<TaskMessage[]>([]);
   const restoreHistorySessionRef = useRef<(sessionId: string) => Promise<void>>(async () => {});
@@ -5748,6 +6327,11 @@ export default function BuildPage() {
     aiMessagesRef.current = aiMessages;
   }, [aiMessages]);
 
+  useEffect(() => {
+    aiBusyRef.current = aiBusy;
+    aiTaskIdRef.current = aiTaskId;
+  }, [aiBusy, aiTaskId]);
+
   useEffect(() => () => {
     if (projectNoteNoticeTimeoutRef.current !== null) {
       window.clearTimeout(projectNoteNoticeTimeoutRef.current);
@@ -5760,6 +6344,20 @@ export default function BuildPage() {
   }, [loadUsageProjects]);
 
   const assistantMessages = useMemo(() => collectAssistantMessages(aiMessages), [aiMessages]);
+  const buildToolStateMessages = useMemo(
+    () => assistantMessages.length > BUILD_TOOL_STATE_MESSAGE_SCAN_LIMIT
+      ? assistantMessages.slice(-BUILD_TOOL_STATE_MESSAGE_SCAN_LIMIT)
+      : assistantMessages,
+    [assistantMessages]
+  );
+  const buildAgentPresence = useMemo(
+    () => getLatestToolPresenceFromMessages(buildToolStateMessages, aiBusy ? 'running' : undefined, false),
+    [aiBusy, buildToolStateMessages]
+  );
+  const buildToolActivitySteps = useMemo(
+    () => getToolActivityStepsFromMessages(buildToolStateMessages, aiBusy),
+    [aiBusy, buildToolStateMessages]
+  );
   const buildPromptNavigatorEntries = useMemo<PromptNavigatorEntry[]>(() => {
     const cleanEntries = assistantMessages
       .flatMap((message, index): PromptNavigatorEntry[] => {
@@ -5885,6 +6483,10 @@ export default function BuildPage() {
     () => (activeAgentId ? getBuildActiveHistorySessionStorageKey(activeAgentId) : null),
     [activeAgentId]
   );
+  const requestedTaskWindowSessionId = useMemo(() => {
+    const params = new URLSearchParams(location.search);
+    return params.get('sessionId')?.trim() || null;
+  }, [location.search]);
   const hasVisibleBuildLowerPanel = !terminalSectionHidden || !runtimeLogsSectionHidden || !diffSectionHidden;
   const hasVisibleBuildCenterArea = !runtimePreviewSectionHidden || hasVisibleBuildLowerPanel;
   const visibleBuildLowerPanelCount = [
@@ -7012,7 +7614,7 @@ export default function BuildPage() {
     usageProjects,
   ]);
 
-  const handleOpenSaveAnswerAsRtf = useCallback((
+  const handleOpenSaveAnswerAsRtf = useCallback(async (
     messageId: string,
     content: string,
     sourceElement?: HTMLElement | null
@@ -7024,10 +7626,11 @@ export default function BuildPage() {
     const fallbackProject = selectedProject || usageProjects[0] || null;
     const activeSessionTitle = historySessions.find((entry) => entry.id === activeHistorySessionId)?.title;
     const defaultTitle = defaultFinalAnswerFileBaseName();
+    const rtf = await buildWordFriendlyClipboardRtf(sourceElement || null, trimmed);
     setRtfPending({
       messageId,
       content: trimmed,
-      rtf: buildWordFriendlyClipboardRtf(sourceElement || null, trimmed),
+      rtf,
     });
     rtfFileTitleRef.current = defaultTitle;
     setRtfFileTitle(defaultTitle);
@@ -7172,8 +7775,8 @@ export default function BuildPage() {
     }
     try {
       const result = await accomplish.listSubagents({ parentTaskId: subagentParentTaskId });
-      setSubagentRuns((current) => areSubagentRunListsEquivalent(current, result.runs || []) ? current : (result.runs || []));
-      setSubagentTree((current) => areSubagentRunTreesEquivalent(current, result.tree || []) ? current : (result.tree || []));
+      setSubagentRuns((current) => preserveEquivalentSubagentRunReferences(current, result.runs || []));
+      setSubagentTree((current) => preserveEquivalentSubagentTreeReferences(current, result.tree || []));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -7284,6 +7887,31 @@ export default function BuildPage() {
     }
   }, [accomplish, availableSubagentModelOptions, refreshSubagentRuns, subagentDetailModelOverride, subagentDetailPrompt, subagentDetailRun, subagentDetailTask]);
 
+  const sendSubagentControlPrompt = useCallback(async (run: SubagentRunRecord, prompt: string) => {
+    if (!run.runId || !prompt.trim()) return;
+    try {
+      await accomplish.sendSubagent({ runId: run.runId, prompt });
+      await refreshSubagentRuns();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [accomplish, refreshSubagentRuns]);
+
+  const recoverSubagentRun = useCallback((run: SubagentRunRecord) => {
+    const stalledReason = run.supervisor?.stalledReason ? ` Stalled reason: ${run.supervisor.stalledReason}` : '';
+    void sendSubagentControlPrompt(
+      run,
+      `Supervisor recovery request: report your current state, recover from any blocked or stale work, and continue toward the original goal.${stalledReason}`
+    );
+  }, [sendSubagentControlPrompt]);
+
+  const replaceSubagentRun = useCallback((run: SubagentRunRecord) => {
+    void sendSubagentControlPrompt(
+      run,
+      `Supervisor replacement request: prepare a concise handoff bundle for replacing this run. Include completed work, remaining work, blockers, expected outputs, and any files or commands a replacement run should use.`
+    );
+  }, [sendSubagentControlPrompt]);
+
   const archiveSubagentDetail = useCallback(async () => {
     if (!subagentDetailRun) return;
     setSubagentDetailMutating(true);
@@ -7297,6 +7925,28 @@ export default function BuildPage() {
       setSubagentDetailMutating(false);
     }
   }, [accomplish, refreshSubagentRuns, subagentDetailRun]);
+
+  const archiveSubagentRun = useCallback(async (runId: string) => {
+    if (!runId) return;
+    setSubagentDetailMutating(true);
+    try {
+      await accomplish.archiveSubagent({ runId, archived: true });
+      setSubagentDetailRun((current) => current?.runId === runId ? null : current);
+      setSubagentDetailTask((current) => subagentDetailRun?.runId === runId ? null : current);
+      setSubagentDetailPrompt((current) => subagentDetailRun?.runId === runId ? '' : current);
+      setSubagentDetailModelOverride((current) => subagentDetailRun?.runId === runId ? '' : current);
+      await refreshSubagentRuns();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubagentDetailMutating(false);
+    }
+  }, [accomplish, refreshSubagentRuns, subagentDetailRun?.runId]);
+
+  const inspectSubagentRun = useCallback((run: SubagentRunRecord) => {
+    const from = `${location.pathname}${location.search}`;
+    navigate(`/subagents?q=${encodeURIComponent(run.childTaskId)}`, { state: { from } });
+  }, [location.pathname, location.search, navigate]);
 
   const closeSubagentDetailSession = useCallback(async () => {
     if (!subagentDetailRun) return;
@@ -7459,11 +8109,13 @@ export default function BuildPage() {
         setLogCursor(0);
       }
       setActiveHistoryRunTaskId(latestRun?.taskId || null);
+      activeRunSummaryIdRef.current = latestRun?.id || null;
       setActiveHistorySessionToken(latestRunTask?.sessionId || latestRun?.sessionId || null);
       const latestRunStatus = latestRunTask?.status || latestRun?.status;
       if (latestRun?.taskId && latestRunStatus && !TERMINAL_TASK_STATES.has(latestRunStatus)) {
         setAiTaskId(latestRun.taskId);
         lastRunningGitSummaryRefreshAtRef.current = 0;
+        runningChangeRefreshInFlightRef.current = false;
         setAiBusy(true);
       } else {
         setAiTaskId(null);
@@ -7553,7 +8205,7 @@ export default function BuildPage() {
     }
   }, [accomplish, activeAgentId, workspaceRelativePath]);
 
-  const refreshDiff = useCallback(async (options?: { maxChars?: number; includeBaseline?: boolean; baselineId?: string | null }) => {
+  const refreshDiff = useCallback(async (options?: { maxChars?: number; includeBaseline?: boolean; baselineId?: string | null; liveTaskId?: string }) => {
     if (!activeAgentId) return;
     try {
       const baselineId = options?.baselineId !== undefined
@@ -7565,6 +8217,9 @@ export default function BuildPage() {
         baselineId,
         maxChars: options?.maxChars,
       });
+      if (options?.liveTaskId && (!aiBusyRef.current || aiTaskIdRef.current !== options.liveTaskId)) {
+        return;
+      }
       if (options?.includeBaseline === false && result.available === false && result.mode === 'none') {
         return;
       }
@@ -7607,7 +8262,7 @@ export default function BuildPage() {
     workspaceRelativePath,
   ]);
 
-  const refreshGitSummary = useCallback(async (showBusy = false, options?: { lightweight?: boolean }) => {
+  const refreshGitSummary = useCallback(async (showBusy = false, options?: { lightweight?: boolean; liveTaskId?: string }) => {
     if (!activeAgentId) return;
     if (showBusy) {
       setGitSummaryBusy(true);
@@ -7618,6 +8273,9 @@ export default function BuildPage() {
         relativePath: workspaceRelativePath,
         lightweight: options?.lightweight,
       });
+      if (options?.liveTaskId && (!aiBusyRef.current || aiTaskIdRef.current !== options.liveTaskId)) {
+        return;
+      }
       setGitSummary((current) => {
         const next = options?.lightweight ? mergeLiveBuildGitSummary(current, result) : result;
         return areGeneratedBuildObjectsEquivalent(current, next) ? current : next;
@@ -7819,6 +8477,7 @@ export default function BuildPage() {
     setSelectedPresetId(null);
     setActiveHistorySessionId(null);
     setActiveHistoryRunTaskId(null);
+    activeRunSummaryIdRef.current = null;
     setActiveHistorySessionToken(null);
     setHistoryDropdownOpen(false);
     setHiddenSectionLocks({});
@@ -7888,6 +8547,11 @@ export default function BuildPage() {
           restoredActiveHistorySessionId = null;
           restoredHistoryDropdownOpen = false;
         }
+      }
+
+      if (requestedTaskWindowSessionId) {
+        restoredActiveHistorySessionId = requestedTaskWindowSessionId;
+        restoredHistoryDropdownOpen = false;
       }
 
       if (!cancelled && restoredViewState) {
@@ -7966,7 +8630,7 @@ export default function BuildPage() {
     return () => {
       cancelled = true;
     };
-  }, [accomplish, activeAgentId, buildActiveHistorySessionStorageKey, buildViewStateStorageKey]);
+  }, [accomplish, activeAgentId, buildActiveHistorySessionStorageKey, buildViewStateStorageKey, requestedTaskWindowSessionId]);
 
   useEffect(() => {
     if (!activeAgentId) return;
@@ -8385,7 +9049,10 @@ export default function BuildPage() {
   useEffect(() => {
     if (!aiTaskId || !aiBusy) return;
     let cancelled = false;
-    const interval = setInterval(() => {
+    let pollInFlight = false;
+    const pollActiveTask = () => {
+      if (pollInFlight || cancelled) return;
+      pollInFlight = true;
       void (async () => {
         try {
           const task = await accomplish.getTask(aiTaskId, activeAgentId);
@@ -8400,58 +9067,70 @@ export default function BuildPage() {
           }
           if (!TERMINAL_TASK_STATES.has(task.status)) {
             const now = Date.now();
-            if (now - lastRunningGitSummaryRefreshAtRef.current > BUILD_RUNNING_GIT_SUMMARY_REFRESH_INTERVAL_MS) {
+            if (
+              now - lastRunningGitSummaryRefreshAtRef.current > BUILD_RUNNING_GIT_SUMMARY_REFRESH_INTERVAL_MS
+              && !runningChangeRefreshInFlightRef.current
+            ) {
               const activeRunBaselineId = activeRunDiffBaselineIdRef.current || pendingDiffBaselineId;
               lastRunningGitSummaryRefreshAtRef.current = now;
-              void refreshGitSummary(false, { lightweight: true });
-              void refreshDiff({
-                maxChars: BUILD_RUNNING_GIT_DIFF_MAX_CHARS,
-                includeBaseline: activeRunBaselineId ? true : false,
-                baselineId: activeRunBaselineId || undefined,
+              runningChangeRefreshInFlightRef.current = true;
+              void Promise.allSettled([
+                refreshGitSummary(false, { lightweight: true, liveTaskId: aiTaskId }),
+                refreshDiff({
+                  maxChars: BUILD_RUNNING_GIT_DIFF_MAX_CHARS,
+                  includeBaseline: activeRunBaselineId ? true : false,
+                  baselineId: activeRunBaselineId || undefined,
+                  liveTaskId: aiTaskId,
+                }),
+              ]).finally(() => {
+                runningChangeRefreshInFlightRef.current = false;
               });
             }
           }
           if (TERMINAL_TASK_STATES.has(task.status)) {
+            runningChangeRefreshInFlightRef.current = false;
             let completedMessages = mergedMessages;
             let completedDiff = diff;
             const activeRunBaselineId = activeRunDiffBaselineIdRef.current || pendingDiffBaselineId;
-            try {
-              const [finalDiff, finalGitSummary] = await Promise.all([
-                accomplish.getBuildWorkspaceDiff({
-                  agentId: activeAgentId,
-                  relativePath: workspaceRelativePath,
-                  baselineId: activeRunBaselineId || undefined,
-                }).catch(() => null),
-                accomplish.getBuildGitSummary({
-                  agentId: activeAgentId,
-                  relativePath: workspaceRelativePath,
-                  lightweight: true,
-                }).catch(() => null),
-              ]);
-              if (!finalDiff && !finalGitSummary) {
-                throw new Error('No final diff or Git summary was available.');
-              }
-              if (cancelled) return;
-              if (finalDiff) {
-                completedDiff = finalDiff;
-                setDiff(finalDiff);
-              }
-              if (finalGitSummary) {
-                setGitSummary((current) => {
-                  const next = mergeLiveBuildGitSummary(current, finalGitSummary);
-                  return areGeneratedBuildObjectsEquivalent(current, next) ? current : next;
-                });
-              }
-              completedMessages = appendBuildChangedFilesSummaryMessage(mergedMessages, {
-                runId: task.id,
-                diff: finalDiff ?? completedDiff,
-                gitSummary: finalGitSummary,
-              });
-              if (completedMessages !== mergedMessages) {
-                setAiMessages(completedMessages);
-              }
-            } catch {
-              // If final diff capture fails, keep the assistant transcript without a changed-files card.
+            const [finalDiffResult, finalGitSummaryResult] = await Promise.allSettled([
+              accomplish.getBuildWorkspaceDiff({
+                agentId: activeAgentId,
+                relativePath: workspaceRelativePath,
+                baselineId: activeRunBaselineId || undefined,
+              }),
+              accomplish.getBuildGitSummary({
+                agentId: activeAgentId,
+                relativePath: workspaceRelativePath,
+              }),
+            ]);
+            if (cancelled) return;
+            const finalDiff = finalDiffResult.status === 'fulfilled' ? finalDiffResult.value : null;
+            const finalGitSummary = finalGitSummaryResult.status === 'fulfilled' ? finalGitSummaryResult.value : null;
+            if (finalDiff) {
+              completedDiff = finalDiff;
+              setDiff(finalDiff);
+            }
+            if (finalGitSummary) {
+              setGitSummary((current) => (
+                areGeneratedBuildObjectsEquivalent(current, finalGitSummary) ? current : finalGitSummary
+              ));
+            }
+            const runScopedDiff = activeRunBaselineId
+              && finalDiff?.mode === 'synthetic'
+              && finalDiff.baselineId === activeRunBaselineId
+              ? finalDiff
+              : activeRunBaselineId
+                && completedDiff?.mode === 'synthetic'
+                && completedDiff.baselineId === activeRunBaselineId
+                  ? completedDiff
+                  : null;
+            const completedRunId = activeRunSummaryIdRef.current || task.id;
+            completedMessages = appendBuildChangedFilesSummaryMessage(mergedMessages, {
+              runId: completedRunId,
+              diff: runScopedDiff,
+            });
+            if (completedMessages !== mergedMessages) {
+              setAiMessages(completedMessages);
             }
             activeRunDiffBaselineIdRef.current = null;
             setAiBusy(false);
@@ -8462,7 +9141,7 @@ export default function BuildPage() {
                 messages: completedMessages,
                 lifecycleStatus: mapTaskStatusToLifecycle(task.status),
                 activeRun: {
-                  id: task.id,
+                  id: completedRunId,
                   taskId: task.id,
                   sessionId: task.sessionId,
                   status: task.status,
@@ -8487,12 +9166,17 @@ export default function BuildPage() {
           }
         } catch {
           // Ignore polling failures.
+        } finally {
+          pollInFlight = false;
         }
       })();
-    }, 1200);
+    };
+    const interval = setInterval(pollActiveTask, 1200);
+    pollActiveTask();
 
     return () => {
       cancelled = true;
+      pollInFlight = false;
       clearInterval(interval);
     };
   }, [
@@ -9077,11 +9761,13 @@ export default function BuildPage() {
         : undefined;
       const buildCommandOverride = selectedPreset?.commands.buildCommand || undefined;
       const runCommandOverride = selectedPreset?.commands.runCommand || undefined;
+      const executionProfileId = selectedPreset?.executionProfileId || null;
 
       if (action === 'start') {
         const next = await accomplish.startBuildRuntime({
           agentId: activeAgentId,
           workspaceRelativePath,
+          executionProfileId,
           autoRestart,
           mode: 'dev',
           commandOverride: startCommandOverride,
@@ -9099,6 +9785,7 @@ export default function BuildPage() {
         const result = await accomplish.runBuildCommand({
           agentId: activeAgentId,
           workspaceRelativePath,
+          executionProfileId,
           commandOverride: buildCommandOverride,
           envOverrides: effectiveEnvOverrides,
         });
@@ -9107,6 +9794,7 @@ export default function BuildPage() {
         const result = await accomplish.runStartCommandOnce({
           agentId: activeAgentId,
           workspaceRelativePath,
+          executionProfileId,
           commandOverride: runCommandOverride,
           envOverrides: effectiveEnvOverrides,
         });
@@ -10462,6 +11150,7 @@ export default function BuildPage() {
     setAiBusy(true);
     activeRunDiffBaselineIdRef.current = null;
     lastRunningGitSummaryRefreshAtRef.current = 0;
+    runningChangeRefreshInFlightRef.current = false;
     setDiff(null);
     setSelectedDiffFilePath(null);
     try {
@@ -10473,6 +11162,8 @@ export default function BuildPage() {
         content: userGoalPrompt,
         timestamp: new Date().toISOString(),
       };
+      const buildPromptRunId = localGoalMessage.id.replace('local-build-goal-', 'local-build-run-');
+      activeRunSummaryIdRef.current = buildPromptRunId;
       const optimisticMessages = [...aiMessagesRef.current, localGoalMessage];
       setAiMessages(optimisticMessages);
       window.requestAnimationFrame(() => {
@@ -10586,7 +11277,7 @@ export default function BuildPage() {
           messages: optimisticMessages,
           lifecycleStatus: mapTaskStatusToLifecycle(task.status),
           activeRun: {
-            id: task.id,
+            id: buildPromptRunId,
             taskId: task.id,
             sessionId: task.sessionId,
             status: task.status,
@@ -11703,6 +12394,7 @@ export default function BuildPage() {
       if (session.lifecycleStatus !== 'archived' && activeHistorySessionId === session.id) {
         setActiveHistorySessionId(null);
         setActiveHistoryRunTaskId(null);
+        activeRunSummaryIdRef.current = null;
         setActiveHistorySessionToken(null);
       }
       await refreshHistorySessions();
@@ -11730,6 +12422,7 @@ export default function BuildPage() {
       if (activeHistorySessionId === session.id) {
         setActiveHistorySessionId(null);
         setActiveHistoryRunTaskId(null);
+        activeRunSummaryIdRef.current = null;
         setActiveHistorySessionToken(null);
       }
       await refreshHistorySessions();
@@ -11741,6 +12434,7 @@ export default function BuildPage() {
   const handleStartNewHistorySession = useCallback(() => {
     setActiveHistorySessionId(null);
     setActiveHistoryRunTaskId(null);
+    activeRunSummaryIdRef.current = null;
     setActiveHistorySessionToken(null);
     setAiTaskId(null);
     setAiBusy(false);
@@ -13208,6 +13902,19 @@ export default function BuildPage() {
     const handleSubagentsRefresh = () => {
       void refreshSubagentRuns(true);
     };
+    const handleAgentPickerOpen = () => {
+      window.dispatchEvent(new CustomEvent('opendeskmate:open-settings', { detail: { query: 'agent' } }));
+    };
+    const handleProjectPickerOpen = () => {
+      const projectSelector = document.querySelector<HTMLSelectElement>('select[data-usage-project-selector="build"]');
+      projectSelector?.focus();
+    };
+    const handlePromptPickerOpen = () => {
+      openSavedPrompts('select');
+    };
+    const handleRecipePickerOpen = () => {
+      openSavedPrompts('select');
+    };
 
     window.addEventListener(APP_COMMAND_EVENTS.taskStop, handleTaskStop);
     window.addEventListener(APP_COMMAND_EVENTS.buildHistoryOpen, handleBuildHistoryOpen);
@@ -13218,6 +13925,11 @@ export default function BuildPage() {
     window.addEventListener(APP_COMMAND_EVENTS.buildRuntimeBuild, handleBuildRuntimeBuild);
     window.addEventListener(APP_COMMAND_EVENTS.buildRuntimeOpenPreview, handleBuildRuntimeOpenPreview);
     window.addEventListener(APP_COMMAND_EVENTS.subagentsRefresh, handleSubagentsRefresh);
+    window.addEventListener(APP_COMMAND_EVENTS.agentPickerOpen, handleAgentPickerOpen);
+    window.addEventListener(APP_COMMAND_EVENTS.projectPickerOpen, handleProjectPickerOpen);
+    window.addEventListener(APP_COMMAND_EVENTS.workboardOpen, openProjectWorkPopup);
+    window.addEventListener(APP_COMMAND_EVENTS.promptPickerOpen, handlePromptPickerOpen);
+    window.addEventListener(APP_COMMAND_EVENTS.recipePickerOpen, handleRecipePickerOpen);
 
     return () => {
       window.removeEventListener(APP_COMMAND_EVENTS.taskStop, handleTaskStop);
@@ -13229,8 +13941,21 @@ export default function BuildPage() {
       window.removeEventListener(APP_COMMAND_EVENTS.buildRuntimeBuild, handleBuildRuntimeBuild);
       window.removeEventListener(APP_COMMAND_EVENTS.buildRuntimeOpenPreview, handleBuildRuntimeOpenPreview);
       window.removeEventListener(APP_COMMAND_EVENTS.subagentsRefresh, handleSubagentsRefresh);
+      window.removeEventListener(APP_COMMAND_EVENTS.agentPickerOpen, handleAgentPickerOpen);
+      window.removeEventListener(APP_COMMAND_EVENTS.projectPickerOpen, handleProjectPickerOpen);
+      window.removeEventListener(APP_COMMAND_EVENTS.workboardOpen, openProjectWorkPopup);
+      window.removeEventListener(APP_COMMAND_EVENTS.promptPickerOpen, handlePromptPickerOpen);
+      window.removeEventListener(APP_COMMAND_EVENTS.recipePickerOpen, handleRecipePickerOpen);
     };
-  }, [handleStartNewHistorySession, handleStopPrompt, openPreviewInBrowser, refreshSubagentRuns, runRuntimeAction]);
+  }, [
+    handleStartNewHistorySession,
+    handleStopPrompt,
+    openPreviewInBrowser,
+    openProjectWorkPopup,
+    openSavedPrompts,
+    refreshSubagentRuns,
+    runRuntimeAction,
+  ]);
 
   const handleCopyAssistantMessage = useCallback(async (
     messageId: string,
@@ -13241,7 +13966,7 @@ export default function BuildPage() {
       const contentElement = sourceElement || assistantMessageContentRefs.current[messageId] || null;
       const plainText = contentElement?.innerText || content || '';
       const html = buildWordFriendlyClipboardHtml(contentElement, content);
-      const rtf = buildWordFriendlyClipboardRtf(contentElement, content);
+      const rtf = await buildWordFriendlyClipboardRtf(contentElement, content);
       if (typeof ClipboardItem !== 'undefined' && typeof navigator.clipboard?.write === 'function') {
         const htmlBlob = new Blob([html], { type: 'text/html' });
         const rtfBlob = new Blob([rtf], { type: 'text/rtf' });
@@ -13701,6 +14426,10 @@ export default function BuildPage() {
     workspaceSetupScanning,
   ]);
   useTopBarControls(buildTopBarControls);
+
+  const agentById = new Map(agents.map((agent) => [agent.id, agent]));
+  const subagentAgentNames = new Map(agents.map((agent) => [agent.id, agent.name || agent.id]));
+  const activeSubagentCount = subagentRuns.filter(isActiveSubagentRun).length;
 
   return (
     <TooltipProvider delayDuration={250}>
@@ -16906,15 +17635,15 @@ export default function BuildPage() {
               {subagentParentTaskId ? (
                 <div
                   className={cn(
-                    'rounded-md border border-border/60 bg-muted/10',
+                    'rounded-md border border-border/60 bg-card/60 shadow-sm backdrop-blur-sm',
                     subagentsCollapsed ? 'shrink-0 px-2 py-1' : 'p-2'
                   )}
                 >
                   <div className={cn('flex items-center justify-between gap-2', subagentsCollapsed ? 'h-6' : 'mb-2')}>
                     <div className="flex items-center gap-2">
-                      <div className="text-xs font-medium text-foreground">Subagents</div>
+                      <div className="text-xs font-semibold text-foreground">Background work</div>
                       <div className="text-[11px] text-muted-foreground">
-                        {subagentRunsLoading ? 'Refreshing…' : `${subagentRuns.length} tracked`}
+                        {subagentRunsLoading ? 'Refreshing…' : `${activeSubagentCount} active · ${subagentRuns.length} total`}
                       </div>
                     </div>
                     <Button
@@ -16928,7 +17657,7 @@ export default function BuildPage() {
                     </Button>
                   </div>
                   {subagentsCollapsed ? null : subagentRuns.length === 0 ? (
-                    <div className="text-[11px] text-muted-foreground">
+                    <div className="rounded-md border border-dashed border-border/60 bg-background/50 px-2 py-2 text-[11px] text-muted-foreground">
                       No child agents have been spawned for this task yet.
                     </div>
                   ) : (
@@ -16939,9 +17668,14 @@ export default function BuildPage() {
                       <BuildSubagentTreeList
                         nodes={subagentTree}
                         stoppingSubagentRunId={stoppingSubagentRunId}
+                        agentNames={subagentAgentNames}
                         onOpen={(run) => void loadSubagentDetail(run)}
+                        onInspect={inspectSubagentRun}
                         onStop={(runId) => void stopSubagentRun(runId)}
                         onCloseSession={(runId) => void closeSubagentRun(runId)}
+                        onArchive={(runId) => void archiveSubagentRun(runId)}
+                        onRecover={recoverSubagentRun}
+                        onReplace={replaceSubagentRun}
                       />
                     </div>
                   )}
@@ -16949,71 +17683,100 @@ export default function BuildPage() {
               ) : null}
 
               <div className="relative min-h-0 flex-1">
-                <div className="h-full min-h-0 overflow-hidden rounded-md border border-border/60">
-                  {assistantMessages.length === 0 ? (
-                    <div className="flex h-full items-start p-2 text-xs text-muted-foreground">No AI reasoning yet.</div>
-                  ) : (
-                    <Virtuoso
-                      ref={assistantMessagesVirtuosoRef}
-                      className="h-full"
-                      data={assistantMessages}
-                      defaultItemHeight={168}
-                      computeItemKey={(_index, message) => message.id}
-                      increaseViewportBy={{ top: 220, bottom: 320 }}
-                      followOutput={(isAtBottom) => {
-                        if (!aiBusy) return false;
-                        return isAtBottom ? 'auto' : false;
-                      }}
-                      atBottomStateChange={(isAtBottom) => {
-                        assistantNearBottomRef.current = isAtBottom;
-                        setAssistantNearBottom(isAtBottom);
-                      }}
-                      rangeChanged={handleBuildPromptNavigatorRangeChanged}
-                      itemContent={(index, message) => {
-                        const changedFilesPayload = parseBuildChangedFilesSummaryMessage(message);
-                        return (
-                          <div className={cn('px-2', index === 0 ? 'pt-2' : 'pt-0.5', index === assistantMessages.length - 1 ? 'pb-2' : 'pb-1.5')}>
-                            {changedFilesPayload ? (
-                              <BuildChangedFilesSummaryCard
-                                summary={changedFilesPayload.summary}
-                                canUndo={Boolean(
-                                  pendingDiffBaselineId
-                                  && diff?.mode === 'synthetic'
-                                  && changedFilesPayload.runId === activeHistoryRunTaskId
-                                )}
-                                undoBusy={resolvingDiffDecision === 'reject'}
-                                onUndo={() => void resolvePendingDiffBaseline('reject')}
-                                onReview={handleOpenChangedFilesReview}
-                              />
-                            ) : (
-                              <BuildAssistantMessageItem
-                                message={message}
-                                messageVersion={getTaskMessageRenderVersion(message)}
-                                copied={copiedAssistantMessageId === message.id}
-                                expandedToolMessage={Boolean(expandedToolMessageIds[message.id])}
-                                savingProjectNote={projectNoteSavingMessageId === message.id}
-                                savingRtf={rtfSavingMessageId === message.id}
-                                proseClasses={assistantProseClasses}
-                                onCopy={handleCopyAssistantMessageClick}
-                                onSaveAsProjectNote={handleOpenSaveAnswerAsProjectNote}
-                                onSaveAsRtf={handleOpenSaveAnswerAsRtf}
-                                onToggleToolMessage={toggleToolMessageExpanded}
-                                onContentRef={handleAssistantMessageContentRef}
-                              />
-                            )}
-                          </div>
-                        );
-                      }}
+                <div className="relative flex h-full min-h-0 flex-col overflow-hidden rounded-md border border-border/60">
+                  {aiBusy ? (
+                    <div className="shrink-0 border-b border-border/50 p-2">
+                      <AgentToolStateIndicator
+                        presence={buildAgentPresence}
+                        activitySteps={buildToolActivitySteps}
+                        agentName={activeAgent?.name || activeAgentId || 'Agent'}
+                        agentRoleName={activeAgent?.roleName}
+                        agentAvatar={activeAgent?.avatar}
+                        agentAvatarColor={activeAgent?.avatarColor}
+                        agentAvatarImageDataUrl={activeAgent?.avatarImageDataUrl}
+                        compact
+                        className="bg-card/80"
+                        testId="build-tool-state-indicator"
+                      />
+                    </div>
+                  ) : null}
+                  <div className="relative min-h-0 flex-1">
+                    {assistantMessages.length === 0 ? (
+                      <div className="flex h-full items-start p-2 text-xs text-muted-foreground">No AI reasoning yet.</div>
+                    ) : (
+                      <Virtuoso
+                        ref={assistantMessagesVirtuosoRef}
+                        className="h-full"
+                        data={assistantMessages}
+                        defaultItemHeight={168}
+                        computeItemKey={(_index, message) => message.id}
+                        increaseViewportBy={{ top: 220, bottom: 320 }}
+                        followOutput={(isAtBottom) => {
+                          if (!aiBusy) return false;
+                          return isAtBottom ? 'auto' : false;
+                        }}
+                        atBottomStateChange={(isAtBottom) => {
+                          assistantNearBottomRef.current = isAtBottom;
+                          setAssistantNearBottom(isAtBottom);
+                        }}
+                        rangeChanged={handleBuildPromptNavigatorRangeChanged}
+                        itemContent={(index, message) => {
+                          const changedFilesPayload = parseBuildChangedFilesSummaryMessage(message);
+                          const relayedSubagentMeta = getRelayedSubagentCompletionMeta(message);
+                          const relayedSubagentAgent = relayedSubagentMeta
+                            ? agentById.get(relayedSubagentMeta.childAgentId)
+                            : undefined;
+                          return (
+                            <div className={cn('px-2', index === 0 ? 'pt-2' : 'pt-0.5', index === assistantMessages.length - 1 ? 'pb-2' : 'pb-1.5')}>
+                              {changedFilesPayload ? (
+                                <BuildChangedFilesSummaryCard
+                                  summary={changedFilesPayload.summary}
+                                  canUndo={Boolean(
+                                    pendingDiffBaselineId
+                                    && diff?.mode === 'synthetic'
+                                    && changedFilesPayload.runId === activeRunSummaryIdRef.current
+                                  )}
+                                  undoBusy={resolvingDiffDecision === 'reject'}
+                                  onUndo={() => void resolvePendingDiffBaseline('reject')}
+                                  onReview={handleOpenChangedFilesReview}
+                                />
+                              ) : (
+                                <BuildAssistantMessageItem
+                                  message={message}
+                                  messageVersion={getTaskMessageRenderVersion(message)}
+                                  copied={copiedAssistantMessageId === message.id}
+                                  expandedToolMessage={Boolean(expandedToolMessageIds[message.id])}
+                                  savingProjectNote={projectNoteSavingMessageId === message.id}
+                                  savingRtf={rtfSavingMessageId === message.id}
+                                  proseClasses={assistantProseClasses}
+                                  relayedSubagentAgentName={relayedSubagentAgent?.name || relayedSubagentMeta?.childAgentId}
+                                  relayedSubagentAgentRoleName={relayedSubagentAgent?.roleName}
+                                  relayedSubagentAgentAvatar={relayedSubagentAgent?.avatar}
+                                  relayedSubagentAgentAvatarColor={relayedSubagentAgent?.avatarColor}
+                                  relayedSubagentAgentAvatarImageDataUrl={relayedSubagentAgent?.avatarImageDataUrl}
+                                  relayedSubagentAvatarFrame={relayedSubagentAgent?.appearance?.avatarFrame}
+                                  relayedSubagentLabel={relayedSubagentMeta?.label}
+                                  onCopy={handleCopyAssistantMessageClick}
+                                  onSaveAsProjectNote={handleOpenSaveAnswerAsProjectNote}
+                                  onSaveAsRtf={handleOpenSaveAnswerAsRtf}
+                                  onToggleToolMessage={toggleToolMessageExpanded}
+                                  onContentRef={handleAssistantMessageContentRef}
+                                />
+                              )}
+                            </div>
+                          );
+                        }}
+                      />
+                    )}
+                    <PromptNavigator
+                      entries={buildPromptNavigatorEntries}
+                      activeEntryId={activeBuildPromptNavigatorId}
+                      onJump={handleBuildPromptNavigatorJump}
+                      storageKey={BUILD_PROMPT_NAVIGATOR_STORAGE_KEY}
+                      label="Prompt navigator"
+                      tone="build"
                     />
-                  )}
-                  <PromptNavigator
-                    entries={buildPromptNavigatorEntries}
-                    activeEntryId={activeBuildPromptNavigatorId}
-                    onJump={handleBuildPromptNavigatorJump}
-                    storageKey={BUILD_PROMPT_NAVIGATOR_STORAGE_KEY}
-                    label="Prompt navigator"
-                    tone="build"
-                  />
+                  </div>
                 </div>
                 {!assistantNearBottom && assistantMessages.length > 0 ? (
                   <Button

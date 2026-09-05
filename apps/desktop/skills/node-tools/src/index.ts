@@ -30,8 +30,11 @@ const NODE_TOOLS_API_FALLBACK_URLS = Array.from(
 );
 const CANVAS_API_PORT = process.env.CANVAS_API_PORT || '9227';
 const CANVAS_API_URL = `http://127.0.0.1:${CANVAS_API_PORT}/canvas`;
-const SUBAGENT_WAIT_DEFAULT_TIMEOUT_MS = 20_000;
-const SUBAGENT_WAIT_MAX_TIMEOUT_MS = 25_000;
+const SUBAGENT_WAIT_DEFAULT_TIMEOUT_MS = 10 * 60_000;
+const SUBAGENT_WAIT_MAX_TIMEOUT_MS = 20 * 60_000;
+const SUBAGENT_REPEAT_COMPLETED_REPORT_MAX_CHARS = 12_000;
+const pendingSubagentWaitCounts = new Map<string, number>();
+const completedSubagentWaitCounts = new Map<string, number>();
 
 interface CameraSnapshotInput {
   nodeId?: string;
@@ -64,6 +67,7 @@ interface SubagentSpawnInput {
   modelProvider?: string;
   modelId?: string;
   modelBaseUrl?: string;
+  expectedOutputs?: unknown[];
 }
 
 interface SubagentListInput {
@@ -101,6 +105,55 @@ interface SubagentWaitInput {
   pollIntervalMs?: number;
 }
 
+interface SubagentWaitManyInput {
+  runIds?: string[];
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+  mode?: 'all' | 'any';
+}
+
+interface SubagentProgressInput {
+  runId?: string;
+  title?: string;
+  detail?: string;
+  type?: 'started' | 'status' | 'milestone' | 'output' | 'tool' | 'blocked' | 'recovery' | 'completed';
+  percentage?: number;
+  currentStep?: string;
+  totalSteps?: number;
+  completedSteps?: number;
+}
+
+interface SubagentDiagnoseInput {
+  runId?: string;
+  staleAfterMs?: number;
+}
+
+interface SubagentRecoverInput {
+  runId?: string;
+  action?: 'resume' | 'retry' | 'replace' | 'cancel' | 'request_clarification' | 'manual_intervention';
+  prompt?: string;
+  reason?: string;
+  targetAgentId?: string;
+  task?: string;
+  label?: string;
+  runTimeoutMs?: number;
+  modelProvider?: string;
+  modelId?: string;
+  modelBaseUrl?: string;
+}
+
+interface SubagentReplaceInput {
+  runId?: string;
+  task?: string;
+  targetAgentId?: string;
+  reason?: string;
+  label?: string;
+  runTimeoutMs?: number;
+  modelProvider?: string;
+  modelId?: string;
+  modelBaseUrl?: string;
+}
+
 interface PluginToolDescriptor {
   id?: string;
   name: string;
@@ -109,12 +162,27 @@ interface PluginToolDescriptor {
   action?: unknown;
 }
 
+type WorkboardToolAction =
+  | 'list'
+  | 'show'
+  | 'create'
+  | 'update'
+  | 'comment'
+  | 'complete'
+  | 'block'
+  | 'unblock'
+  | 'link'
+  | 'heartbeat';
+
+type WorkboardToolInput = Record<string, unknown>;
+
 const BUILTIN_TOOL_NAMES = new Set([
   'nodes_camera_snapshot',
   'connector_send_message',
   'app_connector_list',
   'app_connector_execute',
   'subagent_spawn',
+  'subagent_targets',
   'subagent_list',
   'subagent_get',
   'subagent_stop',
@@ -122,6 +190,21 @@ const BUILTIN_TOOL_NAMES = new Set([
   'subagent_close',
   'subagent_send',
   'subagent_wait',
+  'subagent_wait_many',
+  'subagent_progress',
+  'subagent_diagnose',
+  'subagent_recover',
+  'subagent_replace',
+  'workboard_list',
+  'workboard_show',
+  'workboard_create',
+  'workboard_update',
+  'workboard_comment',
+  'workboard_complete',
+  'workboard_block',
+  'workboard_unblock',
+  'workboard_link',
+  'workboard_heartbeat',
 ]);
 
 function sleep(ms: number): Promise<void> {
@@ -144,6 +227,18 @@ function formatNetworkError(error: unknown): string {
     return error.message;
   }
   return String(error);
+}
+
+function readStringProperty(value: unknown, key: string): string {
+  if (!value || typeof value !== 'object') return '';
+  const candidate = (value as Record<string, unknown>)[key];
+  return typeof candidate === 'string' ? candidate.trim() : '';
+}
+
+function truncateText(value: string, maxChars: number): string {
+  const normalized = String(value || '').trim();
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, maxChars)}…`;
 }
 
 function isRetriableConnectionError(error: unknown): boolean {
@@ -202,7 +297,7 @@ async function fetchPluginTools(): Promise<PluginToolDescriptor[]> {
     );
   }
   return Array.isArray(result.tools)
-    ? result.tools.filter((tool): tool is PluginToolDescriptor => (
+    ? result.tools.filter((tool: unknown): tool is PluginToolDescriptor => (
       !!tool
       && typeof tool === 'object'
       && typeof (tool as { name?: unknown }).name === 'string'
@@ -253,6 +348,67 @@ async function executePluginTool(
       isError: true,
     };
   }
+}
+
+async function executeWorkboardTool(
+  action: WorkboardToolAction,
+  args: WorkboardToolInput
+): Promise<CallToolResult> {
+  try {
+    const response = await fetchNodeToolsApi(`/workboard/${action}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...args,
+        parentTaskId: process.env.ACCOMPLISH_TASK_ID || undefined,
+        parentAgentId: process.env.ACCOMPLISH_AGENT_ID || undefined,
+      }),
+    });
+    const result = await response.json().catch(() => ({} as {
+      ok?: boolean;
+      error?: string;
+      detail?: string;
+      result?: unknown;
+    }));
+    if (!response.ok || result.ok === false) {
+      return {
+        content: [{
+          type: 'text',
+          text: `Error: Workboard ${action} failed (${result.error || response.status}).${result.detail ? ` ${result.detail}` : ''}`,
+        }],
+        isError: true,
+      };
+    }
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify(result.result ?? result),
+      }],
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    return {
+      content: [{ type: 'text', text: `Error: Failed to run Workboard ${action}: ${errorMessage}` }],
+      isError: true,
+    };
+  }
+}
+
+function workboardItemSelectorSchema(required: string[] = ['itemId']) {
+  return {
+    type: 'object',
+    properties: {
+      itemId: {
+        type: 'string',
+        description: 'Workboard item id.',
+      },
+      workItemId: {
+        type: 'string',
+        description: 'Alias for itemId.',
+      },
+    },
+    required,
+  };
 }
 
 function buildSnapshotHtml(dataUrl: string, title: string): string {
@@ -436,15 +592,29 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
     },
     {
+      name: 'subagent_targets',
+      description:
+        'List valid helper subagent target agents for the current parent agent. Use this before subagent_spawn if you need a specific helper. If no specific helper is needed, subagent_spawn can omit targetAgentId and will use the current/first allowed agent automatically.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          parentTaskId: {
+            type: 'string',
+            description: 'Optional parent task id override. Defaults to the current task.',
+          },
+        },
+      },
+    },
+    {
       name: 'subagent_spawn',
       description:
-        'Spawn a helper subagent for bounded parallel work. Requires subagents to be enabled for the current parent agent. Returns immediately with child run/session identifiers. Prefer letting child runs continue in the background and rely on completion relay or subagent_get/subagent_list instead of blocking on long waits.',
+        'Spawn a helper subagent for bounded parallel work. Requires subagents to be enabled for the current parent agent. Returns immediately with child run/session identifiers. Do not guess agent ids: call subagent_targets when you need a specific target. If no targetAgentId is provided, the app uses the current agent or first allowed subagent automatically. Prefer letting child runs continue in the background and rely on completion relay or subagent_get/subagent_list instead of blocking on long waits.',
       inputSchema: {
         type: 'object',
         properties: {
           targetAgentId: {
             type: 'string',
-            description: 'Target agent id to run as the helper subagent.',
+            description: 'Optional target agent id or exact agent name. Omit this for the default helper target, or call subagent_targets for valid choices.',
           },
           task: {
             type: 'string',
@@ -478,8 +648,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             type: 'string',
             description: 'Optional base URL for local/custom model overrides.',
           },
+          expectedOutputs: {
+            type: 'array',
+            description: 'Optional expected outputs the parent will use to judge completion, such as files, artifacts, JSON, diffs, or command results.',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string' },
+                kind: { type: 'string' },
+                label: { type: 'string' },
+                description: { type: 'string' },
+                required: { type: 'boolean' },
+                path: { type: 'string' },
+              },
+              required: ['id', 'kind', 'label'],
+            },
+          },
         },
-        required: ['targetAgentId', 'task'],
+        required: ['task'],
       },
     },
     {
@@ -594,7 +780,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     {
       name: 'subagent_wait',
       description:
-        'Do a short bounded wait for a tracked subagent run to finish. This is a polling helper, not a long blocking join. Returns the latest child run state either way. For longer-running child work, rely on completion relay or call subagent_get/subagent_list later.',
+        'Wait for a tracked subagent run to finish. This is a bounded join with a long default wait so the parent agent can use child results before synthesizing. If it returns completed=true, do not call it again for the same run; use the returned child result and answer. For unusually long child work, rely on completion relay or call subagent_get/subagent_list later.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -604,7 +790,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           },
           timeoutMs: {
             type: 'number',
-            description: 'Optional short timeout in milliseconds. Defaults to 20000 and is capped at 25000 to avoid blocking the parent agent too long.',
+            description: 'Optional timeout in milliseconds. Defaults to 600000 and is capped at 1200000. Values below 60000 are raised to 60000 so the parent does not give up too quickly.',
           },
           pollIntervalMs: {
             type: 'number',
@@ -612,6 +798,279 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           },
         },
         required: ['runId'],
+      },
+    },
+    {
+      name: 'subagent_progress',
+      description:
+        'Report or read progress-aware supervision state for a tracked subagent. Child agents should call this with milestone/status/output/blocked events. Parent agents should call it with runId to inspect progress, heartbeat/stall state, expected outputs, result bundle, and recovery history.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          runId: {
+            type: 'string',
+            description: 'Tracked subagent run id. Child agents may omit this; the runtime resolves it from the current task id.',
+          },
+          title: {
+            type: 'string',
+            description: 'Optional concise progress title when reporting progress.',
+          },
+          detail: {
+            type: 'string',
+            description: 'Optional useful detail, partial finding, source summary, or blocked reason.',
+          },
+          type: {
+            type: 'string',
+            description: 'Progress event type: started, status, milestone, output, tool, blocked, recovery, or completed.',
+          },
+          percentage: {
+            type: 'number',
+            description: 'Optional percentage complete, from 0 to 100.',
+          },
+          currentStep: {
+            type: 'string',
+            description: 'Optional current step name.',
+          },
+          totalSteps: {
+            type: 'number',
+            description: 'Optional total expected steps.',
+          },
+          completedSteps: {
+            type: 'number',
+            description: 'Optional completed step count.',
+          },
+        },
+        required: [],
+      },
+    },
+    {
+      name: 'subagent_diagnose',
+      description:
+        'Diagnose whether a tracked subagent appears stalled, blocked, missing expected outputs, or eligible for recovery, and return recommended supervision actions.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          runId: {
+            type: 'string',
+            description: 'Tracked subagent run id.',
+          },
+          staleAfterMs: {
+            type: 'number',
+            description: 'Optional inactivity threshold for stall detection. Defaults to 120000.',
+          },
+        },
+        required: ['runId'],
+      },
+    },
+    {
+      name: 'subagent_recover',
+      description:
+        'Recover a tracked subagent by resuming, retrying, replacing, cancelling, requesting clarification, or recording manual intervention. Resume/retry/request_clarification require a prompt; replace can use task or prompt.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          runId: { type: 'string', description: 'Tracked subagent run id.' },
+          action: {
+            type: 'string',
+            description: 'Recovery action: resume, retry, replace, cancel, request_clarification, or manual_intervention.',
+          },
+          prompt: { type: 'string', description: 'Prompt used for resume, retry, or request_clarification.' },
+          reason: { type: 'string', description: 'Reason recorded in recovery history.' },
+          targetAgentId: { type: 'string', description: 'Optional replacement target agent id or name when action=replace.' },
+          task: { type: 'string', description: 'Optional replacement task or retry prompt.' },
+          label: { type: 'string', description: 'Optional replacement label.' },
+          runTimeoutMs: { type: 'number', description: 'Optional replacement timeout.' },
+          modelProvider: { type: 'string', description: 'Optional provider override.' },
+          modelId: { type: 'string', description: 'Optional model id override.' },
+          modelBaseUrl: { type: 'string', description: 'Optional base URL for local/custom model overrides.' },
+        },
+        required: ['runId', 'action'],
+      },
+    },
+    {
+      name: 'subagent_replace',
+      description:
+        'Stop a tracked subagent if still active and spawn a replacement child run linked to the original run. Use this when diagnosis shows a stalled or unrecoverable child session.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          runId: { type: 'string', description: 'Tracked subagent run id to replace.' },
+          task: { type: 'string', description: 'Replacement task. Defaults to the original last prompt/task.' },
+          targetAgentId: { type: 'string', description: 'Optional replacement target agent id or name. Defaults to original child agent.' },
+          reason: { type: 'string', description: 'Reason recorded in replacement/recovery history.' },
+          label: { type: 'string', description: 'Optional replacement label.' },
+          runTimeoutMs: { type: 'number', description: 'Optional replacement timeout.' },
+          modelProvider: { type: 'string', description: 'Optional provider override.' },
+          modelId: { type: 'string', description: 'Optional model id override.' },
+          modelBaseUrl: { type: 'string', description: 'Optional base URL for local/custom model overrides.' },
+        },
+        required: ['runId'],
+      },
+    },
+    {
+      name: 'subagent_wait_many',
+      description:
+        'Wait for multiple tracked subagent runs in one bounded join. Returns early when a run completes or needs recovery/replacement/partial synthesis, so do not loop blindly after recommendedAction is not wait.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          runIds: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Tracked subagent run ids.',
+          },
+          timeoutMs: {
+            type: 'number',
+            description: 'Optional timeout in milliseconds. Defaults to 600000 and is capped at 1200000.',
+          },
+          pollIntervalMs: {
+            type: 'number',
+            description: 'Optional poll interval in milliseconds. Defaults to 500.',
+          },
+          mode: {
+            type: 'string',
+            description: 'all waits for every run to finish; any returns after one run finishes.',
+          },
+        },
+        required: ['runIds'],
+      },
+    },
+    {
+      name: 'workboard_list',
+      description:
+        'List OpenDeskmate Workboard projects, columns, and work items. Use this before updating work items when you need ids or status columns.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          projectId: { type: 'string', description: 'Optional usage project id to scope the list.' },
+          includeArchived: { type: 'boolean', description: 'Include archived projects/items when true.' },
+        },
+      },
+    },
+    {
+      name: 'workboard_show',
+      description:
+        'Show one Workboard item with its notes, documents, sources, drawings, checklist lists, and project columns.',
+      inputSchema: workboardItemSelectorSchema(),
+    },
+    {
+      name: 'workboard_create',
+      description:
+        'Create a Workboard item inside an existing usage project. Use for follow-up tasks, project work, or durable task tracking.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          projectId: { type: 'string', description: 'Usage project id.' },
+          title: { type: 'string', description: 'Short work item title.' },
+          description: { type: 'string', description: 'Optional work item description or acceptance notes.' },
+          statusId: { type: 'string', description: 'Optional target status column id.' },
+          statusName: { type: 'string', description: 'Optional target status column name.' },
+          priority: { type: 'string', description: 'Optional priority: low, normal, high, urgent.' },
+          assigneeIds: { type: 'array', items: { type: 'string' }, description: 'Optional assignee ids.' },
+          dueDate: { type: 'string', description: 'Optional due date.' },
+          tags: { type: 'array', items: { type: 'string' }, description: 'Optional tags.' },
+        },
+        required: ['projectId', 'title'],
+      },
+    },
+    {
+      name: 'workboard_update',
+      description:
+        'Update a Workboard item title, description, status, priority, assignees, due date, blocked flag, archive flag, or tags.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          itemId: { type: 'string', description: 'Workboard item id.' },
+          title: { type: 'string' },
+          description: { type: 'string' },
+          statusId: { type: 'string' },
+          statusName: { type: 'string' },
+          priority: { type: 'string' },
+          assigneeIds: { type: 'array', items: { type: 'string' } },
+          dueDate: { type: 'string' },
+          tags: { type: 'array', items: { type: 'string' } },
+          blocked: { type: 'boolean' },
+          blockedReason: { type: 'string' },
+          archived: { type: 'boolean' },
+        },
+        required: ['itemId'],
+      },
+    },
+    {
+      name: 'workboard_comment',
+      description:
+        'Add a dated agent comment/note to a Workboard item.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          itemId: { type: 'string', description: 'Workboard item id.' },
+          title: { type: 'string', description: 'Optional note title.' },
+          text: { type: 'string', description: 'Comment text.' },
+        },
+        required: ['itemId', 'text'],
+      },
+    },
+    {
+      name: 'workboard_complete',
+      description:
+        'Mark a Workboard item complete by moving it to the done column when available and clearing blocked state.',
+      inputSchema: workboardItemSelectorSchema(),
+    },
+    {
+      name: 'workboard_block',
+      description:
+        'Mark a Workboard item blocked, record the reason, and move it to a waiting/blocked column when available.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          itemId: { type: 'string', description: 'Workboard item id.' },
+          reason: { type: 'string', description: 'Reason the item is blocked.' },
+        },
+        required: ['itemId', 'reason'],
+      },
+    },
+    {
+      name: 'workboard_unblock',
+      description:
+        'Clear blocked state on a Workboard item and optionally add an unblocked note.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          itemId: { type: 'string', description: 'Workboard item id.' },
+          text: { type: 'string', description: 'Optional note explaining what changed.' },
+        },
+        required: ['itemId'],
+      },
+    },
+    {
+      name: 'workboard_link',
+      description:
+        'Attach a source URL, document URL, or local document path to a Workboard item.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          itemId: { type: 'string', description: 'Workboard item id.' },
+          url: { type: 'string', description: 'URL or local path to link.' },
+          link: { type: 'string', description: 'Alias for url.' },
+          path: { type: 'string', description: 'Alias for url for local files.' },
+          kind: { type: 'string', description: 'Use document to force a URL to be saved as a document link.' },
+          title: { type: 'string', description: 'Link title or document label.' },
+          description: { type: 'string', description: 'Optional source description.' },
+        },
+        required: ['itemId'],
+      },
+    },
+    {
+      name: 'workboard_heartbeat',
+      description:
+        'Add a brief heartbeat/progress note to a Workboard item while working in the background.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          itemId: { type: 'string', description: 'Workboard item id.' },
+          text: { type: 'string', description: 'Progress update.' },
+        },
+        required: ['itemId', 'text'],
       },
     },
     ...pluginTools.map((tool) => ({
@@ -628,21 +1087,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
     return executePluginTool(request.params.name, (request.params.arguments || {}) as Record<string, unknown>);
   }
 
+  if (request.params.name.startsWith('workboard_')) {
+    const action = request.params.name.replace(/^workboard_/, '') as WorkboardToolAction;
+    return executeWorkboardTool(action, (request.params.arguments || {}) as WorkboardToolInput);
+  }
+
   if (request.params.name === 'subagent_spawn') {
     const args = (request.params.arguments || {}) as SubagentSpawnInput;
     const parentTaskId = (process.env.ACCOMPLISH_TASK_ID || '').trim();
     const parentAgentId = (process.env.ACCOMPLISH_AGENT_ID || '').trim().toLowerCase();
-    const targetAgentId = (args.targetAgentId || '').trim().toLowerCase();
+    const targetAgentId = (args.targetAgentId || '').trim();
     const task = (args.task || '').trim();
     if (!parentTaskId || !parentAgentId) {
       return {
         content: [{ type: 'text', text: 'Error: parent task context is unavailable for subagent spawning.' }],
-        isError: true,
-      };
-    }
-    if (!targetAgentId) {
-      return {
-        content: [{ type: 'text', text: 'Error: targetAgentId is required.' }],
         isError: true,
       };
     }
@@ -669,11 +1127,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
           modelProvider: args.modelProvider,
           modelId: args.modelId,
           modelBaseUrl: args.modelBaseUrl,
+          expectedOutputs: Array.isArray(args.expectedOutputs) ? args.expectedOutputs : undefined,
         }),
       });
       const result = await response.json().catch(() => ({} as {
         status?: string;
         error?: string;
+        targetAgentId?: string;
         runId?: string;
         childTaskId?: string;
         childSessionKey?: string;
@@ -694,6 +1154,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
           type: 'text',
           text: JSON.stringify({
             status: result.status,
+            targetAgentId: result.targetAgentId || targetAgentId || undefined,
             runId: result.runId,
             childTaskId: result.childTaskId,
             childSessionKey: result.childSessionKey,
@@ -705,6 +1166,52 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
       const errorMessage = error instanceof Error ? error.message : String(error);
       return {
         content: [{ type: 'text', text: `Error: Failed to spawn subagent: ${errorMessage}` }],
+        isError: true,
+      };
+    }
+  }
+
+  if (request.params.name === 'subagent_targets') {
+    const args = (request.params.arguments || {}) as SubagentListInput;
+    const parentTaskId = (args.parentTaskId || process.env.ACCOMPLISH_TASK_ID || '').trim();
+    const parentAgentId = (process.env.ACCOMPLISH_AGENT_ID || '').trim().toLowerCase();
+    if (!parentAgentId) {
+      return {
+        content: [{ type: 'text', text: 'Error: parent agent context is unavailable for subagent target lookup.' }],
+        isError: true,
+      };
+    }
+
+    try {
+      const response = await fetchNodeToolsApi('/subagents/targets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          parentTaskId,
+          parentAgentId,
+        }),
+      });
+      const result = await response.json().catch(() => ({} as {
+        ok?: boolean;
+        error?: string;
+        detail?: string;
+      }));
+      if (!response.ok || result.ok === false) {
+        return {
+          content: [{
+            type: 'text',
+            text: `Error: Subagent targets lookup failed (${result.error || response.status}).${result.detail ? ` ${result.detail}` : ''}`,
+          }],
+          isError: true,
+        };
+      }
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return {
+        content: [{ type: 'text', text: `Error: Failed to list subagent targets: ${errorMessage}` }],
         isError: true,
       };
     }
@@ -987,7 +1494,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
 
     try {
       const requestedTimeoutMs = typeof args.timeoutMs === 'number' ? args.timeoutMs : SUBAGENT_WAIT_DEFAULT_TIMEOUT_MS;
-      const safeTimeoutMs = Math.max(1_000, Math.min(SUBAGENT_WAIT_MAX_TIMEOUT_MS, Math.round(requestedTimeoutMs)));
+      const safeTimeoutMs = Math.max(60_000, Math.min(SUBAGENT_WAIT_MAX_TIMEOUT_MS, Math.round(requestedTimeoutMs)));
       const response = await fetchNodeToolsApi('/subagents/wait', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1014,13 +1521,66 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
           isError: true,
         };
       }
+      const completed = result.completed === true;
+      if (!completed) {
+        const pendingWaitCount = pendingSubagentWaitCounts.get(runId) || 0;
+        pendingSubagentWaitCounts.set(runId, pendingWaitCount + 1);
+        completedSubagentWaitCounts.delete(runId);
+        if (pendingWaitCount > 0) {
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                completed: false,
+                waitedMs: typeof result.waitedMs === 'number' ? result.waitedMs : 0,
+                run: result.run ?? null,
+                repeatedWait: true,
+                answerNow: pendingWaitCount >= 2,
+                nextAction: pendingWaitCount >= 2
+                  ? 'Stop polling this subagent in this turn. Tell the user the child work is still running and that the relayed completion will appear when it finishes.'
+                  : 'The subagent is still running. Do other useful work, wait for a different child run, or wait once more later if a final synthesis depends on this result.',
+              }),
+            }],
+          };
+        }
+      } else {
+        pendingSubagentWaitCounts.delete(runId);
+        const completedWaitCount = completedSubagentWaitCounts.get(runId) || 0;
+        completedSubagentWaitCounts.set(runId, completedWaitCount + 1);
+        if (completedWaitCount > 0) {
+          const finalReport = truncateText(readStringProperty(result.run, 'finalReport'), SUBAGENT_REPEAT_COMPLETED_REPORT_MAX_CHARS);
+          const childStatus = readStringProperty(result.run, 'resultStatus') || readStringProperty(result.run, 'status') || 'completed';
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                completed: true,
+                waitedMs: typeof result.waitedMs === 'number' ? result.waitedMs : 0,
+                run: result.run ?? null,
+                repeatedWait: true,
+                answerNow: true,
+                status: childStatus,
+                finalReport,
+                nextAction: 'Do not call subagent_wait for this run again. Use this completed child result and produce the final answer now.',
+              }),
+            }],
+          };
+        }
+      }
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
-            completed: result.completed === true,
+            completed,
             waitedMs: typeof result.waitedMs === 'number' ? result.waitedMs : 0,
             run: result.run ?? null,
+            answerNow: completed,
+            finalReport: completed
+              ? readStringProperty(result.run, 'finalReport')
+              : undefined,
+            nextAction: completed
+              ? 'The subagent is complete. Do not call subagent_wait for this run again; use this run data and produce the final answer.'
+              : 'The subagent is not complete yet. Continue other useful work or wait later with a short timeout if needed.',
           }),
         }],
       };
@@ -1028,6 +1588,291 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
       const errorMessage = error instanceof Error ? error.message : String(error);
       return {
         content: [{ type: 'text', text: `Error: Failed to wait for subagent: ${errorMessage}` }],
+        isError: true,
+      };
+    }
+  }
+
+  if (request.params.name === 'subagent_progress') {
+    const args = (request.params.arguments || {}) as SubagentProgressInput;
+    const runId = (args.runId || '').trim();
+    const taskId = (process.env.ACCOMPLISH_TASK_ID || '').trim();
+
+    try {
+      const response = await fetchNodeToolsApi('/subagents/progress', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          runId: runId || undefined,
+          taskId: taskId || undefined,
+          title: args.title,
+          detail: args.detail,
+          type: args.type,
+          percentage: typeof args.percentage === 'number' ? args.percentage : undefined,
+          currentStep: args.currentStep,
+          totalSteps: typeof args.totalSteps === 'number' ? args.totalSteps : undefined,
+          completedSteps: typeof args.completedSteps === 'number' ? args.completedSteps : undefined,
+        }),
+      });
+      const result = await response.json().catch(() => ({})) as {
+        ok?: boolean;
+        error?: string;
+        detail?: string;
+        supervisor?: { recommendedAction?: string };
+        [key: string]: unknown;
+      };
+      if (!response.ok || result.ok === false) {
+        return {
+          content: [{
+            type: 'text',
+            text: `Error: Subagent progress failed (${result.error || response.status}).${result.detail ? ` ${result.detail}` : ''}`,
+          }],
+          isError: true,
+        };
+      }
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            ...result,
+            guidance: result.supervisor?.recommendedAction && result.supervisor.recommendedAction !== 'wait'
+              ? `Recommended action is ${result.supervisor.recommendedAction}; do not keep blind-polling. Recover, replace, synthesize partial output, or answer as recommended.`
+              : 'Progress recorded/read. Continue useful work and report milestones when they materially change.',
+          }),
+        }],
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return {
+        content: [{ type: 'text', text: `Error: Failed to read subagent progress: ${errorMessage}` }],
+        isError: true,
+      };
+    }
+  }
+
+  if (request.params.name === 'subagent_diagnose') {
+    const args = (request.params.arguments || {}) as SubagentDiagnoseInput;
+    const runId = (args.runId || '').trim();
+    if (!runId) {
+      return {
+        content: [{ type: 'text', text: 'Error: runId is required.' }],
+        isError: true,
+      };
+    }
+
+    try {
+      const response = await fetchNodeToolsApi('/subagents/diagnose', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          runId,
+          staleAfterMs: typeof args.staleAfterMs === 'number' ? args.staleAfterMs : undefined,
+        }),
+      });
+      const result = await response.json().catch(() => ({} as { ok?: boolean; error?: string; detail?: string }));
+      if (!response.ok || result.ok === false) {
+        return {
+          content: [{
+            type: 'text',
+            text: `Error: Subagent diagnose failed (${result.error || response.status}).${result.detail ? ` ${result.detail}` : ''}`,
+          }],
+          isError: true,
+        };
+      }
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return {
+        content: [{ type: 'text', text: `Error: Failed to diagnose subagent: ${errorMessage}` }],
+        isError: true,
+      };
+    }
+  }
+
+  if (request.params.name === 'subagent_recover') {
+    const args = (request.params.arguments || {}) as SubagentRecoverInput;
+    const runId = (args.runId || '').trim();
+    const action = (args.action || '').trim();
+    if (!runId || !action) {
+      return {
+        content: [{ type: 'text', text: 'Error: runId and action are required.' }],
+        isError: true,
+      };
+    }
+
+    try {
+      const response = await fetchNodeToolsApi('/subagents/recover', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          runId,
+          action,
+          prompt: args.prompt,
+          reason: args.reason,
+          targetAgentId: args.targetAgentId,
+          task: args.task,
+          label: args.label,
+          runTimeoutMs: typeof args.runTimeoutMs === 'number' ? args.runTimeoutMs : undefined,
+          modelProvider: args.modelProvider,
+          modelId: args.modelId,
+          modelBaseUrl: args.modelBaseUrl,
+        }),
+      });
+      const result = await response.json().catch(() => ({} as { ok?: boolean; error?: string; detail?: string }));
+      if (!response.ok || result.ok === false) {
+        return {
+          content: [{
+            type: 'text',
+            text: `Error: Subagent recover failed (${result.error || response.status}).${result.detail ? ` ${result.detail}` : ''}`,
+          }],
+          isError: true,
+        };
+      }
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return {
+        content: [{ type: 'text', text: `Error: Failed to recover subagent: ${errorMessage}` }],
+        isError: true,
+      };
+    }
+  }
+
+  if (request.params.name === 'subagent_replace') {
+    const args = (request.params.arguments || {}) as SubagentReplaceInput;
+    const runId = (args.runId || '').trim();
+    if (!runId) {
+      return {
+        content: [{ type: 'text', text: 'Error: runId is required.' }],
+        isError: true,
+      };
+    }
+
+    try {
+      const response = await fetchNodeToolsApi('/subagents/replace', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          runId,
+          task: args.task,
+          targetAgentId: args.targetAgentId,
+          reason: args.reason,
+          label: args.label,
+          runTimeoutMs: typeof args.runTimeoutMs === 'number' ? args.runTimeoutMs : undefined,
+          modelProvider: args.modelProvider,
+          modelId: args.modelId,
+          modelBaseUrl: args.modelBaseUrl,
+        }),
+      });
+      const result = await response.json().catch(() => ({} as { ok?: boolean; error?: string; detail?: string }));
+      if (!response.ok || result.ok === false) {
+        return {
+          content: [{
+            type: 'text',
+            text: `Error: Subagent replace failed (${result.error || response.status}).${result.detail ? ` ${result.detail}` : ''}`,
+          }],
+          isError: true,
+        };
+      }
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return {
+        content: [{ type: 'text', text: `Error: Failed to replace subagent: ${errorMessage}` }],
+        isError: true,
+      };
+    }
+  }
+
+  if (request.params.name === 'subagent_wait_many') {
+    const args = (request.params.arguments || {}) as SubagentWaitManyInput;
+    const runIds = Array.isArray(args.runIds) ? args.runIds.map((runId) => runId.trim()).filter(Boolean) : [];
+    if (runIds.length === 0) {
+      return {
+        content: [{ type: 'text', text: 'Error: runIds is required.' }],
+        isError: true,
+      };
+    }
+
+    try {
+      const requestedTimeoutMs = typeof args.timeoutMs === 'number' ? args.timeoutMs : SUBAGENT_WAIT_DEFAULT_TIMEOUT_MS;
+      const safeTimeoutMs = Math.max(1_000, Math.min(SUBAGENT_WAIT_MAX_TIMEOUT_MS, Math.round(requestedTimeoutMs)));
+      const response = await fetchNodeToolsApi('/subagents/wait-many', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          runIds,
+          timeoutMs: safeTimeoutMs,
+          pollIntervalMs: typeof args.pollIntervalMs === 'number' ? args.pollIntervalMs : undefined,
+          mode: args.mode === 'any' ? 'any' : 'all',
+        }),
+      });
+      const result = await response.json().catch(() => ({} as {
+        ok?: boolean;
+        error?: string;
+        detail?: string;
+        completed?: boolean;
+        waitedMs?: number;
+        runs?: Array<Record<string, unknown>>;
+        completedRuns?: Array<Record<string, unknown>>;
+        pendingRuns?: Array<Record<string, unknown>>;
+        staleRuns?: Array<Record<string, unknown>>;
+        stuckRuns?: Array<Record<string, unknown>>;
+        failedRuns?: Array<Record<string, unknown>>;
+        recommendedAction?: string;
+      }));
+      if (!response.ok || result.ok === false) {
+        return {
+          content: [{
+            type: 'text',
+            text: `Error: Subagent wait_many failed (${result.error || response.status}).${result.detail ? ` ${result.detail}` : ''}`,
+          }],
+          isError: true,
+        };
+      }
+      const completed = result.completed === true;
+      const completedRuns = Array.isArray(result.completedRuns) ? result.completedRuns : [];
+      const pendingRuns = Array.isArray(result.pendingRuns) ? result.pendingRuns : [];
+      const runIdOf = (run: Record<string, unknown>) => typeof run.runId === 'string' ? run.runId : undefined;
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            completed,
+            mode: args.mode === 'any' ? 'any' : 'all',
+            waitedMs: typeof result.waitedMs === 'number' ? result.waitedMs : 0,
+            runs: result.runs ?? [],
+            completedRuns,
+            pendingRuns,
+            staleRuns: result.staleRuns ?? [],
+            stuckRuns: result.stuckRuns ?? [],
+            failedRuns: result.failedRuns ?? [],
+            completedRunIds: completedRuns.map(runIdOf).filter(Boolean),
+            pendingRunIds: pendingRuns.map(runIdOf).filter(Boolean),
+            recommendedAction: result.recommendedAction || (completed ? 'answer_now' : 'wait'),
+            answerNow: completed || result.recommendedAction === 'answer_now',
+            nextAction: completed || result.recommendedAction === 'answer_now'
+              ? 'The requested subagent wait condition is complete. Use the returned child results and synthesize now.'
+              : result.recommendedAction === 'recover_child'
+                ? 'At least one child needs recovery. Use subagent_diagnose, then subagent_recover with a focused prompt. Do not blind-poll.'
+                : result.recommendedAction === 'replace_child'
+                  ? 'At least one child should be replaced. Use subagent_replace with the original task and useful partial findings. Do not blind-poll.'
+                  : result.recommendedAction === 'synthesize_partial'
+                    ? 'A child has useful partial output but is not healthy. Synthesize from partial output or replace it if the missing work is critical.'
+                    : 'Some subagents are still running. Continue other useful work or wait later; do not repeat wait calls without doing something useful.',
+          }),
+        }],
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return {
+        content: [{ type: 'text', text: `Error: Failed to wait for subagents: ${errorMessage}` }],
         isError: true,
       };
     }

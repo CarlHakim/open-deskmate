@@ -31,6 +31,22 @@ const PROVIDER_LABELS: Record<string, string> = {
   ollama: 'Ollama',
 };
 
+const SUBAGENT_RUN_LIST_LIMIT = 180;
+const SUBAGENT_TRANSCRIPT_INITIAL_LIMIT = 80;
+const SUBAGENT_TRANSCRIPT_INCREMENT = 80;
+
+function getQueryFromSearch(search: string): string {
+  return new URLSearchParams(search).get('q')?.trim() || '';
+}
+
+function getRunIdFromSearch(search: string): string {
+  return new URLSearchParams(search).get('runId')?.trim() || '';
+}
+
+function isActiveSubagentRun(run?: Pick<SubagentRunDetail, 'status'> | null): boolean {
+  return Boolean(run && (run.status === 'running' || run.status === 'accepted'));
+}
+
 function formatSubagentRunStatus(status: SubagentRunDetail['status'], resultStatus?: SubagentRunDetail['resultStatus']): string {
   if (status === 'done') {
     if (resultStatus === 'interrupted') return 'Interrupted';
@@ -113,9 +129,11 @@ export default function SubagentsPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(() => getQueryFromSearch(location.search));
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [includeArchived, setIncludeArchived] = useState(true);
+  const [runsTotal, setRunsTotal] = useState(0);
+  const [runsTruncated, setRunsTruncated] = useState(false);
   const [detailRun, setDetailRun] = useState<SubagentRunDetail | null>(null);
   const [detailTask, setDetailTask] = useState<Task | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -123,15 +141,18 @@ export default function SubagentsPage() {
   const [detailSending, setDetailSending] = useState(false);
   const [detailMutating, setDetailMutating] = useState(false);
   const [detailModelOverride, setDetailModelOverride] = useState('');
+  const [detailMessageLimit, setDetailMessageLimit] = useState(SUBAGENT_TRANSCRIPT_INITIAL_LIMIT);
   const [modelProviders, setModelProviders] = useState<ProviderConfig[]>([]);
   const [modelApiKeyStatus, setModelApiKeyStatus] = useState<Record<string, { exists: boolean; prefix?: string }>>({});
 
   const agentMap = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
+  const requestedRunId = useMemo(() => {
+    return getRunIdFromSearch(location.search);
+  }, [location.search]);
 
   useEffect(() => {
     const params = new URLSearchParams(location.search);
     const nextFilter = params.get('filter');
-    const nextQuery = params.get('q');
     const includeArchivedParam = params.get('archived');
     const normalizedFilter: StatusFilter =
       nextFilter === 'active'
@@ -141,9 +162,7 @@ export default function SubagentsPage() {
         ? nextFilter
         : 'all';
     setStatusFilter(normalizedFilter);
-    if (typeof nextQuery === 'string') {
-      setQuery(nextQuery);
-    }
+    setQuery(getQueryFromSearch(location.search));
     if (includeArchivedParam === '1' || normalizedFilter === 'archived' || normalizedFilter === 'closed') {
       setIncludeArchived(true);
     }
@@ -152,8 +171,14 @@ export default function SubagentsPage() {
   const refreshRuns = useCallback(async (showBusy = false) => {
     if (showBusy) setRefreshing(true);
     try {
-      const result = await accomplish.listAllSubagents({ includeArchived });
+      const result = await accomplish.listAllSubagents({
+        includeArchived,
+        query: query.trim() || undefined,
+        limit: SUBAGENT_RUN_LIST_LIMIT,
+      });
       setRuns(result.runs || []);
+      setRunsTotal(typeof result.total === 'number' ? result.total : (result.runs || []).length);
+      setRunsTruncated(Boolean(result.truncated));
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -161,7 +186,7 @@ export default function SubagentsPage() {
       setLoading(false);
       if (showBusy) setRefreshing(false);
     }
-  }, [accomplish, includeArchived]);
+  }, [accomplish, includeArchived, query]);
 
   const loadDetail = useCallback(async (run: SubagentRunDetail, options?: { showLoading?: boolean; replaceRun?: boolean }) => {
     if (options?.replaceRun !== false) {
@@ -190,6 +215,24 @@ export default function SubagentsPage() {
   }, [accomplish]);
 
   useEffect(() => {
+    if (!requestedRunId) return;
+    let cancelled = false;
+    void accomplish.getSubagent({ runId: requestedRunId })
+      .then((run) => {
+        if (cancelled || !run) return;
+        setDetailRun(run);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : String(err));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [accomplish, requestedRunId]);
+
+  useEffect(() => {
     void loadAgents();
   }, [loadAgents]);
 
@@ -214,27 +257,40 @@ export default function SubagentsPage() {
     };
   }, [accomplish]);
 
+  const hasActiveRuns = useMemo(() => runs.some(isActiveSubagentRun) || isActiveSubagentRun(detailRun), [detailRun, runs]);
+
   useEffect(() => {
     void refreshRuns();
+  }, [refreshRuns]);
+
+  useEffect(() => {
+    if (!hasActiveRuns) {
+      return;
+    }
     const timer = window.setInterval(() => {
       void refreshRuns();
     }, 2000);
     return () => window.clearInterval(timer);
-  }, [refreshRuns]);
+  }, [hasActiveRuns, refreshRuns]);
 
   useEffect(() => {
     if (!detailRun) {
       setDetailTask(null);
       setDetailPrompt('');
       setDetailModelOverride('');
+      setDetailMessageLimit(SUBAGENT_TRANSCRIPT_INITIAL_LIMIT);
       return;
     }
+    setDetailMessageLimit(SUBAGENT_TRANSCRIPT_INITIAL_LIMIT);
     void loadDetail(detailRun, { showLoading: true, replaceRun: false });
+    if (!isActiveSubagentRun(detailRun)) {
+      return;
+    }
     const timer = window.setInterval(() => {
       void loadDetail(detailRun, { showLoading: false, replaceRun: false });
     }, 2000);
     return () => window.clearInterval(timer);
-  }, [detailRun?.runId, loadDetail]);
+  }, [detailRun?.runId, detailRun?.status, loadDetail]);
 
   const availableModelOptions = useMemo(() => (
     modelProviders
@@ -337,6 +393,16 @@ export default function SubagentsPage() {
     }
   }, [accomplish, refreshRuns]);
 
+  const openRunWindow = useCallback((run: SubagentRunDetail) => {
+    void accomplish.openTaskWindow({
+      kind: 'subagent-run',
+      runId: run.runId,
+      title: run.label || run.task || run.childTaskId,
+    }).catch((err) => {
+      setError(err instanceof Error ? err.message : String(err));
+    });
+  }, [accomplish]);
+
   const sendFollowUp = useCallback(async () => {
     if (!detailRun || !detailTask || !detailPrompt.trim()) return;
     setDetailSending(true);
@@ -361,7 +427,7 @@ export default function SubagentsPage() {
 
   return (
     <div className="h-full overflow-hidden bg-background">
-      <div className="flex h-full flex-col gap-4 p-6">
+      <div className="flex h-full flex-col gap-4 p-4 sm:p-6">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="flex items-center gap-2">
@@ -411,7 +477,13 @@ export default function SubagentsPage() {
 
         <Card className="min-h-0 flex-1 overflow-hidden border-border/60 bg-card/70">
           <div className="flex h-full flex-col">
-            <div className="border-b border-border/60 px-4 py-3 text-sm text-muted-foreground">{loading ? 'Loading subagent runs…' : `${filteredRuns.length} subagent run${filteredRuns.length === 1 ? '' : 's'}`}</div>
+            <div className="border-b border-border/60 px-4 py-3 text-sm text-muted-foreground">
+              {loading
+                ? 'Loading subagent runs…'
+                : runsTruncated
+                  ? `${filteredRuns.length} of ${runsTotal} subagent runs loaded. Refine search to narrow older history.`
+                  : `${filteredRuns.length} subagent run${filteredRuns.length === 1 ? '' : 's'}`}
+            </div>
             <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
               {loading ? (
                 <div className="flex h-full items-center justify-center text-sm text-muted-foreground"><Loader2 className="mr-2 h-4 w-4 animate-spin" />Loading subagent runs…</div>
@@ -424,14 +496,14 @@ export default function SubagentsPage() {
                     const parentAgent = agentMap.get(run.parentAgentId);
                     const stoppable = run.status === 'running' || run.status === 'accepted';
                     return (
-                      <div key={run.runId} className="rounded-xl border border-border/60 bg-background/70 p-4">
-                        <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div key={run.runId} className="rounded-lg border border-border/60 bg-card/70 p-4 shadow-sm">
+                        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                           <div className="min-w-0 flex-1">
                             <div className="flex flex-wrap items-center gap-2">
                               <div className="truncate text-sm font-semibold text-foreground">{run.label || run.childTaskSummary || run.childAgentId}</div>
                               <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-medium', getSubagentRunStatusClasses(run.status, run.resultStatus))}>{formatSubagentRunStatus(run.status, run.resultStatus)}</span>
                               <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">{run.mode === 'session' ? 'Session mode' : 'Run mode'}</span>
-                              {run.archivedAt ? <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-700">Archived</span> : null}
+                              {run.archivedAt ? <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">Archived</span> : null}
                               {run.closedAt ? <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">Closed</span> : null}
                             </div>
                             <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
@@ -443,17 +515,18 @@ export default function SubagentsPage() {
                               <span>Updated {formatRelativeTime(run.updatedAt)}</span>
                             </div>
                             <div className="mt-2 whitespace-pre-wrap text-sm text-muted-foreground">{run.task}</div>
-                            <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-muted-foreground">
-                              <span>Child task: {run.childTaskId}</span>
-                              <span>Parent task: {run.parentTaskId}</span>
-                              {run.inheritedContext?.workingDirectory ? <span>Working dir: {run.inheritedContext.workingDirectory}</span> : null}
+                            <div className="mt-2 flex min-w-0 flex-wrap gap-3 text-[11px] text-muted-foreground">
+                              <span className="break-all">Child task: {run.childTaskId}</span>
+                              <span className="break-all">Parent task: {run.parentTaskId}</span>
+                              {run.inheritedContext?.workingDirectory ? <span className="break-all">Working dir: {run.inheritedContext.workingDirectory}</span> : null}
                             </div>
                           </div>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <Button variant="outline" size="sm" onClick={() => void loadDetail(run)}>Open</Button>
-                            <Button variant="outline" size="sm" onClick={() => navigate(`/execution/${run.childTaskId}`)} className="gap-2"><ExternalLink className="h-3.5 w-3.5" />Open task</Button>
-                            {stoppable ? <Button variant="outline" size="sm" onClick={() => void stopRun(run.runId)} className="gap-2"><Square className="h-3.5 w-3.5" />Stop</Button> : null}
-                            <Button variant="outline" size="sm" onClick={() => void archiveRun(run.runId, !run.archivedAt)} className="gap-2"><Archive className="h-3.5 w-3.5" />{run.archivedAt ? 'Restore' : 'Archive'}</Button>
+                          <div className="flex shrink-0 flex-wrap items-center gap-1.5 lg:justify-end">
+                            <Button variant="outline" size="sm" onClick={() => void loadDetail(run)} className="h-8 px-2 text-xs">Open</Button>
+                            <Button variant="outline" size="sm" onClick={() => openRunWindow(run)} className="h-8 gap-1.5 px-2 text-xs"><ExternalLink className="h-3.5 w-3.5" />Window</Button>
+                            <Button variant="outline" size="sm" onClick={() => navigate(`/execution/${run.childTaskId}`)} className="h-8 gap-1.5 px-2 text-xs"><ExternalLink className="h-3.5 w-3.5" />Open task</Button>
+                            {stoppable ? <Button variant="outline" size="sm" onClick={() => void stopRun(run.runId)} className="h-8 gap-1.5 px-2 text-xs"><Square className="h-3.5 w-3.5" />Stop</Button> : null}
+                            <Button variant="outline" size="sm" onClick={() => void archiveRun(run.runId, !run.archivedAt)} className="h-8 gap-1.5 px-2 text-xs"><Archive className="h-3.5 w-3.5" />{run.archivedAt ? 'Restore' : 'Archive'}</Button>
                           </div>
                         </div>
                       </div>
@@ -514,12 +587,31 @@ export default function SubagentsPage() {
                 <div className="text-xs text-muted-foreground">No transcript available yet.</div>
               ) : (
                 <div className="space-y-3">
-                  {detailTask.messages.map((message, index) => (
-                    <div key={`${message.id}-${index}`} className={cn('rounded-md border px-3 py-2', getMessageCardClasses(message))}>
+                  {detailTask.messages.length > detailMessageLimit ? (
+                    <div className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                      <span>Showing latest {detailMessageLimit} of {detailTask.messages.length} messages.</span>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        onClick={() => setDetailMessageLimit((current) => current + SUBAGENT_TRANSCRIPT_INCREMENT)}
+                      >
+                        Show earlier messages
+                      </Button>
+                    </div>
+                  ) : null}
+                  {detailTask.messages
+                    .slice(Math.max(0, detailTask.messages.length - detailMessageLimit))
+                    .map((message, visibleIndex) => {
+                      const index = Math.max(0, detailTask.messages.length - detailMessageLimit) + visibleIndex;
+                      return (
+                        <div key={`${message.id}-${index}`} className={cn('rounded-md border px-3 py-2', getMessageCardClasses(message))}>
                       <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{formatMessageType(message)}</div>
                       <div className="prose prose-sm max-w-none dark:prose-invert prose-p:my-2 prose-pre:my-2"><ReactMarkdown>{message.content || ''}</ReactMarkdown></div>
                     </div>
-                  ))}
+                      );
+                    })}
                 </div>
               )}
             </div>

@@ -25,6 +25,10 @@ export interface TaskConfig {
   allowedTools?: string[];
   /** System prompt to append */
   systemPromptAppend?: string;
+  /** Internal runtime override for formal toolsets, used by helper/subagent dispatch. */
+  toolsetOverrideIds?: import('./toolsets').ToolsetId[];
+  /** Internal runtime override for deferred tool discovery, used by helper/subagent dispatch. */
+  deferredToolDiscoveryOverride?: boolean;
   /** JSON schema for structured output */
   outputSchema?: object;
   /** Session ID for resuming */
@@ -81,6 +85,10 @@ export interface Task {
   miniMaxHistoricalImageSessionResetAt?: string;
   /** Runtime activity timeline for visibility into model/tool/permission progress. */
   activity?: TaskActivityEvent[];
+  /** Internal hint: this task was started from Build mode and may use Build runtime tools. */
+  buildMode?: boolean;
+  /** Build mode workspace path relative to the agent workspace root. */
+  buildWorkspaceRelativePath?: string;
 }
 
 export type TaskActivityKind =
@@ -93,6 +101,22 @@ export type TaskActivityKind =
   | 'model_result'
   | 'stall_detected'
   | 'recovery_started'
+  | 'subagent_progress'
+  | 'subagent_stale'
+  | 'subagent_stuck'
+  | 'subagent_recovery_started'
+  | 'subagent_recovery_finished'
+  | 'subagent_recovered'
+  | 'subagent_replaced'
+  | 'subagent_closed'
+  | 'subagent_partial_used'
+  | 'subagent_completed'
+  | 'subagent_failed'
+  | 'subagent_shared_context_updated'
+  | 'memory_updated'
+  | 'skill_created'
+  | 'skill_updated'
+  | 'skill_curated'
   | 'task_finished';
 
 export type TaskActivityStatus = 'pending' | 'running' | 'success' | 'warning' | 'error' | 'info';
@@ -109,6 +133,11 @@ export interface TaskActivityEvent {
   toolName?: string;
   messageId?: string;
   recoverable?: boolean;
+  subagentRunId?: string;
+  subagentTaskId?: string;
+  parentTaskId?: string;
+  recoveryId?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface TaskAttachment {

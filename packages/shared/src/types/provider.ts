@@ -2,6 +2,8 @@
  * Provider and model configuration types for multi-provider support
  */
 
+import type { ToolsetId } from './toolsets';
+
 export type BuiltinProviderType = 'anthropic' | 'openai' | 'google' | 'xai' | 'ollama' | 'custom';
 export type ProviderType = BuiltinProviderType | (string & {});
 
@@ -22,6 +24,7 @@ export interface ModelConfig {
   contextWindow?: number;
   maxOutputTokens?: number;
   supportsVision?: boolean;
+  toolsetIds?: ToolsetId[];
 }
 
 export interface SelectedModel {
@@ -37,6 +40,7 @@ export interface OllamaModelInfo {
   id: string;        // e.g., "qwen3:latest"
   displayName: string;
   size: number;
+  toolsetIds?: ToolsetId[];
 }
 
 export type OllamaToolMode = 'off' | 'internet' | 'workspace-read' | 'workspace-edit' | 'desktop' | 'full';
@@ -59,6 +63,8 @@ export interface OllamaConfig {
    * - full: full OpenDeskmate prompt, built-in tools, built-in MCP servers, and custom MCP servers.
    */
   toolMode?: OllamaToolMode;
+  /** Formal toolset metadata for local model capability discovery. */
+  toolsetIds?: ToolsetId[];
 }
 
 /**

@@ -12,6 +12,25 @@ describe('user-skills', () => {
     vi.resetModules();
   });
 
+  it('resolves skill automation mode with legacy boolean compatibility', async () => {
+    vi.doMock('electron', () => ({
+      app: {
+        isPackaged: false,
+      },
+    }));
+
+    vi.doMock('../src/main/services/agent-context', () => ({
+      getAgentContext: () => ({ workspaceRoot: '' }),
+    }));
+
+    const mod = await import('../src/main/services/user-skills');
+
+    expect(mod.resolveUserSkillAutomationMode({ skillAutomationMode: 'automatic' })).toBe('automatic');
+    expect(mod.resolveUserSkillAutomationMode({ autoSkillEnabled: false, autoSkillAutoPromoteLowRisk: true })).toBe('off');
+    expect(mod.resolveUserSkillAutomationMode({ autoSkillEnabled: true, autoSkillAutoPromoteLowRisk: false })).toBe('approval');
+    expect(mod.resolveUserSkillAutomationMode({ autoSkillEnabled: true, autoSkillAutoPromoteLowRisk: true })).toBe('automatic');
+  });
+
   it('creates a managed skill and lists it', async () => {
     const userData = tmpDir('opendeskmate-userdata-');
     const appPath = tmpDir('opendeskmate-apppath-');
@@ -254,5 +273,127 @@ describe('user-skills', () => {
 
     const otherViewAfterShare = mod.listUserSkills({ agentId: 'other' });
     expect(otherViewAfterShare.skills.some((skill) => skill.id === created.skillId)).toBe(true);
+  });
+
+  it('records change metadata in version history and rolls back skill content', async () => {
+    const userData = tmpDir('opendeskmate-userdata-');
+    const appPath = tmpDir('opendeskmate-apppath-');
+
+    vi.doMock('electron', () => ({
+      app: {
+        isPackaged: false,
+        getPath: (key: string) => {
+          if (key === 'userData') return userData;
+          throw new Error('unexpected getPath key: ' + key);
+        },
+        getAppPath: () => appPath,
+      },
+    }));
+
+    vi.doMock('../src/main/services/agent-context', () => ({
+      getAgentContext: (agentId?: string) => ({
+        agentId: agentId || 'main',
+        workspaceRoot: '',
+        agent: { id: agentId || 'main', name: agentId || 'main' },
+      }),
+    }));
+
+    const mod = await import('../src/main/services/user-skills');
+    const created = mod.createUserSkill({ skillId: 'versioned-skill', name: 'Versioned Skill', description: 'Original' });
+    const nextSkillMd = [
+      '---',
+      'name: Versioned Skill',
+      'description: Updated workflow',
+      '---',
+      '',
+      '# Versioned Skill',
+      '',
+      '## Inputs',
+      '',
+      '- `<target>`',
+      '',
+      '## Workflow',
+      '',
+      '1. Do the updated workflow.',
+      '',
+      '## Verification',
+      '',
+      '- Check the result.',
+      '',
+    ].join('\n');
+
+    const writeResult = await mod.writeUserSkillFile({
+      skillId: created.skillId,
+      relPath: 'SKILL.md',
+      content: nextSkillMd,
+      source: 'managed',
+      agentId: 'main',
+      changeReason: 'Applied from completed task with high confidence: Workflow used multiple tool calls.',
+      sourceTaskId: 'task-123',
+      confidence: 0.93,
+      changeSource: 'post-task-skill-automation',
+    });
+
+    expect(writeResult.manifest?.lastChange?.sourceTaskId).toBe('task-123');
+    expect(writeResult.manifest?.lastChange?.confidence).toBe(0.93);
+    expect(writeResult.manifest?.lastChange?.reason).toContain('Applied from completed task');
+    expect(writeResult.manifest?.versions).toHaveLength(1);
+    expect(writeResult.manifest?.versions[0].sourceTaskId).toBe('task-123');
+
+    const rollback = await mod.rollbackUserSkill({
+      skillId: created.skillId,
+      targetVersion: writeResult.manifest?.versions[0].version,
+      source: 'managed',
+      agentId: 'main',
+    });
+
+    expect(rollback.ok).toBe(true);
+    expect(rollback.manifest?.lastChange?.changeSource).toBe('rollback');
+    const rolledBack = mod.readUserSkillFile({ skillId: created.skillId, relPath: 'SKILL.md', source: 'managed', agentId: 'main' });
+    expect(rolledBack.content).toContain('What this skill does:');
+  });
+
+  it('records lifecycle provenance for curator archives', async () => {
+    const userData = tmpDir('opendeskmate-userdata-');
+    const appPath = tmpDir('opendeskmate-apppath-');
+
+    vi.doMock('electron', () => ({
+      app: {
+        isPackaged: false,
+        getPath: (key: string) => {
+          if (key === 'userData') return userData;
+          throw new Error('unexpected getPath key: ' + key);
+        },
+        getAppPath: () => appPath,
+      },
+    }));
+
+    vi.doMock('../src/main/services/agent-context', () => ({
+      getAgentContext: (agentId?: string) => ({
+        agentId: agentId || 'main',
+        workspaceRoot: '',
+        agent: { id: agentId || 'main', name: agentId || 'main' },
+      }),
+    }));
+
+    const mod = await import('../src/main/services/user-skills');
+    const created = mod.createUserSkill({ skillId: 'archive-me', name: 'Archive Me', description: 'Generated skill' });
+
+    const result = await mod.setUserSkillLifecycle({
+      skillId: created.skillId,
+      state: 'deprecated',
+      reason: 'Archived by skill curator: stale generated skill.',
+      source: 'managed',
+      agentId: 'main',
+      sourceTaskId: 'task-archive',
+      confidence: 0.88,
+      changeSource: 'skill-curator',
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.manifest?.state).toBe('deprecated');
+    expect(result.manifest?.lastChange?.sourceTaskId).toBe('task-archive');
+    expect(result.manifest?.lastChange?.confidence).toBe(0.88);
+    expect(result.manifest?.lastChange?.changeSource).toBe('skill-curator');
   });
 });

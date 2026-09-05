@@ -24,6 +24,7 @@ import path from 'path';
 const WORKSPACE_ROOT = process.env.MEMORY_WORKSPACE_ROOT || '';
 
 const MEMORY_DIR = 'memory';
+const USER_FILE = 'USER.md';
 const LONG_TERM_FILE = 'MEMORY.md';
 const MEMORY_DB_NAME = '.memory-index.sqlite';
 const INDEX_SCHEMA_VERSION = 'hybrid-v1';
@@ -47,16 +48,19 @@ const SEMANTIC_SYNONYMS: Record<string, string[]> = {
   connector: ['integration', 'bridge', 'webhook', 'runtime'],
 };
 
-type MemoryKind = 'long-term' | 'daily';
+type MemoryKind = 'user' | 'long-term' | 'daily' | 'snapshot';
+type MemorySearchKind = MemoryKind | 'all';
 type SearchMode = 'hybrid' | 'keyword' | 'semantic';
 
 interface MemoryGetInput {
   kind: MemoryKind;
   date?: string;
+  fileName?: string;
 }
 
 interface MemorySearchInput {
   query: string;
+  kind?: MemorySearchKind;
   limit?: number;
   mode?: SearchMode;
   contextLines?: number;
@@ -65,6 +69,7 @@ interface MemorySearchInput {
 interface MemoryWriteInput {
   kind: MemoryKind;
   date?: string;
+  fileName?: string;
   content: string;
   mode?: 'append' | 'replace';
 }
@@ -102,6 +107,38 @@ function ensureMemoryDir(root: string): string {
 
 function resolveDailyPath(root: string, date: string): string {
   return path.join(root, MEMORY_DIR, `${date}.md`);
+}
+
+function isMemoryKind(value: unknown): value is MemoryKind {
+  return value === 'user' || value === 'long-term' || value === 'daily' || value === 'snapshot';
+}
+
+function requireMemoryKind(value: unknown): MemoryKind {
+  if (isMemoryKind(value)) return value;
+  throw new Error('Invalid memory kind');
+}
+
+function isDailyMemoryFileName(name: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}\.md$/.test(name);
+}
+
+function isSnapshotMemoryFileName(name: string): boolean {
+  return name.endsWith('.md') && !isDailyMemoryFileName(name);
+}
+
+function sanitizeSnapshotFileName(fileName: unknown): string {
+  const name = path.basename(String(fileName || '').trim());
+  if (!name || !isSnapshotMemoryFileName(name) || name.includes('..') || name.includes('/') || name.includes('\\')) {
+    throw new Error('Invalid memory snapshot filename');
+  }
+  return name;
+}
+
+function resolveMemoryPath(root: string, kind: MemoryKind, date?: string, fileName?: string): string {
+  if (kind === 'user') return path.join(root, USER_FILE);
+  if (kind === 'long-term') return path.join(root, LONG_TERM_FILE);
+  if (kind === 'snapshot') return path.join(root, MEMORY_DIR, sanitizeSnapshotFileName(fileName));
+  return resolveDailyPath(root, date || new Date().toISOString().slice(0, 10));
 }
 
 function readFileSafe(filePath: string): string {
@@ -329,22 +366,44 @@ function computeIndexFingerprint(files: Array<{ path: string; relative: string }
   return hash.digest('hex');
 }
 
-function listMemoryFiles(root: string): Array<{ path: string; label: string; relative: string }> {
+function listMemoryFiles(root: string, kind: MemorySearchKind = 'all'): Array<{ path: string; label: string; relative: string }> {
   const memoryDir = ensureMemoryDir(root);
   const files: Array<{ path: string; label: string; relative: string }> = [];
-  const longTermPath = path.join(root, LONG_TERM_FILE);
-  files.push({ path: longTermPath, label: LONG_TERM_FILE, relative: LONG_TERM_FILE });
-  const daily = fs
-    .readdirSync(memoryDir)
-    .filter((name) => /^\d{4}-\d{2}-\d{2}\.md$/.test(name))
-    .sort()
-    .reverse();
-  for (const name of daily) {
-    files.push({
-      path: path.join(memoryDir, name),
-      label: `memory/${name}`,
-      relative: path.join(MEMORY_DIR, name),
-    });
+  if (kind === 'all' || kind === 'user') {
+    const userPath = path.join(root, USER_FILE);
+    files.push({ path: userPath, label: USER_FILE, relative: USER_FILE });
+  }
+  if (kind === 'all' || kind === 'long-term') {
+    const longTermPath = path.join(root, LONG_TERM_FILE);
+    files.push({ path: longTermPath, label: LONG_TERM_FILE, relative: LONG_TERM_FILE });
+  }
+  if (kind === 'all' || kind === 'daily') {
+    const daily = fs
+      .readdirSync(memoryDir)
+      .filter(isDailyMemoryFileName)
+      .sort()
+      .reverse();
+    for (const name of daily) {
+      files.push({
+        path: path.join(memoryDir, name),
+        label: `memory/${name}`,
+        relative: path.join(MEMORY_DIR, name),
+      });
+    }
+  }
+  if (kind === 'all' || kind === 'snapshot') {
+    const snapshots = fs
+      .readdirSync(memoryDir)
+      .filter(isSnapshotMemoryFileName)
+      .sort()
+      .reverse();
+    for (const name of snapshots) {
+      files.push({
+        path: path.join(memoryDir, name),
+        label: `memory/${name}`,
+        relative: path.join(MEMORY_DIR, name),
+      });
+    }
   }
   return files;
 }
@@ -422,6 +481,7 @@ function parseDateFromMemoryFile(file: string): Date | null {
 function computeRecencyScore(file: string): number {
   const date = parseDateFromMemoryFile(file);
   if (!date) {
+    if (file === USER_FILE) return 0.7;
     return file === LONG_TERM_FILE ? 0.65 : 0.5;
   }
   const nowMs = Date.now();
@@ -632,12 +692,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: 'memory_get',
-      description: 'Read a memory file (MEMORY.md or memory/YYYY-MM-DD.md).',
+      description: 'Read a memory file (USER.md, MEMORY.md, or memory/YYYY-MM-DD.md).',
       inputSchema: {
         type: 'object',
         properties: {
-          kind: { type: 'string', enum: ['long-term', 'daily'] },
+          kind: { type: 'string', enum: ['user', 'long-term', 'daily', 'snapshot'] },
           date: { type: 'string', description: 'YYYY-MM-DD (required for daily if not today)' },
+          fileName: { type: 'string', description: 'Snapshot filename under memory/ (required for snapshot).' },
         },
         required: ['kind'],
       },
@@ -649,6 +710,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         type: 'object',
         properties: {
           query: { type: 'string' },
+          kind: { type: 'string', enum: ['all', 'user', 'long-term', 'daily', 'snapshot'], description: 'Optional memory scope. Defaults to all.' },
           limit: { type: 'number' },
           mode: { type: 'string', enum: ['hybrid', 'keyword', 'semantic'] },
           contextLines: { type: 'number', description: 'Lines of context around each hit (0-20).' },
@@ -658,12 +720,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'memory_write',
-      description: 'Write memory updates to MEMORY.md or memory/YYYY-MM-DD.md.',
+      description: 'Write memory updates to USER.md, MEMORY.md, or memory/YYYY-MM-DD.md.',
       inputSchema: {
         type: 'object',
         properties: {
-          kind: { type: 'string', enum: ['long-term', 'daily'] },
+          kind: { type: 'string', enum: ['user', 'long-term', 'daily', 'snapshot'] },
           date: { type: 'string', description: 'YYYY-MM-DD (required for daily if not today)' },
+          fileName: { type: 'string', description: 'Snapshot filename under memory/ (required for snapshot).' },
           content: { type: 'string' },
           mode: { type: 'string', enum: ['append', 'replace'] },
         },
@@ -678,11 +741,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
     const root = ensureWorkspaceRoot();
 
     if (request.params.name === 'memory_get') {
-      const args = (request.params.arguments || {}) as MemoryGetInput;
+      const args = (request.params.arguments || {}) as unknown as MemoryGetInput;
       ensureMemoryDir(root);
-      const filePath = args.kind === 'long-term'
-        ? path.join(root, LONG_TERM_FILE)
-        : resolveDailyPath(root, args.date || new Date().toISOString().slice(0, 10));
+      const filePath = resolveMemoryPath(root, requireMemoryKind(args.kind), args.date, args.fileName);
       const relative = path.relative(root, filePath);
       const content = readFileSafe(filePath);
       return {
@@ -696,16 +757,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
     }
 
     if (request.params.name === 'memory_write') {
-      const args = (request.params.arguments || {}) as MemoryWriteInput;
+      const args = (request.params.arguments || {}) as unknown as MemoryWriteInput;
       ensureMemoryDir(root);
-      const filePath = args.kind === 'long-term'
-        ? path.join(root, LONG_TERM_FILE)
-        : resolveDailyPath(root, args.date || new Date().toISOString().slice(0, 10));
+      const filePath = resolveMemoryPath(root, requireMemoryKind(args.kind), args.date, args.fileName);
+      const content = String(args.content ?? '');
       const nextContent =
         args.mode === 'append' && fs.existsSync(filePath)
-          ? `${readFileSafe(filePath).replace(/\s*$/, '')}\n\n${args.content}`
-          : args.content;
-      fs.writeFileSync(filePath, nextContent ?? '', 'utf-8');
+          ? `${readFileSafe(filePath).replace(/\s*$/, '')}\n\n${content}`
+          : content;
+      fs.writeFileSync(filePath, nextContent, 'utf-8');
       const relative = path.relative(root, filePath);
       return {
         content: [
@@ -718,9 +778,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
     }
 
     if (request.params.name === 'memory_search') {
-      const args = (request.params.arguments || {}) as MemorySearchInput;
+      const args = (request.params.arguments || {}) as unknown as MemorySearchInput;
       const rawQuery = String(args.query || '').trim();
       const queryTokens = normalizeQuery(rawQuery);
+      const kind: MemorySearchKind =
+        args.kind === 'user' || args.kind === 'long-term' || args.kind === 'daily' || args.kind === 'snapshot' ? args.kind : 'all';
       const limit = Math.max(1, Math.min(20, args.limit ?? 6));
       const mode: SearchMode = args.mode === 'keyword' || args.mode === 'semantic' ? args.mode : 'hybrid';
       const contextLines = Math.max(0, Math.min(20, args.contextLines ?? 3));
@@ -729,7 +791,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
           content: [
             {
               type: 'text',
-              text: JSON.stringify({ query: args.query, mode, results: [] }, null, 2),
+              text: JSON.stringify({ query: args.query, kind, mode, results: [] }, null, 2),
             },
           ],
         };
@@ -738,7 +800,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
       const db = openDb(root);
       try {
         ensureSchema(db);
-        const memoryFiles = listMemoryFiles(root).map((f) => ({ path: f.path, relative: f.relative }));
+        const memoryFiles = listMemoryFiles(root, kind).map((f) => ({ path: f.path, relative: f.relative }));
         const fingerprint = computeIndexFingerprint(memoryFiles);
         const existingFingerprint = getMeta(db, 'fingerprint');
         const existingSchema = getMeta(db, 'index_schema_version');
@@ -763,6 +825,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
               text: JSON.stringify(
                 {
                   query: args.query,
+                  kind,
                   mode,
                   retrieval: {
                     ftsEnabled: hasFtsTable(db),

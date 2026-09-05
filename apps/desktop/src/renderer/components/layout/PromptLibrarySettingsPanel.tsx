@@ -36,6 +36,9 @@ export default function PromptLibrarySettingsPanel() {
   const [titleInput, setTitleInput] = useState('');
   const [categoryInput, setCategoryInput] = useState<PromptCategory>(DEFAULT_PROMPT_CATEGORY);
   const [contentInput, setContentInput] = useState('');
+  const [descriptionInput, setDescriptionInput] = useState('');
+  const [iconInput, setIconInput] = useState('');
+  const [colorInput, setColorInput] = useState('#2563eb');
   const [categoryDraft, setCategoryDraft] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<PromptCategory>(DEFAULT_PROMPT_CATEGORY);
   const [renameDraft, setRenameDraft] = useState<PromptCategory>(DEFAULT_PROMPT_CATEGORY);
@@ -81,7 +84,7 @@ export default function PromptLibrarySettingsPanel() {
     return prompts.filter((prompt) => {
       if (filterCategory !== 'All' && prompt.category !== filterCategory) return false;
       if (!query) return true;
-      return `${prompt.title} ${prompt.category} ${prompt.content}`.toLowerCase().includes(query);
+      return `${prompt.title} ${prompt.category} ${prompt.description || ''} ${prompt.content}`.toLowerCase().includes(query);
     });
   }, [filterCategory, prompts, searchQuery]);
 
@@ -107,6 +110,9 @@ export default function PromptLibrarySettingsPanel() {
     setTitleInput(prompt.title);
     setCategoryInput(prompt.category);
     setContentInput(prompt.content);
+    setDescriptionInput(prompt.description || '');
+    setIconInput(prompt.icon || '');
+    setColorInput(prompt.color || '#2563eb');
   };
 
   const startNewPrompt = () => {
@@ -114,6 +120,9 @@ export default function PromptLibrarySettingsPanel() {
     setTitleInput('');
     setCategoryInput(filterCategory === 'All' ? DEFAULT_PROMPT_CATEGORY : filterCategory);
     setContentInput('');
+    setDescriptionInput('');
+    setIconInput('');
+    setColorInput('#2563eb');
   };
 
   const saveCurrentPrompt = () => {
@@ -121,15 +130,23 @@ export default function PromptLibrarySettingsPanel() {
     if (!content) return;
     const title = titleInput.trim() || firstPromptTitle(content);
     const category = normalizePromptCategory(categoryInput);
+    const metadata = {
+      description: descriptionInput,
+      icon: iconInput,
+      color: colorInput,
+    };
     if (selectedPromptId) {
-      updatePrompt(selectedPromptId, title, content, category);
+      updatePrompt(selectedPromptId, title, content, category, metadata);
       return;
     }
-    const created = savePrompt(title, content, category);
+    const created = savePrompt(title, content, category, metadata);
     setSelectedPromptId(created.id);
     setTitleInput(created.title);
     setCategoryInput(created.category);
     setContentInput(created.content);
+    setDescriptionInput(created.description || '');
+    setIconInput(created.icon || '');
+    setColorInput(created.color || '#2563eb');
   };
 
   const addCategory = () => {
@@ -322,12 +339,22 @@ export default function PromptLibrarySettingsPanel() {
                     )}
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <span className="truncate text-sm font-medium text-foreground">{prompt.title}</span>
+                      <span className="flex min-w-0 items-center gap-2">
+                        {prompt.icon || prompt.color ? (
+                          <span
+                            className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[10px] font-semibold text-white"
+                            style={{ backgroundColor: prompt.color || '#64748b' }}
+                          >
+                            {prompt.icon || prompt.title.slice(0, 1)}
+                          </span>
+                        ) : null}
+                        <span className="truncate text-sm font-medium text-foreground">{prompt.title}</span>
+                      </span>
                       <span className="shrink-0 rounded-full bg-background/70 px-1.5 py-0.5 text-[10px] text-muted-foreground">
                         {prompt.category}
                       </span>
                     </div>
-                    <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">{prompt.content}</div>
+                    <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">{prompt.description || prompt.content}</div>
                   </button>
                 ))}
               </div>
@@ -387,6 +414,32 @@ export default function PromptLibrarySettingsPanel() {
                     </option>
                   ))}
                 </select>
+                <input
+                  value={descriptionInput}
+                  onChange={(event) => setDescriptionInput(event.target.value)}
+                  placeholder="Short description"
+                  maxLength={240}
+                  className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                />
+                <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+                  <input
+                    value={iconInput}
+                    onChange={(event) => setIconInput(event.target.value)}
+                    placeholder="Icon text"
+                    maxLength={12}
+                    className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                  />
+                  <label className="flex h-9 items-center gap-2 rounded-md border border-input bg-background px-2 text-xs text-muted-foreground">
+                    <span>Color</span>
+                    <input
+                      type="color"
+                      value={colorInput}
+                      onChange={(event) => setColorInput(event.target.value)}
+                      className="h-5 w-7 cursor-pointer border-0 bg-transparent p-0"
+                      aria-label="Prompt card color"
+                    />
+                  </label>
+                </div>
                 <textarea
                   value={contentInput}
                   onChange={(event) => setContentInput(event.target.value)}

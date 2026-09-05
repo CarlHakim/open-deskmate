@@ -1,6 +1,6 @@
 import { BrowserWindow } from 'electron';
-import type { OpenCodeMessage, TaskMessage } from '@accomplish/shared';
-import { addTaskMessage } from '../store/taskHistory';
+import type { OpenCodeMessage, TaskActivityEvent, TaskMessage } from '@accomplish/shared';
+import { addTaskActivity, addTaskMessage } from '../store/taskHistory';
 import { buildAssistantContentWithReasoning } from './task-message-reasoning';
 
 export function createMessageId(): string {
@@ -204,6 +204,11 @@ export function forwardToAllRenderers(channel: string, payload: unknown): void {
       window.webContents.send(channel, payload);
     }
   }
+}
+
+export function emitTaskActivityEvent(activity: TaskActivityEvent): void {
+  addTaskActivity(activity.taskId, activity);
+  forwardToAllRenderers('task:activity', activity);
 }
 
 export function emitSystemTaskMessage(taskId: string, content: string): void {

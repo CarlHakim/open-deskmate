@@ -195,7 +195,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         id: optimisticTaskId,
         prompt: finalConfig.prompt,
         agentId,
-        status: 'queued',
+        status: 'running',
         messages: [{
           id: `optimistic_${createMessageId()}`,
           type: 'user',

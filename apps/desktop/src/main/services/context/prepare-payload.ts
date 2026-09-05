@@ -1,7 +1,7 @@
 import { getAgentContext, resolveSelectedModelForAgent } from '../agent-context';
 import { getOllamaConfig } from '../../store/appSettings';
 import { getApiKey } from '../../store/secureStorage';
-import type { ContextTokenEstimate, ContextWindowPrepareResult, ProviderType, SelectedModel } from '@accomplish/shared';
+import type { ContextTokenEstimate, ContextWindowPrepareResult, ProviderType, SelectedModel, ToolsetId } from '@accomplish/shared';
 import { buildMemoryPrompt } from '../memory';
 import {
   buildCompactLocalOllamaPrompt,
@@ -18,6 +18,13 @@ import { getModelEntry } from './model-registry';
 import { buildUserSkillsPromptBundle, ensureUserSkillsWatcher } from '../user-skills';
 import { computeCompactionThresholds } from './compaction-thresholds';
 import { detectTaskNeedsBrowser } from '../task-intent';
+import {
+  buildDeferredToolDiscoveryPrompt,
+  preEnableDeferredToolsetsForPrompt,
+  resolveRuntimeToolsetIds,
+  resolveToolDiscoveryRuntimeMetadata,
+  resolveToolsets,
+} from '../toolsets';
 import {
   sanitizeHistoricalImagesFromSessionLines,
   shouldStripHistoricalImagesForMiniMax,
@@ -92,12 +99,15 @@ export async function preparePayloadForSend(params: {
   userMessage: string;
   retrievedText?: string;
   baseSystemPromptAppend?: string;
+  toolsetOverrideIds?: ToolsetId[];
+  deferredToolDiscoveryOverride?: boolean;
   maxOutputTokensOverride?: number;
   headroomSafetyTokens?: number;
   requireApiKey?: boolean;
   // When 'unsafeOnly', we only compact when the payload is truly unsafe (safeRemainingForReply < 0).
   // This is useful for "memory flush" turns where we want to preserve full history if it still fits.
   compactionMode?: 'preemptive' | 'unsafeOnly';
+  buildMode?: boolean;
 }): Promise<PrepareResult> {
   const selectedModel = resolveSelectedModelForAgent(params.agentId);
   if (!selectedModel) {
@@ -111,9 +121,47 @@ export async function preparePayloadForSend(params: {
 
   const provider = providerFromSelectedModel(selectedModel);
   const agentContext = getAgentContext(params.agentId);
-  const ollamaToolMode = normalizeOllamaToolMode(getOllamaConfig()?.toolMode);
+  const ollamaConfig = getOllamaConfig();
+  const ollamaToolMode = normalizeOllamaToolMode(ollamaConfig?.toolMode);
   const useCompactLocalOllamaPrompt = provider === 'ollama' && usesCompactOllamaPrompt(ollamaToolMode);
+  const localOllamaBuiltInMcpMode = ollamaToolMode === 'desktop' || ollamaToolMode === 'full';
+  const buildRuntimeToolsEnabled = Boolean(params.buildMode && (provider !== 'ollama' || localOllamaBuiltInMcpMode));
   const maxOutputTokens = params.maxOutputTokensOverride ?? modelEntry.defaultMaxOutputTokens;
+  const computedFormalToolsetIds = resolveRuntimeToolsetIds({
+    agentToolsetIds: agentContext.agent.toolsetIds,
+    localModel: provider === 'ollama',
+    ollamaToolMode,
+    ollamaToolsetIds: ollamaConfig?.toolsetIds,
+    buildRuntimeToolsEnabled,
+  });
+  const formalToolsetIds = Array.isArray(params.toolsetOverrideIds) && params.toolsetOverrideIds.length > 0
+    ? params.toolsetOverrideIds
+    : computedFormalToolsetIds;
+  const deferredToolDiscoveryEnabled = typeof params.deferredToolDiscoveryOverride === 'boolean'
+    ? params.deferredToolDiscoveryOverride
+    : agentContext.agent.deferredToolDiscoveryEnabled;
+  const initialToolsetIds = Array.isArray(params.toolsetOverrideIds) && params.toolsetOverrideIds.length > 0
+    ? params.toolsetOverrideIds
+    : undefined;
+  await preEnableDeferredToolsetsForPrompt({
+    prompt: params.userMessage,
+    agentId: agentContext.agentId,
+    taskId: params.taskId,
+    deferredToolDiscoveryEnabled,
+    requestedToolsetIds: formalToolsetIds,
+    initialToolsetIds,
+  });
+  const toolDiscoveryRuntime = resolveToolDiscoveryRuntimeMetadata({
+    agentId: agentContext.agentId,
+    taskId: params.taskId,
+    deferredToolDiscoveryEnabled,
+    requestedToolsetIds: formalToolsetIds,
+    initialToolsetIds,
+  });
+  const formalToolsetSummary = resolveToolsets(toolDiscoveryRuntime.enabledToolsetIds).promptSummary;
+  const deferredToolDiscoverySummary = deferredToolDiscoveryEnabled
+    ? buildDeferredToolDiscoveryPrompt(toolDiscoveryRuntime)
+    : '';
 
   const memoryPrompt = buildMemoryPrompt(params.agentId);
   ensureUserSkillsWatcher({ agentId: params.agentId });
@@ -123,7 +171,11 @@ export async function preparePayloadForSend(params: {
     maxSkills: 2,
   });
   const skillsPrompt = skillsBundle.prompt;
-  const baseAppend = (params.baseSystemPromptAppend || '').trim();
+  const baseAppend = [
+    formalToolsetSummary,
+    deferredToolDiscoverySummary,
+    (params.baseSystemPromptAppend || '').trim(),
+  ].filter(Boolean).join('\n\n');
 
   const rawHistoryLines = params.sessionFilePath ? readSessionLines(params.sessionFilePath) : [];
   const historyLines = shouldStripHistoricalImagesForMiniMax({

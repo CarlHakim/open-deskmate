@@ -148,6 +148,8 @@ export function hydrateStartedTask(params: {
   params.task.attachedFiles = params.validatedConfig.attachedFiles;
   params.task.privacyMode = params.validatedConfig.privacyMode;
   params.task.usageProjectId = params.validatedConfig.usageProjectId;
+  params.task.buildMode = params.validatedConfig.buildMode;
+  params.task.buildWorkspaceRelativePath = params.validatedConfig.buildWorkspaceRelativePath;
   (params.task as Task & { sessionFilePath?: string }).sessionFilePath = params.sessionFilePath;
 }
 

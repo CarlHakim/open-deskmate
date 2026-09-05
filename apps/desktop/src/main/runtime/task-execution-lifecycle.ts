@@ -3,6 +3,7 @@ import { clearTaskFilePermissionPolicy } from '../permission-api';
 import { upsertGatewaySession } from '../store/gatewaySessions';
 import { updateTaskSessionId, updateTaskStatus } from '../store/taskHistory';
 import { runRuntimeHooks } from '../hooks/hook-runner';
+import { schedulePostTaskLearning } from './post-task-learning';
 
 export type TaskGatewaySessionContext = {
   key: string;
@@ -103,6 +104,13 @@ export function applyTaskCompletionLifecycle(params: {
       error: params.result.error,
     },
     emitSystemMessage: params.emitSystemMessage,
+  });
+
+  schedulePostTaskLearning({
+    taskId: params.taskId,
+    agentId: params.agentId,
+    source: params.source,
+    status: params.result.status,
   });
 
   return nextSessionId;

@@ -4,6 +4,7 @@ import {
   useState,
   useEffect,
   useMemo,
+  useCallback,
   useDeferredValue,
   useRef,
   Children,
@@ -25,18 +26,46 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import {
+  Activity,
   Trash2,
   CheckCircle2,
   AlertCircle,
+  Bell,
+  Bot,
+  Brain,
+  Bug,
+  Cpu,
+  DollarSign,
   Loader2,
   ChevronDown,
   ChevronRight,
+  ExternalLink,
+  FileText,
+  Folder,
+  Globe,
+  History,
+  Info,
+  Check,
+  Lock,
+  Mic,
+  Monitor,
+  Plug,
+  Puzzle,
+  RotateCcw,
+  Rocket,
+  Save,
+  Search,
+  Shield,
+  Smartphone,
+  Sparkles,
+  type LucideIcon,
   Cloud,
   Mail,
   MessageCircle,
   MessagesSquare,
   Orbit,
   Radio,
+  FileSearch,
 } from 'lucide-react';
 import {
   SiCanva,
@@ -118,8 +147,21 @@ import type {
   UsagePricingAutofillResult,
   UsageBudgetSettings,
   UsageBudgetStatus,
+  ChatToolCompatibilityCheckResult,
   UserSkillAssistantAskResponse,
+  UserSkillCuratorRunRecord,
   AgentConfig,
+  ExecutionProfile,
+  ExecutionProfileCreateInput,
+  ExecutionProfileKind,
+  ExecutionProfileUpdateInput,
+  AlwaysOnStatusSnapshot,
+  ConnectorDeliveryRecord,
+  MemoryEntrySummary,
+  MemoryChangeRecord,
+  MemorySearchResult,
+  ToolsetId,
+  UsageProject,
 } from '@accomplish/shared';
 import { DEFAULT_PROVIDERS } from '@accomplish/shared';
 import { Button } from '@/components/ui/button';
@@ -131,8 +173,10 @@ import { useAgentStore } from '@/stores/agentStore';
 import { useAttachmentStore } from '@/stores/attachmentStore';
 import { emitSelectedModelChanged } from '@/lib/selected-model-events';
 import { isAgentCharacterAvatar } from '@/lib/agent-character-gallery';
+import { CHAT_BACKGROUNDS, DEFAULT_CHAT_BACKGROUND_ID } from '@/lib/chat-backgrounds';
 import AgentAvatarPicker, { AgentAvatarIcon } from './AgentAvatarPicker';
 import PromptLibrarySettingsPanel from './PromptLibrarySettingsPanel';
+import SearchAuditDialog from './SearchAuditDialog';
 import {
   AGENT_FALLBACK_MODEL,
   API_KEY_PROVIDER_LABEL_OVERRIDES,
@@ -178,6 +222,35 @@ interface SettingsDialogProps {
 
 const AGENT_LOOP_DEFAULT_MAX_ITERATIONS = 4;
 const AGENT_LOOP_DEFAULT_TIMEOUT_SECONDS = 5 * 60;
+const AGENT_AVATAR_FRAME_OPTIONS = ['none', 'soft', 'circle', 'badge'] as const;
+const AGENT_ANSWER_STYLE_OPTIONS = ['balanced', 'concise', 'detailed', 'playful'] as const;
+const AGENT_PRESENCE_ANIMATION_OPTIONS = ['none', 'pulse', 'glow', 'typing'] as const;
+const AGENT_REACTION_MODE_OPTIONS = ['off', 'minimal', 'standard', 'playful'] as const;
+const AGENT_ACCENT_SWATCHES = [
+  '#14b8a6',
+  '#38bdf8',
+  '#3b82f6',
+  '#6366f1',
+  '#8b5cf6',
+  '#d946ef',
+  '#f43f5e',
+  '#f59e0b',
+  '#10b981',
+  '#64748b',
+] as const;
+type AgentAvatarFrameOption = (typeof AGENT_AVATAR_FRAME_OPTIONS)[number];
+type AgentAnswerStyleOption = (typeof AGENT_ANSWER_STYLE_OPTIONS)[number];
+type AgentPresenceAnimationOption = (typeof AGENT_PRESENCE_ANIMATION_OPTIONS)[number];
+type AgentReactionModeOption = (typeof AGENT_REACTION_MODE_OPTIONS)[number];
+type AgentBuilderStepId =
+  | 'purpose'
+  | 'model'
+  | 'tools'
+  | 'memory'
+  | 'connectors'
+  | 'subagents'
+  | 'appearance'
+  | 'test';
 const AGENT_HEARTBEAT_DEFAULT_INTERVAL_MINUTES = 5;
 const AGENT_HEARTBEAT_DEFAULT_DAILY_TIME = '09:00';
 const AGENT_HEARTBEAT_DEFAULT_TIME_ZONE = 'system';
@@ -189,6 +262,322 @@ const AGENT_HEARTBEAT_DEFAULT_PROMPT = [
   '- If there is actionable follow-up work, do it.',
   '- If nothing is needed, briefly report that systems are stable.',
 ].join('\n');
+const AGENT_BUILDER_STEPS: Array<{ id: AgentBuilderStepId; label: string; description: string }> = [
+  { id: 'purpose', label: 'Purpose', description: 'Role, workspace, and persona' },
+  { id: 'model', label: 'Model', description: 'Global or agent-specific routing' },
+  { id: 'tools', label: 'Tools', description: 'Toolsets and on-demand discovery' },
+  { id: 'memory', label: 'Learning', description: 'Memory and skill learning' },
+  { id: 'connectors', label: 'Connectors', description: 'Bindings and always-on readiness' },
+  { id: 'subagents', label: 'Subagents', description: 'Delegation limits' },
+  { id: 'appearance', label: 'Appearance', description: 'Avatar and chat presentation' },
+  { id: 'test', label: 'Readiness', description: 'Review and compatibility check' },
+];
+const AGENT_BUILDER_DEFAULT_TOOLSET_IDS: ToolsetId[] = ['desktop_full', 'custom'];
+const AGENT_BUILDER_TOOLSET_OPTIONS: Array<{ id: ToolsetId; label: string; description: string }> = [
+  {
+    id: 'chat_safe',
+    label: 'Chat safe',
+    description: 'Basic conversation tools and low-risk Chat Mode helpers.',
+  },
+  {
+    id: 'research',
+    label: 'Research',
+    description: 'Web fetch/search capabilities for current information.',
+  },
+  {
+    id: 'coding',
+    label: 'Coding',
+    description: 'Workspace read/edit capabilities for code and file tasks.',
+  },
+  {
+    id: 'build_runtime',
+    label: 'Build runtime',
+    description: 'Build/test/runtime tools for implementation workflows.',
+  },
+  {
+    id: 'messaging_safe',
+    label: 'Messaging safe',
+    description: 'Safer messaging connector capabilities.',
+  },
+  {
+    id: 'desktop_full',
+    label: 'Desktop full',
+    description: 'Full OpenDeskmate desktop tool surface.',
+  },
+  {
+    id: 'local_model_light',
+    label: 'Local light',
+    description: 'Compact local-model tool surface.',
+  },
+  {
+    id: 'local_model_extended',
+    label: 'Local extended',
+    description: 'Expanded local-model tool surface.',
+  },
+  {
+    id: 'custom',
+    label: 'Custom MCP',
+    description: 'User-configured MCP servers and custom tools.',
+  },
+];
+
+function getAvatarFrameClass(frame: AgentAvatarFrameOption | string | undefined): string {
+  if (frame === 'circle') return 'rounded-full';
+  if (frame === 'badge') return 'rounded-2xl ring-2 ring-offset-2 ring-offset-background';
+  if (frame === 'soft') return 'rounded-2xl';
+  return 'rounded-xl';
+}
+
+function getAnswerStylePreviewClass(style: AgentAnswerStyleOption | string | undefined): string {
+  if (style === 'concise') return 'px-2 py-1 text-[10px]';
+  if (style === 'detailed') return 'px-3 py-2 text-[11px]';
+  if (style === 'playful') return 'px-2.5 py-1.5 text-[11px] shadow-[0_8px_24px_rgba(20,184,166,0.18)]';
+  return 'px-2.5 py-1.5 text-[11px]';
+}
+
+function getPresenceAnimationPreviewClass(animation: AgentPresenceAnimationOption | string | undefined): string {
+  if (animation === 'pulse') return 'animate-pulse';
+  if (animation === 'glow') return 'shadow-[0_0_18px_rgba(20,184,166,0.42)]';
+  if (animation === 'typing') return 'animate-bounce';
+  return '';
+}
+
+const SETTINGS_SECTION_SEARCH_KEYWORDS: Record<string, string[]> = {
+  'Model & API settings': [
+    'ollama',
+    'local model',
+    'context limit',
+    'context window',
+    'provider',
+    'api key',
+    'google',
+    'anthropic',
+    'openai',
+    'minimax',
+  ],
+  'API usage estimate': ['pricing', 'tokens', 'input hit', 'input miss', 'output cost', 'usage', 'budget'],
+  'Saved Prompts & Recipes': ['saved prompts', 'recipes', 'categories', 'prompt library'],
+  Skills: ['skills', 'skill curator', 'save as skill', 'dependencies', 'learning'],
+  Plugins: ['plugins', 'connectors', 'tool plugins', 'managed plugins'],
+  Automations: ['scheduled tasks', 'schedules', 'always on', 'heartbeat', 'draft schedule'],
+  'Messaging Connector Extensions': ['telegram', 'discord', 'slack', 'messaging', 'connector', 'delivery', 'bot token'],
+  'App Connector Extensions': ['apps', 'google drive', 'notion', 'github', 'connector'],
+  'Voice Wake + Talk Mode': ['voice', 'microphone', 'wake word', 'talk mode'],
+  Agents: [
+    'agent',
+    'avatar',
+    'role',
+    'tool discovery',
+    'on-demand tools',
+    'automatic learning',
+    'memory mode',
+    'always-on',
+    'model override',
+  ],
+  Startup: ['startup', 'launch', 'background'],
+  'Build Mode Safety': ['build', 'diff', 'auto apply', 'approval', 'safety'],
+  'Execution Profiles': ['execution profile', 'local windows', 'ssh', 'docker', 'cloud worker', 'remote'],
+  'Workspace Defaults': ['workspace', 'folder', 'default path'],
+  'Memory (User Context)': ['memory', 'user.md', 'memory.md', 'daily memory', 'snapshots', 'learning history'],
+  'Browser Profile': ['browser', 'profile', 'dev browser'],
+  'Runtime Hooks': ['hooks', 'runtime', 'scripts'],
+  'Permission Policy': ['permissions', 'file permission', 'workspace writes', 'auto allow', 'tool approval'],
+  Developer: ['developer', 'debug', 'search audit', 'audit', 'local search'],
+  Doctor: ['doctor', 'diagnostics', 'health check', 'troubleshooting'],
+  About: ['version', 'app version', 'platform', 'about'],
+};
+
+type SettingsSectionVisual = {
+  Icon: LucideIcon;
+  accentClass: string;
+  headerClass: string;
+  iconClass: string;
+};
+
+const DEFAULT_SETTINGS_SECTION_VISUAL: SettingsSectionVisual = {
+  Icon: FileText,
+  accentClass: 'bg-primary',
+  headerClass: 'bg-muted/45',
+  iconClass: 'border-primary/25 bg-primary/10 text-primary',
+};
+
+const SETTINGS_SECTION_VISUALS: Record<string, SettingsSectionVisual> = {
+  'Model & API settings': {
+    Icon: Cpu,
+    accentClass: 'bg-sky-500',
+    headerClass: 'bg-sky-500/10',
+    iconClass: 'border-sky-500/25 bg-sky-500/10 text-sky-500',
+  },
+  'API usage estimate': {
+    Icon: DollarSign,
+    accentClass: 'bg-emerald-500',
+    headerClass: 'bg-emerald-500/10',
+    iconClass: 'border-emerald-500/25 bg-emerald-500/10 text-emerald-500',
+  },
+  'Saved Prompts & Recipes': {
+    Icon: FileText,
+    accentClass: 'bg-cyan-500',
+    headerClass: 'bg-cyan-500/10',
+    iconClass: 'border-cyan-500/25 bg-cyan-500/10 text-cyan-500',
+  },
+  Skills: {
+    Icon: Sparkles,
+    accentClass: 'bg-violet-500',
+    headerClass: 'bg-violet-500/10',
+    iconClass: 'border-violet-500/25 bg-violet-500/10 text-violet-500',
+  },
+  Plugins: {
+    Icon: Puzzle,
+    accentClass: 'bg-fuchsia-500',
+    headerClass: 'bg-fuchsia-500/10',
+    iconClass: 'border-fuchsia-500/25 bg-fuchsia-500/10 text-fuchsia-500',
+  },
+  Automations: {
+    Icon: Bell,
+    accentClass: 'bg-amber-500',
+    headerClass: 'bg-amber-500/10',
+    iconClass: 'border-amber-500/25 bg-amber-500/10 text-amber-500',
+  },
+  'Messaging Connector Extensions': {
+    Icon: MessagesSquare,
+    accentClass: 'bg-indigo-500',
+    headerClass: 'bg-indigo-500/10',
+    iconClass: 'border-indigo-500/25 bg-indigo-500/10 text-indigo-500',
+  },
+  'App Connector Extensions': {
+    Icon: Plug,
+    accentClass: 'bg-blue-500',
+    headerClass: 'bg-blue-500/10',
+    iconClass: 'border-blue-500/25 bg-blue-500/10 text-blue-500',
+  },
+  'Voice Wake + Talk Mode': {
+    Icon: Mic,
+    accentClass: 'bg-rose-500',
+    headerClass: 'bg-rose-500/10',
+    iconClass: 'border-rose-500/25 bg-rose-500/10 text-rose-500',
+  },
+  'Mobile node companions (pilot)': {
+    Icon: Smartphone,
+    accentClass: 'bg-teal-500',
+    headerClass: 'bg-teal-500/10',
+    iconClass: 'border-teal-500/25 bg-teal-500/10 text-teal-500',
+  },
+  Agents: {
+    Icon: Bot,
+    accentClass: 'bg-teal-500',
+    headerClass: 'bg-teal-500/10',
+    iconClass: 'border-teal-500/25 bg-teal-500/10 text-teal-500',
+  },
+  Startup: {
+    Icon: Rocket,
+    accentClass: 'bg-orange-500',
+    headerClass: 'bg-orange-500/10',
+    iconClass: 'border-orange-500/25 bg-orange-500/10 text-orange-500',
+  },
+  'Build Mode Safety': {
+    Icon: Shield,
+    accentClass: 'bg-lime-500',
+    headerClass: 'bg-lime-500/10',
+    iconClass: 'border-lime-500/25 bg-lime-500/10 text-lime-500',
+  },
+  'Execution Profiles': {
+    Icon: Monitor,
+    accentClass: 'bg-slate-400',
+    headerClass: 'bg-slate-500/10',
+    iconClass: 'border-slate-400/25 bg-slate-500/10 text-slate-300',
+  },
+  'Workspace Defaults': {
+    Icon: Folder,
+    accentClass: 'bg-yellow-500',
+    headerClass: 'bg-yellow-500/10',
+    iconClass: 'border-yellow-500/25 bg-yellow-500/10 text-yellow-500',
+  },
+  'Memory (User Context)': {
+    Icon: Brain,
+    accentClass: 'bg-pink-500',
+    headerClass: 'bg-pink-500/10',
+    iconClass: 'border-pink-500/25 bg-pink-500/10 text-pink-500',
+  },
+  'Browser Profile': {
+    Icon: Globe,
+    accentClass: 'bg-blue-400',
+    headerClass: 'bg-blue-400/10',
+    iconClass: 'border-blue-400/25 bg-blue-400/10 text-blue-400',
+  },
+  'Runtime Hooks': {
+    Icon: Activity,
+    accentClass: 'bg-red-500',
+    headerClass: 'bg-red-500/10',
+    iconClass: 'border-red-500/25 bg-red-500/10 text-red-500',
+  },
+  'Permission Policy': {
+    Icon: Lock,
+    accentClass: 'bg-red-500',
+    headerClass: 'bg-red-500/10',
+    iconClass: 'border-red-500/25 bg-red-500/10 text-red-500',
+  },
+  Developer: {
+    Icon: Bug,
+    accentClass: 'bg-zinc-400',
+    headerClass: 'bg-zinc-500/10',
+    iconClass: 'border-zinc-400/25 bg-zinc-500/10 text-zinc-300',
+  },
+  Doctor: {
+    Icon: CheckCircle2,
+    accentClass: 'bg-green-500',
+    headerClass: 'bg-green-500/10',
+    iconClass: 'border-green-500/25 bg-green-500/10 text-green-500',
+  },
+  About: {
+    Icon: Info,
+    accentClass: 'bg-primary',
+    headerClass: 'bg-primary/10',
+    iconClass: 'border-primary/25 bg-primary/10 text-primary',
+  },
+};
+
+const EXECUTION_PROFILE_KIND_OPTIONS: Array<{ kind: ExecutionProfileKind; label: string; description: string }> = [
+  {
+    kind: 'local_windows',
+    label: 'Local Windows',
+    description: 'Run tasks on this Windows desktop.',
+  },
+  {
+    kind: 'ssh',
+    label: 'SSH',
+    description: 'Future remote host runner. Secrets are not stored here.',
+  },
+  {
+    kind: 'docker',
+    label: 'Docker',
+    description: 'Future container runner using a local Docker image.',
+  },
+  {
+    kind: 'cloud_worker',
+    label: 'Cloud Worker',
+    description: 'Future managed worker endpoint.',
+  },
+];
+
+const EXECUTION_PROFILE_KIND_LABELS: Record<ExecutionProfileKind, string> = Object.fromEntries(
+  EXECUTION_PROFILE_KIND_OPTIONS.map((entry) => [entry.kind, entry.label])
+) as Record<ExecutionProfileKind, string>;
+
+function describeExecutionProfile(profile: ExecutionProfile): string {
+  const settings = profile.settings;
+  if (settings.kind === 'local_windows') {
+    return `Shell: ${settings.shell}`;
+  }
+  if (settings.kind === 'ssh') {
+    return `${settings.username ? `${settings.username}@` : ''}${settings.host}:${settings.port}`;
+  }
+  if (settings.kind === 'docker') {
+    return `Image: ${settings.image}`;
+  }
+  return settings.providerLabel
+    ? `${settings.providerLabel} - ${settings.workerUrl}`
+    : settings.workerUrl;
+}
 
 const OLLAMA_TOOL_MODE_OPTIONS: Array<{
   value: OllamaToolMode;
@@ -861,6 +1250,22 @@ function createAgentModelUpdate(agent: AgentProfile, selectedModel: SelectedMode
   };
 }
 
+function createAgentDeferredToolDiscoveryUpdate(agent: AgentProfile, enabled: boolean): AgentConfig {
+  return {
+    id: agent.id,
+    name: agent.name,
+    roleName: agent.roleName,
+    description: agent.description,
+    avatar: agent.avatar,
+    avatarColor: agent.avatarColor,
+    avatarImageDataUrl: agent.avatarImageDataUrl,
+    workspaceRoot: agent.workspaceRoot,
+    systemPromptAppend: agent.systemPromptAppend,
+    selectedModel: agent.selectedModel ?? null,
+    deferredToolDiscoveryEnabled: enabled,
+  };
+}
+
 function isOllamaSelectedModel(model: SelectedModel | null | undefined): boolean {
   if (!model) return false;
   const provider = typeof model.provider === 'string' ? model.provider.trim().toLowerCase() : '';
@@ -924,6 +1329,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const [apiKeyStatus, setApiKeyStatus] = useState<Record<string, { exists: boolean; prefix?: string }> | null>(null);
   const [debugMode, setDebugMode] = useState(false);
   const [loadingDebug, setLoadingDebug] = useState(true);
+  const [searchAuditOpen, setSearchAuditOpen] = useState(false);
   const [appVersion, setAppVersion] = useState('');
   const [appPlatform, setAppPlatform] = useState('');
   const [selectedModel, setSelectedModel] = useState<SelectedModel | null>(null);
@@ -931,6 +1337,27 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const [agentSpeedModeSaving, setAgentSpeedModeSaving] = useState(false);
   const [buildDiffEnforcementMode, setBuildDiffEnforcementMode] = useState<BuildDiffEnforcementMode>('preview-only');
   const [buildDiffEnforcementSaving, setBuildDiffEnforcementSaving] = useState(false);
+  const [executionProfiles, setExecutionProfiles] = useState<ExecutionProfile[]>([]);
+  const [executionProfilesDefaultId, setExecutionProfilesDefaultId] = useState('local-windows');
+  const [executionProfilesLoading, setExecutionProfilesLoading] = useState(false);
+  const [executionProfilesSaving, setExecutionProfilesSaving] = useState(false);
+  const [executionProfilesError, setExecutionProfilesError] = useState<string | null>(null);
+  const [executionProfilesStatus, setExecutionProfilesStatus] = useState<string | null>(null);
+  const [executionProfileFormId, setExecutionProfileFormId] = useState<string | null>(null);
+  const [executionProfileName, setExecutionProfileName] = useState('');
+  const [executionProfileKind, setExecutionProfileKind] = useState<ExecutionProfileKind>('ssh');
+  const [executionProfileShell, setExecutionProfileShell] = useState<'powershell' | 'cmd'>('powershell');
+  const [executionProfileWorkspaceRoot, setExecutionProfileWorkspaceRoot] = useState('');
+  const [executionProfileHost, setExecutionProfileHost] = useState('');
+  const [executionProfilePort, setExecutionProfilePort] = useState('22');
+  const [executionProfileUsername, setExecutionProfileUsername] = useState('');
+  const [executionProfileDockerImage, setExecutionProfileDockerImage] = useState('');
+  const [executionProfileDockerContext, setExecutionProfileDockerContext] = useState('');
+  const [executionProfileContainerName, setExecutionProfileContainerName] = useState('');
+  const [executionProfileWorkingDir, setExecutionProfileWorkingDir] = useState('');
+  const [executionProfileProviderLabel, setExecutionProfileProviderLabel] = useState('');
+  const [executionProfileWorkerUrl, setExecutionProfileWorkerUrl] = useState('');
+  const [executionProfileRegion, setExecutionProfileRegion] = useState('');
   const [loadingModel, setLoadingModel] = useState(true);
   const [modelStatusMessage, setModelStatusMessage] = useState<string | null>(null);
   const [modelLimitOverrides, setModelLimitOverrides] = useState<Record<string, { contextWindowTokens?: number }>>({});
@@ -974,6 +1401,11 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const [loadingUserSkillsDeps, setLoadingUserSkillsDeps] = useState(true);
   const [userSkillsDepsError, setUserSkillsDepsError] = useState<string | null>(null);
   const [installingUserSkillDep, setInstallingUserSkillDep] = useState<{ skillId: string; installId: string } | null>(null);
+  const [skillCuratorHistory, setSkillCuratorHistory] = useState<UserSkillCuratorRunRecord[]>([]);
+  const [loadingSkillCuratorHistory, setLoadingSkillCuratorHistory] = useState(false);
+  const [skillCuratorError, setSkillCuratorError] = useState<string | null>(null);
+  const [runningSkillCurator, setRunningSkillCurator] = useState(false);
+  const [rollingBackUserSkill, setRollingBackUserSkill] = useState<string | null>(null);
   const [configuringUserSkill, setConfiguringUserSkill] = useState<UserSkillDependencyStatusEntry | null>(null);
   const [configuringUserSkillJson, setConfiguringUserSkillJson] = useState('');
   const configuringUserSkillJsonRef = useRef<HTMLTextAreaElement | null>(null);
@@ -1118,14 +1550,24 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const permissionPolicyAuditMaxEntriesRef = useRef<HTMLInputElement | null>(null);
   const deferredPermissionPolicyAuditQuery = useDeferredValue(permissionPolicyAuditQuery);
   const [memoryLongTerm, setMemoryLongTerm] = useState('');
+  const [memoryUser, setMemoryUser] = useState('');
   const [memoryDaily, setMemoryDaily] = useState('');
   const [memoryDailyDate, setMemoryDailyDate] = useState('');
   const [memoryDailyFiles, setMemoryDailyFiles] = useState<string[]>([]);
+  const [memorySnapshots, setMemorySnapshots] = useState<MemoryEntrySummary[]>([]);
+  const [memorySelectedSnapshotFileName, setMemorySelectedSnapshotFileName] = useState('');
+  const [memorySnapshotContent, setMemorySnapshotContent] = useState('');
+  const [memorySearchQuery, setMemorySearchQuery] = useState('');
+  const [memorySearchResults, setMemorySearchResults] = useState<MemorySearchResult[]>([]);
+  const [memoryChanges, setMemoryChanges] = useState<MemoryChangeRecord[]>([]);
   const [memoryLoading, setMemoryLoading] = useState(false);
   const [memorySaving, setMemorySaving] = useState(false);
   const [memoryError, setMemoryError] = useState<string | null>(null);
+  const [memoryStatus, setMemoryStatus] = useState<string | null>(null);
+  const memoryUserRef = useRef<HTMLTextAreaElement | null>(null);
   const memoryLongTermRef = useRef<HTMLTextAreaElement | null>(null);
   const memoryDailyRef = useRef<HTMLTextAreaElement | null>(null);
+  const memorySnapshotRef = useRef<HTMLTextAreaElement | null>(null);
   const [agentFormId, setAgentFormId] = useState<string | null>(null);
   const [agentName, setAgentName] = useState('');
   const [agentRoleName, setAgentRoleName] = useState('');
@@ -1135,6 +1577,13 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const [agentAvatar, setAgentAvatar] = useState<string | undefined>(undefined);
   const [agentAvatarColor, setAgentAvatarColor] = useState<string | undefined>(undefined);
   const [agentAvatarImageDataUrl, setAgentAvatarImageDataUrl] = useState<string | undefined>(undefined);
+  const [agentAvatarFrame, setAgentAvatarFrame] = useState('none');
+  const [agentAppearanceAccentColor, setAgentAppearanceAccentColor] = useState('');
+  const [agentAnswerStyle, setAgentAnswerStyle] = useState('balanced');
+  const [agentChatBackgroundId, setAgentChatBackgroundId] = useState(DEFAULT_CHAT_BACKGROUND_ID);
+  const [agentShowAvatarOnAnswers, setAgentShowAvatarOnAnswers] = useState(true);
+  const [agentPresenceAnimation, setAgentPresenceAnimation] = useState('none');
+  const [agentReactionMode, setAgentReactionMode] = useState<AgentReactionModeOption>('minimal');
   const [agentModelOverrideEnabled, setAgentModelOverrideEnabled] = useState(false);
   const [agentModelProvider, setAgentModelProvider] = useState<ProviderType>('anthropic');
   const [agentModelId, setAgentModelId] = useState(AGENT_FALLBACK_MODEL.model);
@@ -1153,14 +1602,19 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const [agentHeartbeatWindowStartTime, setAgentHeartbeatWindowStartTime] = useState(AGENT_HEARTBEAT_DEFAULT_WINDOW_START_TIME);
   const [agentHeartbeatWindowEndTime, setAgentHeartbeatWindowEndTime] = useState(AGENT_HEARTBEAT_DEFAULT_WINDOW_END_TIME);
   const [agentHeartbeatPrompt, setAgentHeartbeatPrompt] = useState(AGENT_HEARTBEAT_DEFAULT_PROMPT);
-  const [agentAutoSkillEnabled, setAgentAutoSkillEnabled] = useState(false);
-  const [agentAutoSkillAutoPromoteLowRisk, setAgentAutoSkillAutoPromoteLowRisk] = useState(false);
+  const [agentAlwaysOnEnabled, setAgentAlwaysOnEnabled] = useState(false);
+  const [agentWorkboardDispatchEnabled, setAgentWorkboardDispatchEnabled] = useState(false);
+  const [agentWorkboardDispatchProjectIds, setAgentWorkboardDispatchProjectIds] = useState<string[]>([]);
+  const [agentDeferredToolDiscoveryEnabled, setAgentDeferredToolDiscoveryEnabled] = useState(false);
+  const [agentSkillAutomationMode, setAgentSkillAutomationMode] = useState<'automatic' | 'approval' | 'off'>('automatic');
+  const [agentMemoryWriteMode, setAgentMemoryWriteMode] = useState<'automatic' | 'approval' | 'off'>('automatic');
+  const [agentMemoryNotificationsEnabled, setAgentMemoryNotificationsEnabled] = useState(true);
   const [agentSubagentsEnabled, setAgentSubagentsEnabled] = useState(false);
   const [agentSubagentMaxChildren, setAgentSubagentMaxChildren] = useState('3');
   const [agentSubagentMaxDepth, setAgentSubagentMaxDepth] = useState('1');
   const [agentSubagentAllowedAgentIds, setAgentSubagentAllowedAgentIds] = useState('');
   const [agentSubagentAutoRelayCompletions, setAgentSubagentAutoRelayCompletions] = useState(true);
-  const [agentSubagentRunTimeoutSeconds, setAgentSubagentRunTimeoutSeconds] = useState('300');
+  const [agentSubagentRunTimeoutSeconds, setAgentSubagentRunTimeoutSeconds] = useState('1200');
   const [agentSubagentDefaultMode, setAgentSubagentDefaultMode] = useState<'run' | 'session'>('run');
   const [agentSubagentDefaultModelEnabled, setAgentSubagentDefaultModelEnabled] = useState(false);
   const [agentSubagentDefaultModelProvider, setAgentSubagentDefaultModelProvider] = useState<ProviderType>('anthropic');
@@ -1199,6 +1653,63 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const [agentSaving, setAgentSaving] = useState(false);
   const [agentError, setAgentError] = useState<string | null>(null);
   const [agentFormVersion, setAgentFormVersion] = useState(0);
+  const [chatToolCompatibilityRunningAgentId, setChatToolCompatibilityRunningAgentId] = useState<string | null>(null);
+  const [chatToolCompatibilityResult, setChatToolCompatibilityResult] = useState<ChatToolCompatibilityCheckResult | null>(null);
+  const [chatToolCompatibilityError, setChatToolCompatibilityError] = useState<string | null>(null);
+  const [agentBuilderExpanded, setAgentBuilderExpanded] = useState(true);
+  const [agentBuilderStepIndex, setAgentBuilderStepIndex] = useState(0);
+  const [agentBuilderCloneSourceId, setAgentBuilderCloneSourceId] = useState('');
+  const [agentBuilderName, setAgentBuilderName] = useState('');
+  const [agentBuilderRoleName, setAgentBuilderRoleName] = useState('');
+  const [agentBuilderDescription, setAgentBuilderDescription] = useState('');
+  const [agentBuilderWorkspaceRoot, setAgentBuilderWorkspaceRoot] = useState('');
+  const [agentBuilderSystemPrompt, setAgentBuilderSystemPrompt] = useState('');
+  const [agentBuilderModelOverrideEnabled, setAgentBuilderModelOverrideEnabled] = useState(false);
+  const [agentBuilderModelProvider, setAgentBuilderModelProvider] = useState<ProviderType>('anthropic');
+  const [agentBuilderModelId, setAgentBuilderModelId] = useState(AGENT_FALLBACK_MODEL.model);
+  const [agentBuilderModelBaseUrl, setAgentBuilderModelBaseUrl] = useState('');
+  const [agentBuilderToolsetIds, setAgentBuilderToolsetIds] = useState<ToolsetId[]>(() => [...AGENT_BUILDER_DEFAULT_TOOLSET_IDS]);
+  const [agentBuilderDeferredToolDiscoveryEnabled, setAgentBuilderDeferredToolDiscoveryEnabled] = useState(false);
+  const [agentBuilderSkillAutomationMode, setAgentBuilderSkillAutomationMode] = useState<'automatic' | 'approval' | 'off'>('automatic');
+  const [agentBuilderMemoryWriteMode, setAgentBuilderMemoryWriteMode] = useState<'automatic' | 'approval' | 'off'>('automatic');
+  const [agentBuilderMemoryNotificationsEnabled, setAgentBuilderMemoryNotificationsEnabled] = useState(true);
+  const [agentBuilderLoopEnabled, setAgentBuilderLoopEnabled] = useState(false);
+  const [agentBuilderAlwaysOnEnabled, setAgentBuilderAlwaysOnEnabled] = useState(false);
+  const [agentBuilderSubagentsEnabled, setAgentBuilderSubagentsEnabled] = useState(false);
+  const [agentBuilderSubagentMaxChildren, setAgentBuilderSubagentMaxChildren] = useState('3');
+  const [agentBuilderSubagentMaxDepth, setAgentBuilderSubagentMaxDepth] = useState('1');
+  const [agentBuilderSubagentAllowedAgentIds, setAgentBuilderSubagentAllowedAgentIds] = useState('');
+  const [agentBuilderAvatar, setAgentBuilderAvatar] = useState<string | undefined>(undefined);
+  const [agentBuilderAvatarColor, setAgentBuilderAvatarColor] = useState<string | undefined>(undefined);
+  const [agentBuilderAvatarImageDataUrl, setAgentBuilderAvatarImageDataUrl] = useState<string | undefined>(undefined);
+  const [agentBuilderAvatarFrame, setAgentBuilderAvatarFrame] = useState('none');
+  const [agentBuilderAppearanceAccentColor, setAgentBuilderAppearanceAccentColor] = useState('');
+  const [agentBuilderAnswerStyle, setAgentBuilderAnswerStyle] = useState('balanced');
+  const [agentBuilderChatBackgroundId, setAgentBuilderChatBackgroundId] = useState(DEFAULT_CHAT_BACKGROUND_ID);
+  const [agentBuilderShowAvatarOnAnswers, setAgentBuilderShowAvatarOnAnswers] = useState(true);
+  const [agentBuilderPresenceAnimation, setAgentBuilderPresenceAnimation] = useState('none');
+  const [agentBuilderReactionMode, setAgentBuilderReactionMode] = useState<AgentReactionModeOption>('minimal');
+  const [agentBuilderSaving, setAgentBuilderSaving] = useState(false);
+  const [agentBuilderStatus, setAgentBuilderStatus] = useState<string | null>(null);
+  const [agentBuilderError, setAgentBuilderError] = useState<string | null>(null);
+  const [agentBuilderReadinessRunning, setAgentBuilderReadinessRunning] = useState(false);
+  const [agentBuilderReadinessResult, setAgentBuilderReadinessResult] = useState<ChatToolCompatibilityCheckResult | null>(null);
+  const [agentBuilderReadinessError, setAgentBuilderReadinessError] = useState<string | null>(null);
+  const agentBuilderNameInputRef = useRef<HTMLInputElement | null>(null);
+  const agentBuilderRoleNameInputRef = useRef<HTMLInputElement | null>(null);
+  const agentBuilderDescriptionInputRef = useRef<HTMLInputElement | null>(null);
+  const agentBuilderWorkspaceRootInputRef = useRef<HTMLInputElement | null>(null);
+  const agentBuilderSystemPromptInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const agentBuilderModelIdInputRef = useRef<HTMLInputElement | null>(null);
+  const agentBuilderModelBaseUrlInputRef = useRef<HTMLInputElement | null>(null);
+  const agentBuilderSubagentMaxChildrenInputRef = useRef<HTMLInputElement | null>(null);
+  const agentBuilderSubagentMaxDepthInputRef = useRef<HTMLInputElement | null>(null);
+  const agentBuilderSubagentAllowedAgentIdsInputRef = useRef<HTMLInputElement | null>(null);
+  const agentBuilderAppearanceAccentColorInputRef = useRef<HTMLInputElement | null>(null);
+  const [alwaysOnStatus, setAlwaysOnStatus] = useState<AlwaysOnStatusSnapshot | null>(null);
+  const [workboardDispatchProjects, setWorkboardDispatchProjects] = useState<UsageProject[]>([]);
+  const [connectorDeliveries, setConnectorDeliveries] = useState<ConnectorDeliveryRecord[]>([]);
+  const [alwaysOnStatusLoading, setAlwaysOnStatusLoading] = useState(false);
   const agentNameInputRef = useRef<HTMLInputElement | null>(null);
   const agentRoleNameInputRef = useRef<HTMLInputElement | null>(null);
   const agentDescriptionInputRef = useRef<HTMLInputElement | null>(null);
@@ -1212,6 +1723,12 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const agentHeartbeatWindowStartInputRef = useRef<HTMLInputElement | null>(null);
   const agentHeartbeatWindowEndInputRef = useRef<HTMLInputElement | null>(null);
   const agentHeartbeatPromptInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const agentAvatarFrameInputRef = useRef<HTMLSelectElement | null>(null);
+  const agentAppearanceAccentColorInputRef = useRef<HTMLInputElement | null>(null);
+  const agentAnswerStyleInputRef = useRef<HTMLSelectElement | null>(null);
+  const agentPresenceAnimationInputRef = useRef<HTMLSelectElement | null>(null);
+  const agentReactionModeInputRef = useRef<HTMLSelectElement | null>(null);
+  const agentShowAvatarOnAnswersInputRef = useRef<HTMLInputElement | null>(null);
   const mobileNodesMaxLivePreviewsInputRef = useRef<HTMLInputElement | null>(null);
   const mobileNodesDisplayNameInputRef = useRef<HTMLInputElement | null>(null);
   const [doctorChecks, setDoctorChecks] = useState<DoctorCheck[]>([]);
@@ -1279,23 +1796,105 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     }
   });
   const [settingsSectionQuery, setSettingsSectionQuery] = useState('');
-  const [settingsSectionJumpTarget, setSettingsSectionJumpTarget] = useState('');
+  const activeSettingsSectionIdRef = useRef('');
   const [settingsMode, setSettingsMode] = useState<'basic' | 'advanced'>(() => {
     if (typeof window === 'undefined') return 'basic';
     return window.localStorage.getItem('opendeskmate-settings-mode') === 'advanced' ? 'advanced' : 'basic';
   });
   const deferredSettingsSectionQuery = useDeferredValue(settingsSectionQuery);
+  const settingsSectionRefs = useRef<Record<string, HTMLElement | null>>({});
+  const settingsMenuItemRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const settingsContentScrollRef = useRef<HTMLDivElement | null>(null);
+  const settingsScrollRafRef = useRef<number | null>(null);
+  const settingsMenuStateTimeoutRef = useRef<number | null>(null);
+
+  const markSettingsMenuSectionActive = useCallback((sectionId: string) => {
+    if (activeSettingsSectionIdRef.current === sectionId) return;
+    activeSettingsSectionIdRef.current = sectionId;
+    for (const [itemSectionId, button] of Object.entries(settingsMenuItemRefs.current)) {
+      if (!button) continue;
+      const isActive = itemSectionId === sectionId;
+      button.dataset.active = isActive ? 'true' : 'false';
+      if (isActive) {
+        button.setAttribute('aria-current', 'true');
+      } else {
+        button.removeAttribute('aria-current');
+      }
+    }
+  }, []);
+
+  const expandSettingsSectionSoon = useCallback((sectionId: string) => {
+    if (settingsMenuStateTimeoutRef.current !== null) {
+      window.clearTimeout(settingsMenuStateTimeoutRef.current);
+    }
+    settingsMenuStateTimeoutRef.current = window.setTimeout(() => {
+      settingsMenuStateTimeoutRef.current = null;
+      setExpandedSettingsSections((prev) => (
+        prev[sectionId] ? prev : { ...prev, [sectionId]: true }
+      ));
+    }, 120);
+  }, []);
 
   useEffect(() => {
     if (!open) return;
     setSettingsSectionQuery(initialSectionQuery || '');
-    setSettingsSectionJumpTarget('');
+    activeSettingsSectionIdRef.current = '';
   }, [initialSectionQuery, open]);
   useEffect(() => {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem('opendeskmate-settings-mode', settingsMode);
   }, [settingsMode]);
-  const settingsSectionRefs = useRef<Record<string, HTMLElement | null>>({});
+
+  const updateActiveSettingsSectionFromScroll = useCallback(() => {
+    const container = settingsContentScrollRef.current;
+    if (!container) return;
+    const containerRect = container.getBoundingClientRect();
+    const targetTop = containerRect.top + 28;
+    let nextActiveId = '';
+    let closestDistance = Number.POSITIVE_INFINITY;
+
+    for (const [sectionId, element] of Object.entries(settingsSectionRefs.current)) {
+      if (!element) continue;
+      const rect = element.getBoundingClientRect();
+      if (rect.bottom < containerRect.top || rect.top > containerRect.bottom) continue;
+      const distance = Math.abs(rect.top - targetTop);
+      if (distance < closestDistance) {
+        closestDistance = distance;
+        nextActiveId = sectionId;
+      }
+    }
+
+    if (nextActiveId) {
+      markSettingsMenuSectionActive(nextActiveId);
+    }
+  }, [markSettingsMenuSectionActive]);
+
+  const handleSettingsContentScroll = useCallback(() => {
+    if (settingsScrollRafRef.current !== null) {
+      return;
+    }
+    settingsScrollRafRef.current = window.requestAnimationFrame(() => {
+      settingsScrollRafRef.current = null;
+      updateActiveSettingsSectionFromScroll();
+    });
+  }, [updateActiveSettingsSectionFromScroll]);
+
+  useEffect(() => {
+    if (!open) return;
+    const raf = window.requestAnimationFrame(updateActiveSettingsSectionFromScroll);
+    return () => window.cancelAnimationFrame(raf);
+  }, [open, settingsMode, deferredSettingsSectionQuery, updateActiveSettingsSectionFromScroll]);
+
+  useEffect(() => () => {
+    if (settingsScrollRafRef.current !== null) {
+      window.cancelAnimationFrame(settingsScrollRafRef.current);
+      settingsScrollRafRef.current = null;
+    }
+    if (settingsMenuStateTimeoutRef.current !== null) {
+      window.clearTimeout(settingsMenuStateTimeoutRef.current);
+      settingsMenuStateTimeoutRef.current = null;
+    }
+  }, []);
 
   const [discordStatus, setDiscordStatus] = useState<DiscordConnectorStatus | null>(null);
   const [discordTokenSet, setDiscordTokenSet] = useState(false);
@@ -1396,6 +1995,36 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const [nodeScreenStreamUrls, setNodeScreenStreamUrls] = useState<Record<string, string>>({});
 
   const permissionPolicyPreviewTargetAgentId = agentFormId || activeAgentId || undefined;
+  const alwaysOnAgentStatusById = useMemo(() => {
+    return new Map((alwaysOnStatus?.agents || []).map((status) => [status.agentId, status] as const));
+  }, [alwaysOnStatus]);
+  const alwaysOnEnabledCount = alwaysOnStatus?.agents.filter((status) => status.enabled).length ?? 0;
+  const alwaysOnReadyCount = alwaysOnStatus?.agents.filter((status) => status.status === 'ready' || status.status === 'busy').length ?? 0;
+  const recentDeliveryFailureCount = connectorDeliveries.filter((delivery) => delivery.status === 'failed').length;
+  const agentHeartbeatStatus = agentHeartbeatEnabled
+    ? agentAlwaysOnEnabled
+      ? {
+        label: 'On',
+        detail: 'Heartbeat is on and will run on its schedule while Always-on remains enabled.',
+        className: 'border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200',
+      }
+      : {
+        label: 'Paused',
+        detail: 'Heartbeat is enabled but paused because Always-on is off. Turn Always-on back on to resume it.',
+        className: 'border-amber-500/35 bg-amber-500/10 text-amber-700 dark:text-amber-200',
+      }
+    : {
+      label: 'Off',
+      detail: 'Heartbeat is disabled for this agent.',
+      className: 'border-border bg-muted/30 text-muted-foreground',
+    };
+  const agentAppearancePreviewAccentColor = /^#[0-9a-f]{6}$/i.test(agentAppearanceAccentColor.trim())
+    ? agentAppearanceAccentColor.trim()
+    : (agentAvatarColor || '#14b8a6');
+  const agentBuilderAppearancePreviewAccentColor = /^#[0-9a-f]{6}$/i.test(agentBuilderAppearanceAccentColor.trim())
+    ? agentBuilderAppearanceAccentColor.trim()
+    : (agentBuilderAvatarColor || '#38bdf8');
+  const selectedAgentChatBackground = CHAT_BACKGROUNDS.find((background) => background.id === agentChatBackgroundId) || null;
 
   const refreshMemoryState = async () => {
     const accomplish = getAccomplish();
@@ -1404,19 +2033,47 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     try {
       const state = (await accomplish.getMemoryState({ agentId: activeAgentId })) as
         | {
+            user?: { content?: string };
             longTerm?: { content?: string };
             daily?: { content?: string; date?: string };
             dailyFiles?: unknown;
+            snapshots?: MemoryEntrySummary[];
           }
         | null
         | undefined;
+      const changeHistory = await accomplish.listMemoryChanges({ limit: 50 });
+      setMemoryChanges(changeHistory.changes || []);
+      setMemoryUser(state?.user?.content || '');
       setMemoryLongTerm(state?.longTerm?.content || '');
       setMemoryDaily(state?.daily?.content || '');
+      const snapshots = Array.isArray(state?.snapshots) ? state.snapshots : [];
+      setMemorySnapshots(snapshots);
       const dailyDate = state?.daily?.date || '';
       const files = Array.isArray(state?.dailyFiles) ? (state?.dailyFiles as string[]) : [];
       const normalizedFiles = dailyDate && !files.includes(dailyDate) ? [dailyDate, ...files] : files;
       setMemoryDailyDate(dailyDate);
       setMemoryDailyFiles(normalizedFiles);
+      const currentSnapshot = snapshots.find((snapshot) => snapshot.fileName === memorySelectedSnapshotFileName);
+      if (!currentSnapshot && memorySelectedSnapshotFileName) {
+        setMemorySelectedSnapshotFileName('');
+        setMemorySnapshotContent('');
+        if (memorySnapshotRef.current) {
+          memorySnapshotRef.current.value = '';
+        }
+      } else if (currentSnapshot?.fileName) {
+        const file = await accomplish.readMemoryFile({
+          kind: 'snapshot',
+          fileName: currentSnapshot.fileName,
+          agentId: activeAgentId,
+        });
+        setMemorySnapshotContent(file.content || '');
+        if (memorySnapshotRef.current) {
+          memorySnapshotRef.current.value = file.content || '';
+        }
+      }
+      if (memoryUserRef.current) {
+        memoryUserRef.current.value = state?.user?.content || '';
+      }
       if (memoryLongTermRef.current) {
         memoryLongTermRef.current.value = state?.longTerm?.content || '';
       }
@@ -1430,6 +2087,191 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       setMemoryLoading(false);
     }
   };
+
+  const resetExecutionProfileForm = () => {
+    setExecutionProfileFormId(null);
+    setExecutionProfileName('');
+    setExecutionProfileKind('ssh');
+    setExecutionProfileShell('powershell');
+    setExecutionProfileWorkspaceRoot('');
+    setExecutionProfileHost('');
+    setExecutionProfilePort('22');
+    setExecutionProfileUsername('');
+    setExecutionProfileDockerImage('');
+    setExecutionProfileDockerContext('');
+    setExecutionProfileContainerName('');
+    setExecutionProfileWorkingDir('');
+    setExecutionProfileProviderLabel('');
+    setExecutionProfileWorkerUrl('');
+    setExecutionProfileRegion('');
+    setExecutionProfilesError(null);
+    setExecutionProfilesStatus(null);
+  };
+
+  const editExecutionProfile = (profile: ExecutionProfile) => {
+    setExecutionProfileFormId(profile.id);
+    setExecutionProfileName(profile.name);
+    setExecutionProfileKind(profile.kind);
+    setExecutionProfileWorkspaceRoot(
+      'workspaceRoot' in profile.settings && profile.settings.workspaceRoot
+        ? profile.settings.workspaceRoot
+        : ''
+    );
+    setExecutionProfileShell(profile.settings.kind === 'local_windows' ? profile.settings.shell : 'powershell');
+    setExecutionProfileHost(profile.settings.kind === 'ssh' ? profile.settings.host : '');
+    setExecutionProfilePort(profile.settings.kind === 'ssh' ? String(profile.settings.port) : '22');
+    setExecutionProfileUsername(profile.settings.kind === 'ssh' ? profile.settings.username || '' : '');
+    setExecutionProfileDockerImage(profile.settings.kind === 'docker' ? profile.settings.image : '');
+    setExecutionProfileDockerContext(profile.settings.kind === 'docker' ? profile.settings.dockerContext || '' : '');
+    setExecutionProfileContainerName(profile.settings.kind === 'docker' ? profile.settings.containerName || '' : '');
+    setExecutionProfileWorkingDir(profile.settings.kind === 'docker' ? profile.settings.workingDir || '' : '');
+    setExecutionProfileProviderLabel(profile.settings.kind === 'cloud_worker' ? profile.settings.providerLabel || '' : '');
+    setExecutionProfileWorkerUrl(profile.settings.kind === 'cloud_worker' ? profile.settings.workerUrl : '');
+    setExecutionProfileRegion(profile.settings.kind === 'cloud_worker' ? profile.settings.region || '' : '');
+    setExecutionProfilesError(null);
+    setExecutionProfilesStatus(null);
+  };
+
+  const buildExecutionProfilePayload = (): ExecutionProfileCreateInput | ExecutionProfileUpdateInput | null => {
+    const name = executionProfileName.trim();
+    if (!name) {
+      setExecutionProfilesError('Enter a profile name.');
+      return null;
+    }
+
+    const workspaceRoot = executionProfileWorkspaceRoot.trim() || null;
+    if (executionProfileKind === 'local_windows') {
+      return {
+        name,
+        kind: executionProfileKind,
+        settings: {
+          kind: 'local_windows',
+          shell: executionProfileShell,
+          workspaceRoot,
+        },
+      };
+    }
+
+    if (executionProfileKind === 'ssh') {
+      const host = executionProfileHost.trim();
+      if (!host) {
+        setExecutionProfilesError('Enter an SSH host.');
+        return null;
+      }
+      const port = Number(executionProfilePort.trim() || '22');
+      if (!Number.isFinite(port) || port < 1 || port > 65535) {
+        setExecutionProfilesError('Enter an SSH port between 1 and 65535.');
+        return null;
+      }
+      return {
+        name,
+        kind: executionProfileKind,
+        settings: {
+          kind: 'ssh',
+          host,
+          port,
+          username: executionProfileUsername.trim() || undefined,
+          workspaceRoot,
+        },
+      };
+    }
+
+    if (executionProfileKind === 'docker') {
+      const image = executionProfileDockerImage.trim();
+      if (!image) {
+        setExecutionProfilesError('Enter a Docker image.');
+        return null;
+      }
+      return {
+        name,
+        kind: executionProfileKind,
+        settings: {
+          kind: 'docker',
+          image,
+          dockerContext: executionProfileDockerContext.trim() || undefined,
+          containerName: executionProfileContainerName.trim() || undefined,
+          workspaceRoot,
+          workingDir: executionProfileWorkingDir.trim() || undefined,
+        },
+      };
+    }
+
+    const workerUrl = executionProfileWorkerUrl.trim();
+    if (!workerUrl) {
+      setExecutionProfilesError('Enter a cloud worker URL.');
+      return null;
+    }
+    return {
+      name,
+      kind: executionProfileKind,
+      settings: {
+        kind: 'cloud_worker',
+        providerLabel: executionProfileProviderLabel.trim() || undefined,
+        workerUrl,
+        region: executionProfileRegion.trim() || undefined,
+        workspaceRoot,
+      },
+    };
+  };
+
+  const refreshExecutionProfiles = async () => {
+    const accomplish = getAccomplish();
+    setExecutionProfilesLoading(true);
+    setExecutionProfilesError(null);
+    try {
+      const result = await accomplish.listExecutionProfiles({ includeArchived: true });
+      setExecutionProfiles(result.profiles || []);
+      setExecutionProfilesDefaultId(result.defaultProfileId || 'local-windows');
+    } catch (err) {
+      console.error('Failed to fetch execution profiles:', err);
+      setExecutionProfilesError('Unable to load execution profiles.');
+    } finally {
+      setExecutionProfilesLoading(false);
+    }
+  };
+
+  const handleSaveExecutionProfile = async () => {
+    const accomplish = getAccomplish();
+    const payload = buildExecutionProfilePayload();
+    if (!payload) return;
+    setExecutionProfilesSaving(true);
+    setExecutionProfilesError(null);
+    setExecutionProfilesStatus(null);
+    try {
+      const saved = executionProfileFormId
+        ? await accomplish.updateExecutionProfile(executionProfileFormId, payload)
+        : await accomplish.createExecutionProfile(payload as ExecutionProfileCreateInput);
+      await refreshExecutionProfiles();
+      editExecutionProfile(saved);
+      setExecutionProfilesStatus(`${saved.name} saved.`);
+    } catch (err) {
+      console.error('Failed to save execution profile:', err);
+      setExecutionProfilesError(err instanceof Error ? err.message : 'Unable to save execution profile.');
+    } finally {
+      setExecutionProfilesSaving(false);
+    }
+  };
+
+  const handleArchiveExecutionProfile = async (profile: ExecutionProfile, archived: boolean) => {
+    const accomplish = getAccomplish();
+    setExecutionProfilesSaving(true);
+    setExecutionProfilesError(null);
+    setExecutionProfilesStatus(null);
+    try {
+      const updated = await accomplish.archiveExecutionProfile(profile.id, archived);
+      await refreshExecutionProfiles();
+      if (executionProfileFormId === profile.id) {
+        editExecutionProfile(updated);
+      }
+      setExecutionProfilesStatus(`${updated.name} ${archived ? 'archived' : 'restored'}.`);
+    } catch (err) {
+      console.error('Failed to archive execution profile:', err);
+      setExecutionProfilesError(err instanceof Error ? err.message : 'Unable to update execution profile.');
+    } finally {
+      setExecutionProfilesSaving(false);
+    }
+  };
+
   const nodeMicBuffersRef = useRef<Record<string, Array<{ mime: string; dataBase64: string }>>>({});
   const nodeScreenBuffersRef = useRef<Record<string, Array<{ mime: string; dataBase64: string }>>>({});
   const nodeBufferedUpdateRef = useRef<Record<string, number>>({});
@@ -1828,7 +2670,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     [appConnectorRuntimeStatuses]
   );
 
-  const InfoTip = ({ text }: { text: string }) => (
+  const InfoTip = ({ text, content }: { text?: string; content?: ReactNode }) => (
     <Popover>
       <PopoverTrigger asChild>
         <button
@@ -1840,7 +2682,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         </button>
       </PopoverTrigger>
       <PopoverContent className="max-w-xs text-xs leading-relaxed text-foreground" align="start">
-        {text}
+        {content ?? text}
       </PopoverContent>
     </Popover>
   );
@@ -2254,6 +3096,20 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       }
     };
 
+    const fetchSkillCuratorHistory = async () => {
+      setLoadingSkillCuratorHistory(true);
+      setSkillCuratorError(null);
+      try {
+        const response = await accomplish.listUserSkillCuratorHistory();
+        setSkillCuratorHistory(Array.isArray(response?.runs) ? response.runs : []);
+      } catch (err) {
+        console.error('Failed to fetch skill curator history:', err);
+        setSkillCuratorError('Unable to load skill learning history.');
+      } finally {
+        setLoadingSkillCuratorHistory(false);
+      }
+    };
+
     const fetchDiscord = async () => {
       try {
         const info = (await accomplish.getDiscordConfig()) as
@@ -2538,9 +3394,11 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     fetchSkillAssistantModel();
     fetchApiKeyStatus();
     fetchAppSettings();
+    refreshExecutionProfiles();
     fetchUsagePricing();
     fetchModelLimits();
     refreshMemoryState();
+    refreshAlwaysOnStatus();
     fetchAgents();
     fetchDiscord();
     fetchTelegram();
@@ -2550,6 +3408,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     fetchPlugins();
     fetchUserSkills();
     fetchUserSkillsDeps();
+    fetchSkillCuratorHistory();
     fetchOllamaConfig();
     fetchAutomations();
     fetchGateway();
@@ -2558,6 +3417,27 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     fetchRuntimeHooks();
     fetchPermissionPolicy();
   }, [open, loadAgents, activeAgentId]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    const accomplish = getAccomplish();
+    void accomplish.listUsageProjects()
+      .then((projects) => {
+        if (!cancelled) {
+          setWorkboardDispatchProjects(Array.isArray(projects) ? projects : []);
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to load Workboard projects:', err);
+        if (!cancelled) {
+          setWorkboardDispatchProjects([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -2588,6 +3468,23 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       setRuntimeHooksError(message);
     } finally {
       setRuntimeHooksSaving(false);
+    }
+  };
+
+  const refreshAlwaysOnStatus = async () => {
+    const accomplish = getAccomplish();
+    setAlwaysOnStatusLoading(true);
+    try {
+      const [status, deliveries] = await Promise.all([
+        accomplish.getAlwaysOnStatus(),
+        accomplish.listConnectorDeliveries({ limit: 12 }),
+      ]);
+      setAlwaysOnStatus(status);
+      setConnectorDeliveries(Array.isArray(deliveries?.deliveries) ? deliveries.deliveries : []);
+    } catch (err) {
+      console.error('Failed to load always-on status:', err);
+    } finally {
+      setAlwaysOnStatusLoading(false);
     }
   };
 
@@ -4319,6 +5216,21 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     }
   };
 
+  const refreshSkillCuratorHistory = async () => {
+    const accomplish = getAccomplish();
+    setLoadingSkillCuratorHistory(true);
+    setSkillCuratorError(null);
+    try {
+      const response = await accomplish.listUserSkillCuratorHistory();
+      setSkillCuratorHistory(Array.isArray(response?.runs) ? response.runs : []);
+    } catch (err) {
+      console.error('Failed to fetch skill curator history:', err);
+      setSkillCuratorError('Unable to load skill learning history.');
+    } finally {
+      setLoadingSkillCuratorHistory(false);
+    }
+  };
+
   const getUserSkillKey = (skill: UserSkillEntry): string => {
     const envelope = skill.metadata?.opendeskmate || skill.metadata?.clawdbot;
     const key = String(envelope?.skillKey || '').trim();
@@ -4426,6 +5338,76 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       return 'Agents with access: none';
     }
     return `Agents with access: ${names.join(', ')}`;
+  };
+
+  const getSkillLearningMetadata = (skill: UserSkillEntry): {
+    sourceTaskId?: string;
+    confidence?: number;
+    reason?: string;
+  } => {
+    const automation = skill.metadata?.opendeskmate?.automation || skill.metadata?.clawdbot?.automation;
+    return {
+      sourceTaskId: skill.manifest?.lastChange?.sourceTaskId || automation?.sourceTaskId,
+      confidence: skill.manifest?.lastChange?.confidence ?? automation?.confidence,
+      reason: skill.manifest?.lastChange?.reason || automation?.reason || automation?.reasons?.[0],
+    };
+  };
+
+  const skillsWithRollbackVersions = useMemo(
+    () => (userSkillsReport?.skills || [])
+      .filter((skill) => skill.editable && (skill.manifest?.versions?.length || 0) > 0)
+      .sort((a, b) => String(b.manifest?.updatedAt || '').localeCompare(String(a.manifest?.updatedAt || ''))),
+    [userSkillsReport]
+  );
+
+  const handleRunUserSkillCurator = async () => {
+    const accomplish = getAccomplish();
+    setRunningSkillCurator(true);
+    setSkillCuratorError(null);
+    try {
+      const run = await accomplish.runUserSkillCurator({ agentId: activeAgentId, dryRun: false });
+      setSkillCuratorHistory((current) => [run, ...current.filter((entry) => entry.id !== run.id)].slice(0, 50));
+      await refreshUserSkills();
+      await refreshUserSkillsDeps();
+    } catch (err) {
+      console.error('Failed to run skill curator:', err);
+      setSkillCuratorError(err instanceof Error ? err.message : 'Unable to run skill curator.');
+    } finally {
+      setRunningSkillCurator(false);
+    }
+  };
+
+  const handleRollbackUserSkillToLatest = async (skill: UserSkillEntry) => {
+    const versions = skill.manifest?.versions || [];
+    const target = versions[versions.length - 1];
+    if (!target) return;
+    const ok = confirm(`Roll back ${skill.name} to version ${target.version}?`);
+    if (!ok) return;
+
+    const accomplish = getAccomplish();
+    const key = `${skill.source}:${skill.id}`;
+    setRollingBackUserSkill(key);
+    setUserSkillsError(null);
+    try {
+      const result = await accomplish.rollbackUserSkill({
+        skillId: skill.id,
+        targetVersion: target.version,
+        source: skill.source,
+        agentId: activeAgentId,
+      });
+      if (!result.ok) {
+        setUserSkillsError(result.message || 'Rollback failed.');
+        return;
+      }
+      await refreshUserSkills();
+      await refreshUserSkillsDeps();
+      await refreshSkillCuratorHistory();
+    } catch (err) {
+      console.error('Failed to roll back user skill:', err);
+      setUserSkillsError(err instanceof Error ? err.message : 'Failed to roll back skill.');
+    } finally {
+      setRollingBackUserSkill(null);
+    }
   };
 
   const openShareUserSkill = (skill: UserSkillEntry) => {
@@ -4737,6 +5719,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       });
       await refreshUserSkills();
       await refreshUserSkillsDeps();
+      await refreshSkillCuratorHistory();
     } catch (err) {
       console.error('Failed to save user skill:', err);
       setUserSkillsError('Failed to save skill.');
@@ -5050,11 +6033,33 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setMemoryLongTerm(nextLongTerm);
     setMemorySaving(true);
     setMemoryError(null);
+    setMemoryStatus(null);
     try {
       await accomplish.saveMemoryFile({ kind: 'long-term', content: nextLongTerm, agentId: activeAgentId });
+      setMemoryStatus('Saved MEMORY.md');
+      await refreshMemoryState();
     } catch (err) {
       console.error('Failed to save long-term memory:', err);
       setMemoryError('Unable to save MEMORY.md');
+    } finally {
+      setMemorySaving(false);
+    }
+  };
+
+  const handleSaveUserMemory = async () => {
+    const accomplish = getAccomplish();
+    const nextUserMemory = memoryUserRef.current?.value ?? memoryUser;
+    setMemoryUser(nextUserMemory);
+    setMemorySaving(true);
+    setMemoryError(null);
+    setMemoryStatus(null);
+    try {
+      await accomplish.saveMemoryFile({ kind: 'user', content: nextUserMemory, agentId: activeAgentId });
+      setMemoryStatus('Saved USER.md');
+      await refreshMemoryState();
+    } catch (err) {
+      console.error('Failed to save user memory:', err);
+      setMemoryError('Unable to save USER.md');
     } finally {
       setMemorySaving(false);
     }
@@ -5066,11 +6071,14 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setMemoryDaily(nextDaily);
     setMemorySaving(true);
     setMemoryError(null);
+    setMemoryStatus(null);
     try {
       await accomplish.saveMemoryFile({ kind: 'daily', date: memoryDailyDate, content: nextDaily, agentId: activeAgentId });
       if (!memoryDailyFiles.includes(memoryDailyDate)) {
         setMemoryDailyFiles((prev) => [memoryDailyDate, ...prev]);
       }
+      setMemoryStatus(`Saved daily memory for ${memoryDailyDate}`);
+      await refreshMemoryState();
     } catch (err) {
       console.error('Failed to save daily memory:', err);
       setMemoryError('Unable to save daily memory');
@@ -5084,6 +6092,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setMemoryDailyDate(nextDate);
     setMemoryLoading(true);
     setMemoryError(null);
+    setMemoryStatus(null);
     try {
       const file = await accomplish.readMemoryFile({ kind: 'daily', date: nextDate, agentId: activeAgentId });
       setMemoryDaily(file.content || '');
@@ -5096,6 +6105,146 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     } finally {
       setMemoryLoading(false);
     }
+  };
+
+  const handleApplyMemoryChange = async (changeId: string) => {
+    const accomplish = getAccomplish();
+    setMemorySaving(true);
+    setMemoryError(null);
+    setMemoryStatus(null);
+    try {
+      await accomplish.applyMemoryChange(changeId);
+      setMemoryStatus('Applied staged memory change.');
+      await refreshMemoryState();
+    } catch (err) {
+      console.error('Failed to apply memory change:', err);
+      setMemoryError(err instanceof Error ? err.message : 'Unable to apply memory change');
+    } finally {
+      setMemorySaving(false);
+    }
+  };
+
+  const handleRollbackMemoryChange = async (changeId: string) => {
+    const accomplish = getAccomplish();
+    setMemorySaving(true);
+    setMemoryError(null);
+    setMemoryStatus(null);
+    try {
+      await accomplish.rollbackMemoryChange(changeId);
+      setMemoryStatus('Rolled back memory change.');
+      await refreshMemoryState();
+    } catch (err) {
+      console.error('Failed to roll back memory change:', err);
+      setMemoryError(err instanceof Error ? err.message : 'Unable to roll back memory change');
+    } finally {
+      setMemorySaving(false);
+    }
+  };
+
+  const handleSelectMemorySnapshot = async (fileName: string) => {
+    const accomplish = getAccomplish();
+    setMemorySelectedSnapshotFileName(fileName);
+    setMemoryLoading(true);
+    setMemoryError(null);
+    setMemoryStatus(null);
+    try {
+      const file = await accomplish.readMemoryFile({ kind: 'snapshot', fileName, agentId: activeAgentId });
+      setMemorySnapshotContent(file.content || '');
+      if (memorySnapshotRef.current) {
+        memorySnapshotRef.current.value = file.content || '';
+      }
+    } catch (err) {
+      console.error('Failed to load memory snapshot:', err);
+      setMemoryError('Unable to load session snapshot');
+    } finally {
+      setMemoryLoading(false);
+    }
+  };
+
+  const handleSaveMemorySnapshot = async () => {
+    if (!memorySelectedSnapshotFileName) return;
+    const accomplish = getAccomplish();
+    const nextSnapshot = memorySnapshotRef.current?.value ?? memorySnapshotContent;
+    setMemorySnapshotContent(nextSnapshot);
+    setMemorySaving(true);
+    setMemoryError(null);
+    setMemoryStatus(null);
+    try {
+      await accomplish.saveMemoryFile({
+        kind: 'snapshot',
+        fileName: memorySelectedSnapshotFileName,
+        content: nextSnapshot,
+        agentId: activeAgentId,
+      });
+      setMemoryStatus(`Saved ${memorySelectedSnapshotFileName}`);
+      await refreshMemoryState();
+    } catch (err) {
+      console.error('Failed to save memory snapshot:', err);
+      setMemoryError('Unable to save session snapshot');
+    } finally {
+      setMemorySaving(false);
+    }
+  };
+
+  const handleDeleteMemoryFile = async (
+    kind: 'user' | 'long-term' | 'daily' | 'snapshot',
+    options: { date?: string; fileName?: string; label: string }
+  ) => {
+    const confirmed = window.confirm(`Delete ${options.label}? This can be restored from Learning history until that history is pruned.`);
+    if (!confirmed) return;
+    const accomplish = getAccomplish();
+    setMemorySaving(true);
+    setMemoryError(null);
+    setMemoryStatus(null);
+    try {
+      await accomplish.deleteMemoryFile({
+        kind,
+        date: options.date,
+        fileName: options.fileName,
+        agentId: activeAgentId,
+      });
+      if (kind === 'snapshot') {
+        setMemorySelectedSnapshotFileName('');
+        setMemorySnapshotContent('');
+        if (memorySnapshotRef.current) {
+          memorySnapshotRef.current.value = '';
+        }
+      }
+      setMemoryStatus(`Deleted ${options.label}. Use Learning history to restore it.`);
+      await refreshMemoryState();
+    } catch (err) {
+      console.error('Failed to delete memory file:', err);
+      setMemoryError(err instanceof Error ? err.message : 'Unable to delete memory file');
+    } finally {
+      setMemorySaving(false);
+    }
+  };
+
+  const handleSearchMemory = async () => {
+    const query = memorySearchQuery.trim();
+    if (!query) {
+      setMemorySearchResults([]);
+      return;
+    }
+    const accomplish = getAccomplish();
+    setMemoryLoading(true);
+    setMemoryError(null);
+    setMemoryStatus(null);
+    try {
+      const result = await accomplish.searchMemory({ query, agentId: activeAgentId, limit: 50 });
+      setMemorySearchResults(result.results || []);
+      setMemoryStatus(`${result.results?.length || 0} memory result${result.results?.length === 1 ? '' : 's'} for "${query}"`);
+    } catch (err) {
+      console.error('Failed to search memory:', err);
+      setMemoryError('Unable to search memory');
+    } finally {
+      setMemoryLoading(false);
+    }
+  };
+
+  const handleOpenMemoryTask = (taskId: string) => {
+    onOpenChange(false);
+    window.location.hash = `/execution/${encodeURIComponent(taskId)}`;
   };
 
   const normalizeGatewayChannel = (value: string): string => {
@@ -5623,6 +6772,165 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     });
   };
 
+  const setAgentBuilderInputValue = <T extends HTMLInputElement | HTMLTextAreaElement>(
+    ref: RefObject<T | null>,
+    value: string
+  ) => {
+    if (ref.current) {
+      ref.current.value = value;
+    }
+  };
+
+  const syncAgentBuilderTextFields = (values: {
+    name?: string;
+    roleName?: string;
+    description?: string;
+    workspaceRoot?: string;
+    systemPrompt?: string;
+    modelId?: string;
+    modelBaseUrl?: string;
+    subagentMaxChildren?: string;
+    subagentMaxDepth?: string;
+    subagentAllowedAgentIds?: string;
+    appearanceAccentColor?: string;
+  }) => {
+    if (values.name !== undefined) {
+      setAgentBuilderName(values.name);
+      setAgentBuilderInputValue(agentBuilderNameInputRef, values.name);
+    }
+    if (values.roleName !== undefined) {
+      setAgentBuilderRoleName(values.roleName);
+      setAgentBuilderInputValue(agentBuilderRoleNameInputRef, values.roleName);
+    }
+    if (values.description !== undefined) {
+      setAgentBuilderDescription(values.description);
+      setAgentBuilderInputValue(agentBuilderDescriptionInputRef, values.description);
+    }
+    if (values.workspaceRoot !== undefined) {
+      setAgentBuilderWorkspaceRoot(values.workspaceRoot);
+      setAgentBuilderInputValue(agentBuilderWorkspaceRootInputRef, values.workspaceRoot);
+    }
+    if (values.systemPrompt !== undefined) {
+      setAgentBuilderSystemPrompt(values.systemPrompt);
+      setAgentBuilderInputValue(agentBuilderSystemPromptInputRef, values.systemPrompt);
+    }
+    if (values.modelId !== undefined) {
+      setAgentBuilderModelId(values.modelId);
+      setAgentBuilderInputValue(agentBuilderModelIdInputRef, values.modelId.replace(/^ollama\//, ''));
+    }
+    if (values.modelBaseUrl !== undefined) {
+      setAgentBuilderModelBaseUrl(values.modelBaseUrl);
+      setAgentBuilderInputValue(agentBuilderModelBaseUrlInputRef, values.modelBaseUrl);
+    }
+    if (values.subagentMaxChildren !== undefined) {
+      setAgentBuilderSubagentMaxChildren(values.subagentMaxChildren);
+      setAgentBuilderInputValue(agentBuilderSubagentMaxChildrenInputRef, values.subagentMaxChildren);
+    }
+    if (values.subagentMaxDepth !== undefined) {
+      setAgentBuilderSubagentMaxDepth(values.subagentMaxDepth);
+      setAgentBuilderInputValue(agentBuilderSubagentMaxDepthInputRef, values.subagentMaxDepth);
+    }
+    if (values.subagentAllowedAgentIds !== undefined) {
+      setAgentBuilderSubagentAllowedAgentIds(values.subagentAllowedAgentIds);
+      setAgentBuilderInputValue(agentBuilderSubagentAllowedAgentIdsInputRef, values.subagentAllowedAgentIds);
+    }
+    if (values.appearanceAccentColor !== undefined) {
+      setAgentBuilderAppearanceAccentColor(values.appearanceAccentColor);
+      setAgentBuilderInputValue(agentBuilderAppearanceAccentColorInputRef, values.appearanceAccentColor);
+    }
+  };
+
+  const readAgentBuilderTextFields = () => ({
+    name: agentBuilderNameInputRef.current?.value ?? agentBuilderName,
+    roleName: agentBuilderRoleNameInputRef.current?.value ?? agentBuilderRoleName,
+    description: agentBuilderDescriptionInputRef.current?.value ?? agentBuilderDescription,
+    workspaceRoot: agentBuilderWorkspaceRootInputRef.current?.value ?? agentBuilderWorkspaceRoot,
+    systemPrompt: agentBuilderSystemPromptInputRef.current?.value ?? agentBuilderSystemPrompt,
+    modelId: agentBuilderModelIdInputRef.current?.value ?? agentBuilderModelId,
+    modelBaseUrl: agentBuilderModelBaseUrlInputRef.current?.value ?? agentBuilderModelBaseUrl,
+    subagentMaxChildren: agentBuilderSubagentMaxChildrenInputRef.current?.value ?? agentBuilderSubagentMaxChildren,
+    subagentMaxDepth: agentBuilderSubagentMaxDepthInputRef.current?.value ?? agentBuilderSubagentMaxDepth,
+    subagentAllowedAgentIds: agentBuilderSubagentAllowedAgentIdsInputRef.current?.value ?? agentBuilderSubagentAllowedAgentIds,
+    appearanceAccentColor: agentBuilderAppearanceAccentColorInputRef.current?.value ?? agentBuilderAppearanceAccentColor,
+  });
+
+  const applyAgentBuilderModelForm = (model: SelectedModel | null | undefined) => {
+    const baseModel = model ?? selectedModel ?? AGENT_FALLBACK_MODEL;
+    const providerId = (baseModel.provider || AGENT_FALLBACK_MODEL.provider) as ProviderType;
+    const fallbackModelId = getFirstModelForProvider(providerId);
+    const providerConfig = modelProviders.find((entry) => entry.id === providerId);
+    const modelId = (
+      baseModel.model
+      || fallbackModelId
+      || (providerId === 'custom' ? '' : AGENT_FALLBACK_MODEL.model)
+    ).trim();
+    setAgentBuilderModelProvider(providerId);
+    syncAgentBuilderTextFields({
+      modelId,
+      modelBaseUrl: baseModel.baseUrl || providerConfig?.baseUrl || '',
+    });
+  };
+
+  const normalizeAgentBuilderSelectedModel = (): SelectedModel | null => {
+    if (!agentBuilderModelOverrideEnabled) return null;
+    const formValues = readAgentBuilderTextFields();
+    let modelId = formValues.modelId.trim();
+    if (!modelId) return null;
+
+    if (agentBuilderModelProvider === 'ollama' && !modelId.startsWith('ollama/')) {
+      modelId = `ollama/${modelId}`;
+    }
+
+    const selected: SelectedModel = {
+      provider: agentBuilderModelProvider,
+      model: modelId,
+    };
+
+    const trimmedBaseUrl = formValues.modelBaseUrl.trim();
+    const providerConfig = modelProviders.find((entry) => entry.id === agentBuilderModelProvider);
+    if (
+      trimmedBaseUrl
+      && (
+        agentBuilderModelProvider === 'ollama'
+        || agentBuilderModelProvider === 'custom'
+        || Boolean(providerConfig?.baseUrl)
+      )
+    ) {
+      selected.baseUrl = trimmedBaseUrl;
+    }
+
+    return selected;
+  };
+
+  const getAgentBuilderEffectiveModel = (): SelectedModel | null =>
+    agentBuilderModelOverrideEnabled ? normalizeAgentBuilderSelectedModel() : selectedModel;
+
+  const handleAgentBuilderModelProviderChange = (providerId: ProviderType) => {
+    setAgentBuilderModelProvider(providerId);
+    const formValues = readAgentBuilderTextFields();
+    const currentModel = formValues.modelId.trim();
+    if (providerId === 'ollama') {
+      if (!currentModel || !currentModel.startsWith('ollama/')) {
+        syncAgentBuilderTextFields({ modelId: getFirstModelForProvider('ollama') });
+      }
+      if (!formValues.modelBaseUrl.trim()) {
+        syncAgentBuilderTextFields({ modelBaseUrl: (selectedModel?.provider === 'ollama' ? selectedModel.baseUrl : '') || ollamaUrl || '' });
+      }
+      return;
+    }
+    const providerConfig = modelProviders.find((entry) => entry.id === providerId);
+    const available = providerConfig?.models ?? [];
+    if (providerId === 'custom') {
+      if (!currentModel) syncAgentBuilderTextFields({ modelId: '' });
+      return;
+    }
+    const hasCurrent = available.some((entry) => entry.fullId === currentModel);
+    syncAgentBuilderTextFields({
+      modelId: hasCurrent ? currentModel : getFirstModelForProvider(providerId),
+      modelBaseUrl: providerConfig?.baseUrl || '',
+    });
+  };
+
   const applySkillAssistantModelForm = (model: SelectedModel | null | undefined) => {
     const baseModel = model ?? selectedModel ?? AGENT_FALLBACK_MODEL;
     const providerId = (baseModel.provider || AGENT_FALLBACK_MODEL.provider) as ProviderType;
@@ -5784,6 +7092,13 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setAgentAvatar(undefined);
     setAgentAvatarColor(undefined);
     setAgentAvatarImageDataUrl(undefined);
+    setAgentAvatarFrame('none');
+    setAgentAppearanceAccentColor('');
+    setAgentAnswerStyle('balanced');
+    setAgentChatBackgroundId(DEFAULT_CHAT_BACKGROUND_ID);
+    setAgentShowAvatarOnAnswers(true);
+    setAgentPresenceAnimation('none');
+    setAgentReactionMode('minimal');
     setAgentWorkspaceRoot('');
     setAgentSystemPrompt('');
     setAgentModelOverrideEnabled(false);
@@ -5800,14 +7115,19 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setAgentHeartbeatWindowStartTime(AGENT_HEARTBEAT_DEFAULT_WINDOW_START_TIME);
     setAgentHeartbeatWindowEndTime(AGENT_HEARTBEAT_DEFAULT_WINDOW_END_TIME);
     setAgentHeartbeatPrompt(AGENT_HEARTBEAT_DEFAULT_PROMPT);
-    setAgentAutoSkillEnabled(false);
-    setAgentAutoSkillAutoPromoteLowRisk(false);
+    setAgentAlwaysOnEnabled(false);
+    setAgentWorkboardDispatchEnabled(false);
+    setAgentWorkboardDispatchProjectIds([]);
+    setAgentDeferredToolDiscoveryEnabled(false);
+    setAgentSkillAutomationMode('automatic');
+    setAgentMemoryWriteMode('automatic');
+    setAgentMemoryNotificationsEnabled(true);
     setAgentSubagentsEnabled(false);
     syncAgentSubagentTextFields({
       maxChildren: '3',
       maxDepth: '1',
       allowedAgentIds: '',
-      runTimeoutSeconds: '300',
+      runTimeoutSeconds: '1200',
     });
     setAgentSubagentAutoRelayCompletions(true);
     setAgentSubagentDefaultMode('run');
@@ -5854,6 +7174,20 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setAgentAvatar(agent.avatar);
     setAgentAvatarColor(agent.avatarColor);
     setAgentAvatarImageDataUrl(agent.avatarImageDataUrl);
+    setAgentAvatarFrame(agent.appearance?.avatarFrame || 'none');
+    setAgentAppearanceAccentColor(agent.appearance?.accentColor || '');
+    setAgentAnswerStyle(agent.appearance?.answerStyle || 'balanced');
+    setAgentChatBackgroundId(agent.appearance?.chatBackgroundId || DEFAULT_CHAT_BACKGROUND_ID);
+    setAgentShowAvatarOnAnswers(agent.appearance?.showAvatarOnAnswers !== false);
+    setAgentPresenceAnimation(agent.appearance?.presenceAnimation || 'none');
+    setAgentReactionMode(
+      agent.appearance?.reactionMode === 'off'
+        || agent.appearance?.reactionMode === 'standard'
+        || agent.appearance?.reactionMode === 'playful'
+        || agent.appearance?.reactionMode === 'minimal'
+        ? agent.appearance.reactionMode
+        : 'minimal'
+    );
     setAgentWorkspaceRoot(agent.workspaceRoot || '');
     setAgentSystemPrompt(agent.systemPromptAppend || '');
     setAgentModelOverrideEnabled(Boolean(agent.selectedModel));
@@ -5873,14 +7207,29 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     setAgentHeartbeatWindowStartTime(agent.heartbeatWindowStartTime || AGENT_HEARTBEAT_DEFAULT_WINDOW_START_TIME);
     setAgentHeartbeatWindowEndTime(agent.heartbeatWindowEndTime || AGENT_HEARTBEAT_DEFAULT_WINDOW_END_TIME);
     setAgentHeartbeatPrompt(agent.heartbeatPrompt || AGENT_HEARTBEAT_DEFAULT_PROMPT);
-    setAgentAutoSkillEnabled(Boolean(agent.autoSkillEnabled));
-    setAgentAutoSkillAutoPromoteLowRisk(Boolean(agent.autoSkillAutoPromoteLowRisk));
+    setAgentAlwaysOnEnabled(agent.alwaysOnEnabled === true);
+    setAgentWorkboardDispatchEnabled(agent.alwaysOnWorkboardDispatchEnabled === true);
+    setAgentWorkboardDispatchProjectIds([...(agent.alwaysOnWorkboardProjectIds || [])]);
+    setAgentDeferredToolDiscoveryEnabled(agent.deferredToolDiscoveryEnabled === true);
+    const resolvedSkillMode =
+      agent.skillAutomationMode === 'automatic' || agent.skillAutomationMode === 'approval' || agent.skillAutomationMode === 'off'
+        ? agent.skillAutomationMode
+        : agent.autoSkillEnabled
+          ? (agent.autoSkillAutoPromoteLowRisk ? 'automatic' : 'approval')
+          : 'off';
+    setAgentSkillAutomationMode(resolvedSkillMode);
+    setAgentMemoryWriteMode(
+      agent.memoryWriteMode === 'automatic' || agent.memoryWriteMode === 'approval' || agent.memoryWriteMode === 'off'
+        ? agent.memoryWriteMode
+        : 'automatic'
+    );
+    setAgentMemoryNotificationsEnabled(agent.memoryNotificationsEnabled ?? true);
     setAgentSubagentsEnabled(Boolean(agent.subagentsEnabled));
     syncAgentSubagentTextFields({
       maxChildren: String(agent.subagentMaxChildren ?? 3),
       maxDepth: String(agent.subagentMaxDepth ?? 1),
       allowedAgentIds: (agent.subagentAllowedAgentIds || []).join(', '),
-      runTimeoutSeconds: String(Math.max(15, Math.round((agent.subagentRunTimeoutMs ?? (5 * 60 * 1000)) / 1000))),
+      runTimeoutSeconds: String(Math.max(15, Math.round((agent.subagentRunTimeoutMs ?? (20 * 60 * 1000)) / 1000))),
     });
     setAgentSubagentAutoRelayCompletions(agent.subagentAutoRelayCompletions ?? true);
     setAgentSubagentDefaultMode(agent.subagentDefaultMode === 'session' ? 'session' : 'run');
@@ -6030,7 +7379,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     let heartbeatWindowEndValue = AGENT_HEARTBEAT_DEFAULT_WINDOW_END_TIME;
     let subagentMaxChildrenValue = 3;
     let subagentMaxDepthValue = 1;
-    let subagentRunTimeoutSecondsValue = 300;
+    let subagentRunTimeoutSecondsValue = 1200;
     const subagentFormValues = readAgentSubagentTextFields();
     try {
       loopMaxIterationsValue = parseIntegerSetting(
@@ -6090,7 +7439,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       );
       subagentRunTimeoutSecondsValue = parseIntegerSetting(
         subagentFormValues.runTimeoutSeconds,
-        300,
+        1200,
         15,
         3600,
         'Subagent timeout (seconds)'
@@ -6147,6 +7496,32 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     const agentBlockedToolNamesText = agentPermissionBlockedToolNamesRef.current?.value ?? agentPermissionBlockedToolNames;
     setAgentPermissionAllowedToolNames(agentAllowedToolNamesText);
     setAgentPermissionBlockedToolNames(agentBlockedToolNamesText);
+    const appearanceAccentColorValue = (agentAppearanceAccentColorInputRef.current?.value ?? agentAppearanceAccentColor).trim();
+    const agentAvatarFrameValue = agentAvatarFrameInputRef.current?.value ?? agentAvatarFrame;
+    const agentAnswerStyleValue = agentAnswerStyleInputRef.current?.value ?? agentAnswerStyle;
+    const agentChatBackgroundIdValue = agentChatBackgroundId;
+    const agentPresenceAnimationValue = agentPresenceAnimationInputRef.current?.value ?? agentPresenceAnimation;
+    const agentReactionModeValue = (agentReactionModeInputRef.current?.value ?? agentReactionMode) as AgentReactionModeOption;
+    const agentShowAvatarOnAnswersValue = agentShowAvatarOnAnswersInputRef.current?.checked ?? agentShowAvatarOnAnswers;
+    setAgentAvatarFrame(agentAvatarFrameValue);
+    setAgentAppearanceAccentColor(appearanceAccentColorValue);
+    setAgentAnswerStyle(agentAnswerStyleValue);
+    setAgentChatBackgroundId(agentChatBackgroundIdValue);
+    setAgentPresenceAnimation(agentPresenceAnimationValue);
+    setAgentReactionMode(agentReactionModeValue);
+    setAgentShowAvatarOnAnswers(agentShowAvatarOnAnswersValue);
+    const appearance = {
+      avatarFrame: agentAvatarFrameValue !== 'none' ? agentAvatarFrameValue : undefined,
+      accentColor: appearanceAccentColorValue || undefined,
+      answerStyle: agentAnswerStyleValue !== 'balanced' ? agentAnswerStyleValue : undefined,
+      chatBackgroundId: agentChatBackgroundIdValue !== DEFAULT_CHAT_BACKGROUND_ID ? agentChatBackgroundIdValue : undefined,
+      showAvatarOnAnswers: agentShowAvatarOnAnswersValue ? undefined : false,
+      presenceAnimation: agentPresenceAnimationValue !== 'none' ? agentPresenceAnimationValue : undefined,
+      reactionMode: agentReactionModeValue !== 'minimal' ? agentReactionModeValue : undefined,
+    };
+    const agentAppearance = Object.values(appearance).some((entry) => entry !== undefined)
+      ? appearance
+      : null;
     const permissionProfile = agentPermissionProfileEnabled
       ? {
         enabled: true,
@@ -6174,6 +7549,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         avatar: agentAvatar || undefined,
         avatarColor: agentAvatarColor || undefined,
         avatarImageDataUrl: agentAvatarImageDataUrl || undefined,
+        appearance: agentAppearance,
         workspaceRoot: workspaceValue || undefined,
         systemPromptAppend: systemPromptValue || undefined,
         selectedModel: selectedModelOverride,
@@ -6190,8 +7566,15 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         heartbeatWindowStartTime: heartbeatWindowStartValue,
         heartbeatWindowEndTime: heartbeatWindowEndValue,
         heartbeatPrompt: (heartbeatPromptValue || AGENT_HEARTBEAT_DEFAULT_PROMPT),
-        autoSkillEnabled: agentAutoSkillEnabled,
-        autoSkillAutoPromoteLowRisk: agentAutoSkillEnabled ? agentAutoSkillAutoPromoteLowRisk : false,
+        alwaysOnEnabled: agentAlwaysOnEnabled,
+        alwaysOnWorkboardDispatchEnabled: agentWorkboardDispatchEnabled,
+        alwaysOnWorkboardProjectIds: agentWorkboardDispatchProjectIds,
+        deferredToolDiscoveryEnabled: agentDeferredToolDiscoveryEnabled,
+        autoSkillEnabled: agentSkillAutomationMode !== 'off',
+        autoSkillAutoPromoteLowRisk: agentSkillAutomationMode === 'automatic',
+        skillAutomationMode: agentSkillAutomationMode,
+        memoryWriteMode: agentMemoryWriteMode,
+        memoryNotificationsEnabled: agentMemoryNotificationsEnabled,
         subagentsEnabled: agentSubagentsEnabled,
         subagentMaxChildren: subagentMaxChildrenValue,
         subagentMaxDepth: subagentMaxDepthValue,
@@ -6205,6 +7588,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         subagentInheritPrivacyMode: agentSubagentInheritPrivacyMode,
         permissionProfile,
       });
+      await refreshAlwaysOnStatus();
       await refreshPermissionPolicyOpenCodePreview(agentFormId || activeAgentId || undefined);
       resetAgentForm();
     } catch (err) {
@@ -6239,6 +7623,346 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       await setDefaultAgent(agentId);
     } catch (err) {
       setAgentError(err instanceof Error ? err.message : 'Unable to set default agent.');
+    }
+  };
+
+  const handleToggleAgentAlwaysOn = async (agent: AgentProfile, enabled: boolean) => {
+    setAgentError(null);
+    try {
+      const accomplish = getAccomplish();
+      await accomplish.setAgentAlwaysOn(agent.id, enabled);
+      await loadAgents();
+      await refreshAlwaysOnStatus();
+    } catch (err) {
+      setAgentError(err instanceof Error ? err.message : 'Unable to update always-on status.');
+    }
+  };
+
+  const handleToggleAgentDeferredToolDiscovery = async (agent: AgentProfile, enabled: boolean) => {
+    setAgentError(null);
+    try {
+      await upsertAgent(createAgentDeferredToolDiscoveryUpdate(agent, enabled));
+      if (agentFormId === agent.id) {
+        setAgentDeferredToolDiscoveryEnabled(enabled);
+      }
+      await loadAgents();
+    } catch (err) {
+      setAgentError(err instanceof Error ? err.message : 'Unable to update on-demand tool discovery.');
+    }
+  };
+
+  const handleRunChatToolCompatibilityCheck = async (agent: AgentProfile) => {
+    const model = agent.id === agentFormId
+      ? (agentModelOverrideEnabled ? normalizeAgentSelectedModel() : selectedModel)
+      : (agent.selectedModel ?? selectedModel);
+    const deferredToolDiscoveryEnabled = agent.id === agentFormId
+      ? agentDeferredToolDiscoveryEnabled
+      : agent.deferredToolDiscoveryEnabled === true;
+
+    if (agent.id === agentFormId && agentModelOverrideEnabled && !model) {
+      setChatToolCompatibilityError('Select a model before running the compatibility check.');
+      return;
+    }
+
+    setChatToolCompatibilityRunningAgentId(agent.id);
+    setChatToolCompatibilityResult(null);
+    setChatToolCompatibilityError(null);
+    try {
+      const accomplish = getAccomplish();
+      const result = await accomplish.runChatToolCompatibilityCheck({
+        agentId: agent.id,
+        model,
+        deferredToolDiscoveryEnabled,
+      });
+      setChatToolCompatibilityResult(result);
+    } catch (err) {
+      setChatToolCompatibilityError(err instanceof Error ? err.message : 'Unable to run Chat tool compatibility check.');
+    } finally {
+      setChatToolCompatibilityRunningAgentId(null);
+    }
+  };
+
+  const resetAgentBuilderDraft = (options?: { preserveStatus?: boolean }) => {
+    setAgentBuilderStepIndex(0);
+    setAgentBuilderCloneSourceId('');
+    syncAgentBuilderTextFields({
+      name: '',
+      roleName: '',
+      description: '',
+      workspaceRoot: '',
+      systemPrompt: '',
+      subagentMaxChildren: '3',
+      subagentMaxDepth: '1',
+      subagentAllowedAgentIds: '',
+      appearanceAccentColor: '',
+    });
+    setAgentBuilderModelOverrideEnabled(false);
+    applyAgentBuilderModelForm(selectedModel ?? AGENT_FALLBACK_MODEL);
+    setAgentBuilderToolsetIds([...AGENT_BUILDER_DEFAULT_TOOLSET_IDS]);
+    setAgentBuilderDeferredToolDiscoveryEnabled(false);
+    setAgentBuilderSkillAutomationMode('automatic');
+    setAgentBuilderMemoryWriteMode('automatic');
+    setAgentBuilderMemoryNotificationsEnabled(true);
+    setAgentBuilderLoopEnabled(false);
+    setAgentBuilderAlwaysOnEnabled(false);
+    setAgentBuilderSubagentsEnabled(false);
+    setAgentBuilderAvatar(undefined);
+    setAgentBuilderAvatarColor(undefined);
+    setAgentBuilderAvatarImageDataUrl(undefined);
+    setAgentBuilderAvatarFrame('none');
+    setAgentBuilderAnswerStyle('balanced');
+    setAgentBuilderChatBackgroundId(DEFAULT_CHAT_BACKGROUND_ID);
+    setAgentBuilderShowAvatarOnAnswers(true);
+    setAgentBuilderPresenceAnimation('none');
+    setAgentBuilderReactionMode('minimal');
+    setAgentBuilderError(null);
+    setAgentBuilderReadinessResult(null);
+    setAgentBuilderReadinessError(null);
+    if (!options?.preserveStatus) {
+      setAgentBuilderStatus(null);
+    }
+  };
+
+  const applyAgentBuilderCloneSource = (agent: AgentProfile) => {
+    setAgentBuilderCloneSourceId(agent.id);
+    setAgentBuilderStepIndex(0);
+    syncAgentBuilderTextFields({
+      name: `${agent.name} copy`,
+      roleName: agent.roleName || '',
+      description: agent.description || '',
+      workspaceRoot: agent.workspaceRoot || '',
+      systemPrompt: agent.systemPromptAppend || '',
+      subagentMaxChildren: String(agent.subagentMaxChildren ?? 3),
+      subagentMaxDepth: String(agent.subagentMaxDepth ?? 1),
+      subagentAllowedAgentIds: (agent.subagentAllowedAgentIds || []).join(', '),
+      appearanceAccentColor: agent.appearance?.accentColor || '',
+    });
+    setAgentBuilderModelOverrideEnabled(Boolean(agent.selectedModel));
+    applyAgentBuilderModelForm(agent.selectedModel ?? selectedModel ?? AGENT_FALLBACK_MODEL);
+    setAgentBuilderToolsetIds(
+      Array.isArray(agent.toolsetIds)
+        ? [...agent.toolsetIds]
+        : [...AGENT_BUILDER_DEFAULT_TOOLSET_IDS]
+    );
+    setAgentBuilderDeferredToolDiscoveryEnabled(agent.deferredToolDiscoveryEnabled === true);
+    const resolvedSkillMode =
+      agent.skillAutomationMode === 'automatic' || agent.skillAutomationMode === 'approval' || agent.skillAutomationMode === 'off'
+        ? agent.skillAutomationMode
+        : agent.autoSkillEnabled
+          ? (agent.autoSkillAutoPromoteLowRisk ? 'automatic' : 'approval')
+          : 'off';
+    setAgentBuilderSkillAutomationMode(resolvedSkillMode);
+    setAgentBuilderMemoryWriteMode(
+      agent.memoryWriteMode === 'automatic' || agent.memoryWriteMode === 'approval' || agent.memoryWriteMode === 'off'
+        ? agent.memoryWriteMode
+        : 'automatic'
+    );
+    setAgentBuilderMemoryNotificationsEnabled(agent.memoryNotificationsEnabled ?? true);
+    setAgentBuilderLoopEnabled(Boolean(agent.agenticLoopEnabled));
+    setAgentBuilderAlwaysOnEnabled(agent.alwaysOnEnabled === true);
+    setAgentBuilderSubagentsEnabled(Boolean(agent.subagentsEnabled));
+    setAgentBuilderAvatar(agent.avatar);
+    setAgentBuilderAvatarColor(agent.avatarColor);
+    setAgentBuilderAvatarImageDataUrl(agent.avatarImageDataUrl);
+    setAgentBuilderAvatarFrame(agent.appearance?.avatarFrame || 'none');
+    setAgentBuilderAnswerStyle(agent.appearance?.answerStyle || 'balanced');
+    setAgentBuilderChatBackgroundId(agent.appearance?.chatBackgroundId || DEFAULT_CHAT_BACKGROUND_ID);
+    setAgentBuilderShowAvatarOnAnswers(agent.appearance?.showAvatarOnAnswers !== false);
+    setAgentBuilderPresenceAnimation(agent.appearance?.presenceAnimation || 'none');
+    setAgentBuilderReactionMode(
+      agent.appearance?.reactionMode === 'off'
+        || agent.appearance?.reactionMode === 'standard'
+        || agent.appearance?.reactionMode === 'playful'
+        || agent.appearance?.reactionMode === 'minimal'
+        ? agent.appearance.reactionMode
+        : 'minimal'
+    );
+    setAgentBuilderStatus(`Loaded ${agent.name} as the starting point.`);
+    setAgentBuilderError(null);
+    setAgentBuilderReadinessResult(null);
+    setAgentBuilderReadinessError(null);
+  };
+
+  const handleAgentBuilderCloneSourceChange = (agentId: string) => {
+    if (!agentId) {
+      resetAgentBuilderDraft();
+      return;
+    }
+    const source = agents.find((agent) => agent.id === agentId);
+    if (!source) {
+      setAgentBuilderError('Unable to find that agent.');
+      return;
+    }
+    applyAgentBuilderCloneSource(source);
+  };
+
+  const toggleAgentBuilderToolset = (toolsetId: ToolsetId, enabled: boolean) => {
+    setAgentBuilderToolsetIds((prev) => {
+      if (enabled) {
+        return prev.includes(toolsetId) ? prev : [...prev, toolsetId];
+      }
+      return prev.filter((entry) => entry !== toolsetId);
+    });
+  };
+
+  const handleSelectAgentBuilderWorkspace = async () => {
+    const accomplish = getAccomplish();
+    try {
+      const folder = await accomplish.selectFolder();
+      if (folder) {
+        syncAgentBuilderTextFields({ workspaceRoot: folder });
+      }
+    } catch (err) {
+      console.error('Failed to select agent builder workspace:', err);
+      setAgentBuilderError('Unable to select workspace folder.');
+    }
+  };
+
+  const createAgentBuilderAppearance = () => {
+    const formValues = readAgentBuilderTextFields();
+    const appearance = {
+      avatarFrame: agentBuilderAvatarFrame !== 'none' ? agentBuilderAvatarFrame : undefined,
+      accentColor: formValues.appearanceAccentColor.trim() || undefined,
+      answerStyle: agentBuilderAnswerStyle !== 'balanced' ? agentBuilderAnswerStyle : undefined,
+      chatBackgroundId: agentBuilderChatBackgroundId !== DEFAULT_CHAT_BACKGROUND_ID ? agentBuilderChatBackgroundId : undefined,
+      showAvatarOnAnswers: agentBuilderShowAvatarOnAnswers ? undefined : false,
+      presenceAnimation: agentBuilderPresenceAnimation !== 'none' ? agentBuilderPresenceAnimation : undefined,
+      reactionMode: agentBuilderReactionMode !== 'minimal' ? agentBuilderReactionMode : undefined,
+    };
+    return Object.values(appearance).some((entry) => entry !== undefined)
+      ? appearance
+      : null;
+  };
+
+  const handleSaveAgentBuilder = async () => {
+    const formValues = readAgentBuilderTextFields();
+    const trimmedName = formValues.name.trim();
+    if (!trimmedName) {
+      setAgentBuilderError('Agent name is required.');
+      setAgentBuilderStepIndex(0);
+      return;
+    }
+
+    const selectedModelOverride = normalizeAgentBuilderSelectedModel();
+    if (agentBuilderModelOverrideEnabled && !selectedModelOverride) {
+      setAgentBuilderError('Model is required when agent override is enabled.');
+      setAgentBuilderStepIndex(1);
+      return;
+    }
+
+    let subagentMaxChildrenValue = 3;
+    let subagentMaxDepthValue = 1;
+    try {
+      subagentMaxChildrenValue = parseIntegerSetting(
+        formValues.subagentMaxChildren,
+        3,
+        1,
+        12,
+        'Subagent max children'
+      );
+      subagentMaxDepthValue = parseIntegerSetting(
+        formValues.subagentMaxDepth,
+        1,
+        1,
+        4,
+        'Subagent max depth'
+      );
+    } catch (error) {
+      setAgentBuilderError(error instanceof Error ? error.message : 'Invalid subagent settings.');
+      setAgentBuilderStepIndex(5);
+      return;
+    }
+
+    const sourceAgent = agentBuilderCloneSourceId
+      ? agents.find((agent) => agent.id === agentBuilderCloneSourceId)
+      : null;
+    const subagentAllowedAgentIds = formValues.subagentAllowedAgentIds
+      .split(/[\s,]+/)
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean);
+    const config: AgentConfig = {
+      name: trimmedName,
+      roleName: formValues.roleName.trim() || undefined,
+      description: formValues.description.trim() || undefined,
+      avatar: agentBuilderAvatar || undefined,
+      avatarColor: agentBuilderAvatarColor || undefined,
+      avatarImageDataUrl: agentBuilderAvatarImageDataUrl || undefined,
+      appearance: createAgentBuilderAppearance(),
+      workspaceRoot: formValues.workspaceRoot.trim() || undefined,
+      systemPromptAppend: formValues.systemPrompt.trim() || undefined,
+      selectedModel: selectedModelOverride,
+      toolsetIds: agentBuilderToolsetIds,
+      deferredToolDiscoveryEnabled: agentBuilderDeferredToolDiscoveryEnabled,
+      agenticLoopEnabled: agentBuilderLoopEnabled,
+      agenticLoopMaxIterations: sourceAgent?.agenticLoopMaxIterations ?? AGENT_LOOP_DEFAULT_MAX_ITERATIONS,
+      agenticLoopTimeoutMs: sourceAgent?.agenticLoopTimeoutMs ?? (AGENT_LOOP_DEFAULT_TIMEOUT_SECONDS * 1000),
+      heartbeatEnabled: sourceAgent?.heartbeatEnabled ?? false,
+      heartbeatScheduleMode: sourceAgent?.heartbeatScheduleMode ?? 'interval',
+      heartbeatIntervalMinutes: sourceAgent?.heartbeatIntervalMinutes ?? AGENT_HEARTBEAT_DEFAULT_INTERVAL_MINUTES,
+      heartbeatIntervalSeconds: sourceAgent?.heartbeatIntervalSeconds ?? (AGENT_HEARTBEAT_DEFAULT_INTERVAL_MINUTES * 60),
+      heartbeatDailyTime: sourceAgent?.heartbeatDailyTime ?? AGENT_HEARTBEAT_DEFAULT_DAILY_TIME,
+      heartbeatTimeZone: sourceAgent?.heartbeatTimeZone ?? AGENT_HEARTBEAT_DEFAULT_TIME_ZONE,
+      heartbeatWindowEnabled: sourceAgent?.heartbeatWindowEnabled ?? false,
+      heartbeatWindowStartTime: sourceAgent?.heartbeatWindowStartTime ?? AGENT_HEARTBEAT_DEFAULT_WINDOW_START_TIME,
+      heartbeatWindowEndTime: sourceAgent?.heartbeatWindowEndTime ?? AGENT_HEARTBEAT_DEFAULT_WINDOW_END_TIME,
+      heartbeatPrompt: sourceAgent?.heartbeatPrompt ?? AGENT_HEARTBEAT_DEFAULT_PROMPT,
+      alwaysOnEnabled: agentBuilderAlwaysOnEnabled,
+      autoSkillEnabled: agentBuilderSkillAutomationMode !== 'off',
+      autoSkillAutoPromoteLowRisk: agentBuilderSkillAutomationMode === 'automatic',
+      skillAutomationMode: agentBuilderSkillAutomationMode,
+      memoryWriteMode: agentBuilderMemoryWriteMode,
+      memoryNotificationsEnabled: agentBuilderMemoryNotificationsEnabled,
+      subagentsEnabled: agentBuilderSubagentsEnabled,
+      subagentMaxChildren: subagentMaxChildrenValue,
+      subagentMaxDepth: subagentMaxDepthValue,
+      subagentAllowedAgentIds,
+      subagentAutoRelayCompletions: sourceAgent?.subagentAutoRelayCompletions ?? true,
+      subagentDefaultModel: sourceAgent?.subagentDefaultModel ?? null,
+      subagentRunTimeoutMs: sourceAgent?.subagentRunTimeoutMs ?? (20 * 60 * 1000),
+      subagentDefaultMode: sourceAgent?.subagentDefaultMode ?? 'run',
+      subagentInheritWorkingDirectory: sourceAgent?.subagentInheritWorkingDirectory ?? true,
+      subagentInheritAttachedFiles: sourceAgent?.subagentInheritAttachedFiles ?? true,
+      subagentInheritPrivacyMode: sourceAgent?.subagentInheritPrivacyMode ?? true,
+      ...(sourceAgent?.permissionProfile ? { permissionProfile: sourceAgent.permissionProfile } : {}),
+    };
+
+    setAgentBuilderSaving(true);
+    setAgentBuilderError(null);
+    setAgentBuilderStatus(null);
+    try {
+      const savedAgent = await upsertAgent(config);
+      await refreshAlwaysOnStatus();
+      setAgentBuilderStatus(`${savedAgent.name} created. It is available in the agent list.`);
+      resetAgentBuilderDraft({ preserveStatus: true });
+    } catch (err) {
+      setAgentBuilderError(err instanceof Error ? err.message : 'Unable to create agent.');
+    } finally {
+      setAgentBuilderSaving(false);
+    }
+  };
+
+  const handleRunAgentBuilderReadinessCheck = async () => {
+    const model = getAgentBuilderEffectiveModel();
+    if (agentBuilderModelOverrideEnabled && !model) {
+      setAgentBuilderReadinessError('Select a model before running the compatibility check.');
+      return;
+    }
+
+    setAgentBuilderReadinessRunning(true);
+    setAgentBuilderReadinessResult(null);
+    setAgentBuilderReadinessError(null);
+    try {
+      const accomplish = getAccomplish();
+      const result = await accomplish.runChatToolCompatibilityCheck({
+        agentId: 'agent-builder-draft',
+        model,
+        deferredToolDiscoveryEnabled: agentBuilderDeferredToolDiscoveryEnabled,
+      });
+      setAgentBuilderReadinessResult(result);
+    } catch (err) {
+      setAgentBuilderReadinessError(err instanceof Error ? err.message : 'Unable to run Chat tool compatibility check.');
+    } finally {
+      setAgentBuilderReadinessRunning(false);
     }
   };
 
@@ -9156,6 +10880,161 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     return err instanceof Error ? err.message : `Unable to ${action}.`;
   };
 
+  const agentBuilderCurrentStep = AGENT_BUILDER_STEPS[agentBuilderStepIndex] ?? AGENT_BUILDER_STEPS[0];
+  const agentBuilderEffectiveModel = getAgentBuilderEffectiveModel();
+  const agentBuilderEffectiveProvider = agentBuilderEffectiveModel?.provider ?? '';
+  const agentBuilderProviderConfig = agentBuilderEffectiveProvider
+    ? modelProviders.find((entry) => entry.id === agentBuilderEffectiveProvider)
+    : null;
+  const agentBuilderProviderRequiresKey = Boolean(
+    agentBuilderProviderConfig?.requiresApiKey && agentBuilderEffectiveProvider !== 'ollama'
+  );
+  const agentBuilderProviderKeyStatus = agentBuilderEffectiveProvider
+    ? apiKeyStatus?.[agentBuilderEffectiveProvider]
+    : undefined;
+  const agentBuilderProviderReadiness = (() => {
+    if (!agentBuilderEffectiveModel?.model) {
+      return {
+        status: 'warning' as const,
+        label: 'Model missing',
+        detail: 'Choose a global model or enable an agent-specific model override.',
+      };
+    }
+    if (agentBuilderEffectiveProvider === 'ollama') {
+      const hasLocalModel = ollamaConnected || ollamaModels.length > 0;
+      return {
+        status: hasLocalModel ? ('ok' as const) : ('warning' as const),
+        label: hasLocalModel ? 'Ollama model available' : 'Ollama not verified',
+        detail: hasLocalModel
+          ? `Local model route: ${formatSelectedModelLabel(agentBuilderEffectiveModel)}.`
+          : 'No new check is run here. Use the Ollama test in Model settings if this route needs verification.',
+      };
+    }
+    if (agentBuilderProviderRequiresKey) {
+      if (apiKeyStatus === null) {
+        return {
+          status: 'info' as const,
+          label: 'API key status loading',
+          detail: `Waiting for saved ${getProviderDisplayName(agentBuilderEffectiveProvider)} key status.`,
+        };
+      }
+      return {
+        status: agentBuilderProviderKeyStatus?.exists ? ('ok' as const) : ('warning' as const),
+        label: agentBuilderProviderKeyStatus?.exists ? 'API key saved' : 'API key missing',
+        detail: agentBuilderProviderKeyStatus?.exists
+          ? `${getProviderDisplayName(agentBuilderEffectiveProvider)} has a saved key.`
+          : `${getProviderDisplayName(agentBuilderEffectiveProvider)} requires a saved API key before this agent can run.`,
+      };
+    }
+    return {
+      status: 'ok' as const,
+      label: 'Provider configured',
+      detail: `${getProviderDisplayName(agentBuilderEffectiveProvider)} does not require a saved key in this configuration.`,
+    };
+  })();
+  const agentBuilderSelectedToolsetLabels = agentBuilderToolsetIds
+    .map((toolsetId) => AGENT_BUILDER_TOOLSET_OPTIONS.find((option) => option.id === toolsetId)?.label ?? toolsetId);
+  const agentBuilderCloneSource = agentBuilderCloneSourceId
+    ? agents.find((agent) => agent.id === agentBuilderCloneSourceId)
+    : null;
+  const agentBuilderGatewayConnectorSummaries = gatewayConnectorExtensions
+    .filter((entry) => entry.config.enabled || entry.secretSet || entry.config.agentId)
+    .map((entry) => {
+      const status = gatewayConnectorRuntimeStatusById.get(entry.runtimeKey);
+      const boundAgentName = entry.config.agentId
+        ? agents.find((agent) => agent.id === entry.config.agentId)?.name ?? entry.config.agentId
+        : 'Unbound';
+      return {
+        key: `gateway-${entry.runtimeKey}`,
+        name: entry.config.name || entry.definition.name,
+        enabled: entry.config.enabled,
+        boundAgentName,
+        running: status?.running === true,
+        configured: status?.configured ?? entry.secretSet,
+        lastError: status?.lastError,
+      };
+    });
+  const agentBuilderAppConnectorSummaries = appConnectorExtensions
+    .filter((entry) => entry.config.enabled || entry.secretSet || entry.config.agentId)
+    .map((entry) => {
+      const status = appConnectorRuntimeStatusById.get(entry.runtimeKey);
+      const boundAgentName = entry.config.agentId
+        ? agents.find((agent) => agent.id === entry.config.agentId)?.name ?? entry.config.agentId
+        : 'Unbound';
+      return {
+        key: `app-${entry.runtimeKey}`,
+        name: entry.config.name || entry.definition.name,
+        enabled: entry.config.enabled,
+        boundAgentName,
+        running: status?.running === true,
+        configured: status?.configured ?? entry.secretSet,
+        lastError: status?.lastError,
+      };
+    });
+  const agentBuilderConnectorSummaries = [
+    ...agentBuilderGatewayConnectorSummaries,
+    ...agentBuilderAppConnectorSummaries,
+  ];
+  const agentBuilderReadinessItems = [
+    {
+      id: 'purpose',
+      status: agentBuilderName.trim() ? ('ok' as const) : ('warning' as const),
+      title: 'Purpose',
+      detail: agentBuilderName.trim()
+        ? `${agentBuilderName.trim()}${agentBuilderRoleName.trim() ? ` (${agentBuilderRoleName.trim()})` : ''}`
+        : 'Agent name is required before saving.',
+    },
+    {
+      id: 'provider',
+      status: agentBuilderProviderReadiness.status,
+      title: agentBuilderProviderReadiness.label,
+      detail: agentBuilderProviderReadiness.detail,
+    },
+    {
+      id: 'tools',
+      status: agentBuilderToolsetIds.length > 0 ? ('ok' as const) : ('warning' as const),
+      title: 'Toolsets',
+      detail: agentBuilderToolsetIds.length > 0
+        ? `${agentBuilderSelectedToolsetLabels.join(', ')}. ${agentBuilderDeferredToolDiscoveryEnabled ? 'On-demand discovery enabled.' : 'Full mode from task start.'}`
+        : 'No formal toolsets selected.',
+    },
+    {
+      id: 'learning',
+      status: agentBuilderMemoryWriteMode === 'off' && agentBuilderSkillAutomationMode === 'off' ? ('info' as const) : ('ok' as const),
+      title: 'Learning',
+      detail: `Memory ${agentBuilderMemoryWriteMode}; skill learning ${agentBuilderSkillAutomationMode}.`,
+    },
+    {
+      id: 'connectors',
+      status: agentBuilderConnectorSummaries.length === 0
+        ? ('info' as const)
+        : agentBuilderAlwaysOnEnabled
+          ? ('ok' as const)
+          : ('warning' as const),
+      title: 'Connector readiness',
+      detail: agentBuilderConnectorSummaries.length === 0
+        ? 'No configured connector bindings are visible in Settings.'
+        : agentBuilderAlwaysOnEnabled
+          ? `${agentBuilderConnectorSummaries.filter((entry) => entry.running).length}/${agentBuilderConnectorSummaries.length} configured connectors currently report running.`
+          : 'Always-on is off; connector delivery for this agent stays paused until enabled.',
+    },
+    {
+      id: 'chat-tools',
+      status: agentBuilderReadinessResult
+        ? (agentBuilderReadinessResult.safeToEnable ? ('ok' as const) : ('warning' as const))
+        : ('info' as const),
+      title: 'Chat tool compatibility',
+      detail: agentBuilderReadinessResult
+        ? agentBuilderReadinessResult.recommendation
+        : 'Run the compatibility check to reuse the existing Chat tool coverage proof.',
+    },
+  ];
+  const getAgentBuilderReadinessBadgeClass = (status: 'ok' | 'warning' | 'info') => {
+    if (status === 'ok') return 'bg-success/10 text-success';
+    if (status === 'warning') return 'bg-warning/10 text-warning';
+    return 'bg-muted text-muted-foreground';
+  };
+
   const usageProviders = remoteModelProviders.map((entry) => ({ id: entry.id, name: entry.name }));
   const usageCurrencies = ['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY'] as const;
   const getUsageInputHitCost = (row?: UsagePricingSettings['providers'][number] | null) =>
@@ -9359,12 +11238,18 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
           : buildDiffEnforcementMode === 'preview-only'
             ? 'Preview Only (no approval)'
             : 'Approval Mode (safe)';
+      case 'Execution Profiles': {
+        const activeCount = executionProfiles.filter((profile) => !profile.archived).length;
+        const defaultProfile = executionProfiles.find((profile) => profile.id === executionProfilesDefaultId);
+        return `${activeCount} active profile${activeCount === 1 ? '' : 's'} • Default: ${defaultProfile?.name || 'Local Windows'}`;
+      }
       case 'Workspace Defaults':
         return workspaceRoot || 'No global workspace default set';
       case 'Memory (User Context)': {
+        const userChars = memoryUser.trim().length;
         const longTermChars = memoryLongTerm.trim().length;
         const dailyChars = memoryDaily.trim().length;
-        return `${longTermChars} long-term chars • ${dailyChars} daily chars`;
+        return `${userChars} user chars • ${longTermChars} long-term chars • ${dailyChars} daily chars • ${memorySnapshots.length} snapshot${memorySnapshots.length === 1 ? '' : 's'}`;
       }
       case 'API usage estimate':
       case 'Usage estimate': {
@@ -9473,6 +11358,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   const basicSettingsSectionHeadings = new Set([
     'Model & API settings',
     'Agents',
+    'Execution Profiles',
     'Workspace Defaults',
     'API usage estimate',
     'Saved Prompts & Recipes',
@@ -9533,7 +11419,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
         .replace(/\bmb-\d+\b/g, '')
         .replace(/\s+/g, ' ')
         .trim();
-      const headingClass = [normalizedHeadingClass, 'm-0 text-base font-medium text-foreground']
+      const headingClass = [normalizedHeadingClass, 'm-0 text-[15px] font-semibold tracking-wide text-foreground']
         .filter(Boolean)
         .join(' ');
       const heading = cloneElement(headingNode as ReactElement<{ className?: string }>, {
@@ -9564,230 +11450,301 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     const normalizedQuery = deferredSettingsSectionQuery.trim().toLowerCase();
     const filteredSections = normalizedQuery
       ? visibleModeSections.filter((section) => {
-          const haystack = `${section.headingText} ${section.summary || ''}`.toLowerCase();
+          const keywords = SETTINGS_SECTION_SEARCH_KEYWORDS[section.headingText] || [];
+          const haystack = `${section.headingText} ${section.summary || ''} ${keywords.join(' ')}`.toLowerCase();
           return haystack.includes(normalizedQuery);
         })
       : visibleModeSections;
     const allExpanded =
       visibleModeSections.length > 0
       && visibleModeSections.every((section) => (
-        isNonCollapsibleSection(section) || Boolean(expandedSettingsSections[section.sectionId])
+        isNonCollapsibleSection(section) || isSettingsSectionExpandedByHeading(section.headingText)
       ));
+    const currentActiveSettingsSectionId = activeSettingsSectionIdRef.current;
+    const effectiveActiveSectionId =
+      currentActiveSettingsSectionId && filteredSections.some((section) => section.sectionId === currentActiveSettingsSectionId)
+        ? currentActiveSettingsSectionId
+        : filteredSections[0]?.sectionId ?? '';
+    const setupChecklistItems = [
+      { label: 'Model/API', done: Boolean(selectedModel && savedKeys.length > 0) },
+      { label: 'Workspace', done: Boolean(workspaceRoot) },
+      { label: 'Skills', done: skillsStatus.length === 0 || skillsStatus.some((skill) => skill.installed) },
+      { label: 'Pricing', done: Boolean((usagePricing?.providers?.length ?? 0) > 0) },
+      { label: 'First agent', done: agents.length > 0 },
+      { label: 'Doctor', done: doctorChecks.length > 0 && doctorChecks.every((check) => check.status !== 'error') },
+    ];
+    const scrollToSettingsSection = (sectionId: string) => {
+      if (!sectionId) return;
+      markSettingsMenuSectionActive(sectionId);
+
+      const scrollNow = () => {
+        const container = settingsContentScrollRef.current;
+        const target = settingsSectionRefs.current[sectionId];
+        if (!container || !target) return;
+        if (settingsScrollRafRef.current !== null) {
+          window.cancelAnimationFrame(settingsScrollRafRef.current);
+          settingsScrollRafRef.current = null;
+        }
+        const containerRect = container.getBoundingClientRect();
+        const targetRect = target.getBoundingClientRect();
+        const targetTop = container.scrollTop + targetRect.top - containerRect.top - 12;
+        const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
+        container.scrollTop = Math.max(0, Math.min(targetTop, maxTop));
+      };
+
+      scrollNow();
+      expandSettingsSectionSoon(sectionId);
+    };
 
     return (
-      <div className="space-y-4">
-        <div className="rounded-xl border border-border/70 bg-background/30 px-3 py-3">
-          <div className="mb-4 rounded-lg border border-primary/25 bg-primary/5 p-3">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <div className="text-sm font-semibold text-foreground">Settings view</div>
-                <div className="text-xs text-muted-foreground">
-                  Choose a simpler setup screen or show every configuration section.
-                </div>
-              </div>
-              <div className="rounded-full border border-primary/25 bg-background/80 px-2.5 py-1 text-[11px] font-medium text-primary">
-                {settingsMode === 'basic' ? 'Basic mode active' : 'Advanced mode active'}
-              </div>
+      <div className="flex h-full min-h-0 flex-col">
+        <div className="flex shrink-0 items-center justify-between gap-4 border-b border-border bg-background/95 px-5 py-3">
+          <div className="min-w-0">
+            <DialogTitle className="text-lg">Settings</DialogTitle>
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <span>{settingsMode === 'basic' ? 'Basic mode' : 'Advanced mode'}</span>
+              <span aria-hidden="true">•</span>
+              <span>
+                Showing {filteredSections.length} of {visibleModeSections.length} section{visibleModeSections.length === 1 ? '' : 's'}
+              </span>
             </div>
-            <div className="grid gap-2 sm:grid-cols-2">
-              {([
-                {
-                  mode: 'basic' as const,
-                  title: 'Basic',
-                  description: 'Core setup, agents, prompts, usage, doctor, and about.',
-                },
-                {
-                  mode: 'advanced' as const,
-                  title: 'Advanced',
-                  description: 'All sections, including detailed provider and connector settings.',
-                },
-              ]).map(({ mode, title, description }) => {
-                const active = settingsMode === mode;
-                return (
-                  <button
-                    key={mode}
-                    type="button"
-                    onClick={() => setSettingsMode(mode)}
-                    aria-pressed={active}
-                    className={`rounded-lg border p-3 text-left transition-colors ${
-                      active
-                        ? 'border-primary/60 bg-background text-foreground shadow-sm ring-1 ring-primary/30'
-                        : 'border-border/70 bg-background/50 text-muted-foreground hover:border-primary/45 hover:bg-background hover:text-foreground'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm font-semibold">{title}</span>
-                      <span
-                        className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+          </div>
+          <Button type="button" variant="outline" size="sm" onClick={() => onOpenChange(false)}>
+            Close
+          </Button>
+        </div>
+
+        <div className="grid min-h-0 flex-1 grid-cols-[300px_minmax(0,1fr)] overflow-hidden">
+          <aside className="flex min-h-0 flex-col border-r border-border bg-muted/20">
+            <div className="space-y-3 border-b border-border p-3">
+              <div className="rounded-lg border border-border/70 bg-background/70 p-1">
+                <div className="grid grid-cols-2 gap-1">
+                  {(['basic', 'advanced'] as const).map((mode) => {
+                    const active = settingsMode === mode;
+                    return (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => setSettingsMode(mode)}
+                        aria-pressed={active}
+                        className={`rounded-md px-3 py-2 text-xs font-semibold transition-colors ${
                           active
-                            ? 'bg-primary text-primary-foreground'
-                            : 'bg-muted text-muted-foreground'
+                            ? 'bg-primary text-primary-foreground shadow-sm'
+                            : 'text-muted-foreground hover:bg-muted hover:text-foreground'
                         }`}
                       >
-                        {active ? 'Active' : 'Switch'}
-                      </span>
+                        {mode === 'basic' ? 'Basic' : 'Advanced'}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  type="text"
+                  value={settingsSectionQuery}
+                  onChange={(e) => setSettingsSectionQuery(e.target.value)}
+                  placeholder="Search settings..."
+                  className="w-full rounded-md border border-input bg-background py-2 pl-8 pr-3 text-sm"
+                />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="flex-1"
+                  onClick={() =>
+                    setExpandedSettingsSections(
+                      Object.fromEntries(allSectionIds.map((sectionId) => [sectionId, true]))
+                    )
+                  }
+                  disabled={allSectionIds.length === 0 || allExpanded}
+                >
+                  Expand all
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="flex-1"
+                  onClick={() => setExpandedSettingsSections({})}
+                  disabled={allSectionIds.length === 0 || !Object.values(expandedSettingsSections).some(Boolean)}
+                >
+                  Collapse all
+                </Button>
+              </div>
+            </div>
+
+            {settingsMode === 'basic' ? (
+              <div className="border-b border-border p-3">
+                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Setup checklist
+                </div>
+                <div className="grid gap-1.5">
+                  {setupChecklistItems.map((item) => (
+                    <div key={item.label} className="flex items-center gap-2 rounded-md border border-border/60 bg-background/60 px-2.5 py-1.5 text-xs">
+                      {item.done ? (
+                        <CheckCircle2 className="h-3.5 w-3.5 text-success" />
+                      ) : (
+                        <AlertCircle className="h-3.5 w-3.5 text-warning" />
+                      )}
+                      <span className={item.done ? 'text-foreground' : 'text-muted-foreground'}>{item.label}</span>
                     </div>
-                    <div className="mt-1 text-xs leading-5">{description}</div>
-                  </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            <nav className="min-h-0 flex-1 overflow-y-auto p-2" aria-label="Settings sections">
+              {filteredSections.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-border/70 px-3 py-4 text-xs text-muted-foreground">
+                  No sections match &quot;{settingsSectionQuery.trim()}&quot;.
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  {filteredSections.map((section) => {
+                    const active = section.sectionId === effectiveActiveSectionId;
+                    const sectionVisual = SETTINGS_SECTION_VISUALS[section.headingText] ?? DEFAULT_SETTINGS_SECTION_VISUAL;
+                    const SectionIcon = sectionVisual.Icon;
+                    return (
+                      <button
+                        key={section.sectionId}
+                        ref={(element) => {
+                          settingsMenuItemRefs.current[section.sectionId] = element;
+                        }}
+                        type="button"
+                        data-active={active ? 'true' : 'false'}
+                        aria-current={active ? 'true' : undefined}
+                        onClick={() => scrollToSettingsSection(section.sectionId)}
+                        className="group relative w-full rounded-lg border border-border/35 bg-background/45 py-2 pl-4 pr-3 text-left text-foreground/85 hover:border-primary/35 hover:bg-background/80 hover:text-foreground data-[active=true]:border-primary/55 data-[active=true]:bg-primary/12 data-[active=true]:text-foreground data-[active=true]:shadow-sm"
+                      >
+                        <span
+                          className="absolute left-1.5 top-2 bottom-2 w-1 rounded-full bg-border group-hover:bg-primary/60 group-data-[active=true]:bg-primary"
+                          aria-hidden="true"
+                        />
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span
+                            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/40 text-muted-foreground group-hover:text-foreground group-data-[active=true]:border-primary/45 group-data-[active=true]:bg-primary/15 group-data-[active=true]:text-primary"
+                            aria-hidden="true"
+                          >
+                            <SectionIcon className="h-3.5 w-3.5" />
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-[13px] font-semibold tracking-wide">{section.headingText}</div>
+                            {section.summary && (
+                              <div className="mt-0.5 truncate text-[11px] leading-4 text-muted-foreground group-hover:text-muted-foreground/95">
+                                {section.summary}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </nav>
+          </aside>
+
+          <div
+            ref={settingsContentScrollRef}
+            onScroll={handleSettingsContentScroll}
+            className="min-h-0 overflow-y-auto bg-background/20 px-5 py-4"
+          >
+            <div className="mx-auto max-w-6xl space-y-5 pb-8">
+              {filteredSections.length === 0 && (
+                <div className="rounded-xl border border-dashed border-border/70 px-4 py-5 text-sm text-muted-foreground">
+                  No settings sections match &quot;{settingsSectionQuery.trim()}&quot;.
+                </div>
+              )}
+
+              {filteredSections.map((section) => {
+                const isForcedExpanded = isNonCollapsibleSection(section);
+                const isExpanded =
+                  isForcedExpanded
+                  || isSettingsSectionExpandedByHeading(section.headingText)
+                  || Boolean(normalizedQuery && filteredSections.length === 1 && filteredSections[0]?.sectionId === section.sectionId);
+                const shouldRenderContent = keepCollapsedContentMountedForTests || isExpanded;
+                const sectionVisual = SETTINGS_SECTION_VISUALS[section.headingText] ?? DEFAULT_SETTINGS_SECTION_VISUAL;
+                const SectionIcon = sectionVisual.Icon;
+
+                return (
+                  <section
+                    id={section.sectionId}
+                    ref={(element) => {
+                      settingsSectionRefs.current[section.sectionId] = element;
+                    }}
+                    key={section.key}
+                    className={['overflow-hidden rounded-xl border border-border bg-card shadow-md shadow-black/5 ring-1 ring-foreground/5', section.sectionClass]
+                      .filter(Boolean)
+                      .join(' ')}
+                  >
+                    <div
+                      className={[
+                        'relative flex items-start justify-between gap-3 border-b border-border/80 px-4 py-3.5',
+                        sectionVisual.headerClass,
+                      ].join(' ')}
+                    >
+                      <span className={['absolute left-0 top-0 bottom-0 w-1.5', sectionVisual.accentClass].join(' ')} aria-hidden="true" />
+                      <div className="flex min-w-0 items-start gap-3 pl-1">
+                        <div
+                          className={[
+                            'mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border',
+                            sectionVisual.iconClass,
+                          ].join(' ')}
+                          aria-hidden="true"
+                        >
+                          <SectionIcon className="h-4 w-4" />
+                        </div>
+                        <div className="min-w-0">
+                          {section.heading}
+                          {section.summary && (
+                            <p className="mt-1 truncate text-xs text-muted-foreground">{section.summary}</p>
+                          )}
+                        </div>
+                      </div>
+                      {!isForcedExpanded && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            setExpandedSettingsSections((prev) => ({
+                              ...prev,
+                              [section.sectionId]: !prev[section.sectionId],
+                            }))
+                          }
+                          className="shrink-0"
+                          aria-expanded={isExpanded}
+                        >
+                          {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                          <span className="ml-1">{isExpanded ? 'Collapse' : 'Expand'}</span>
+                        </Button>
+                      )}
+                    </div>
+                    {shouldRenderContent && <div className="px-4 py-4">{section.content}</div>}
+                  </section>
                 );
               })}
             </div>
           </div>
-          {settingsMode === 'basic' ? (
-            <div className="mb-3 grid gap-2 md:grid-cols-3">
-              {[
-                { label: 'Model/API', done: Boolean(selectedModel && savedKeys.length > 0) },
-                { label: 'Workspace', done: Boolean(workspaceRoot) },
-                { label: 'Skills', done: skillsStatus.length === 0 || skillsStatus.some((skill) => skill.installed) },
-                { label: 'Pricing', done: Boolean((usagePricing?.providers?.length ?? 0) > 0) },
-                { label: 'First agent', done: agents.length > 0 },
-                { label: 'Doctor', done: doctorChecks.length > 0 && doctorChecks.every((check) => check.status !== 'error') },
-              ].map((item) => (
-                <div key={item.label} className="flex items-center gap-2 rounded-md border border-border/60 bg-background/60 px-2.5 py-2 text-xs">
-                  {item.done ? (
-                    <CheckCircle2 className="h-3.5 w-3.5 text-success" />
-                  ) : (
-                    <AlertCircle className="h-3.5 w-3.5 text-warning" />
-                  )}
-                  <span className={item.done ? 'text-foreground' : 'text-muted-foreground'}>{item.label}</span>
-                </div>
-              ))}
-            </div>
-          ) : null}
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() =>
-                  setExpandedSettingsSections(
-                    Object.fromEntries(allSectionIds.map((sectionId) => [sectionId, true]))
-                  )
-                }
-                disabled={allSectionIds.length === 0 || allExpanded}
-              >
-                Expand all
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => setExpandedSettingsSections({})}
-                disabled={allSectionIds.length === 0 || !Object.values(expandedSettingsSections).some(Boolean)}
-              >
-                Collapse all
-              </Button>
-            </div>
-            <div className="text-xs text-muted-foreground">
-              Showing {filteredSections.length} of {sections.length} section{sections.length === 1 ? '' : 's'}
-            </div>
-          </div>
-
-          <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_220px]">
-            <input
-              type="text"
-              value={settingsSectionQuery}
-              onChange={(e) => setSettingsSectionQuery(e.target.value)}
-              placeholder="Search sections..."
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-            />
-            <select
-              value={settingsSectionJumpTarget}
-              onChange={(e) => {
-                const nextSectionId = e.target.value;
-                setSettingsSectionJumpTarget(nextSectionId);
-                if (!nextSectionId) return;
-                setExpandedSettingsSections((prev) => ({
-                  ...prev,
-                  [nextSectionId]: true,
-                }));
-                requestAnimationFrame(() => {
-                  settingsSectionRefs.current[nextSectionId]?.scrollIntoView({
-                    behavior: 'smooth',
-                    block: 'start',
-                  });
-                  setSettingsSectionJumpTarget('');
-                });
-              }}
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-            >
-              <option value="">Jump to section...</option>
-              {filteredSections.map((section) => (
-                <option key={section.sectionId} value={section.sectionId}>
-                  Go to: {section.headingText}
-                </option>
-              ))}
-            </select>
-          </div>
         </div>
-
-        {filteredSections.length === 0 && (
-          <div className="rounded-xl border border-dashed border-border/70 px-4 py-5 text-sm text-muted-foreground">
-            No settings sections match &quot;{settingsSectionQuery.trim()}&quot;.
-          </div>
-        )}
-
-        {filteredSections.map((section) => {
-          const isForcedExpanded = isNonCollapsibleSection(section);
-          const isExpanded = isForcedExpanded || Boolean(expandedSettingsSections[section.sectionId]);
-          const shouldRenderContent = keepCollapsedContentMountedForTests || isExpanded;
-
-          return (
-            <section
-              id={section.sectionId}
-              ref={(element) => {
-                settingsSectionRefs.current[section.sectionId] = element;
-              }}
-              key={section.key}
-              className={['rounded-xl border border-border/70 bg-background/40 px-4 py-3', section.sectionClass]
-                .filter(Boolean)
-                .join(' ')}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  {section.heading}
-                  {!isExpanded && section.summary && (
-                    <p className="mt-1 truncate text-xs text-muted-foreground">{section.summary}</p>
-                  )}
-                </div>
-                {!isForcedExpanded && (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={() =>
-                      setExpandedSettingsSections((prev) => ({
-                        ...prev,
-                        [section.sectionId]: !prev[section.sectionId],
-                      }))
-                    }
-                    className="shrink-0"
-                    aria-expanded={isExpanded}
-                  >
-                    {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                    <span className="ml-1">{isExpanded ? 'Collapse' : 'Expand'}</span>
-                  </Button>
-                )}
-              </div>
-              {shouldRenderContent && <div className="mt-4">{section.content}</div>}
-            </section>
-          );
-        })}
       </div>
     );
   };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[92vw] max-w-2xl max-h-[85vh] overflow-hidden overflow-x-hidden flex flex-col">
-        <DialogHeader className="shrink-0">
-          <DialogTitle>Settings</DialogTitle>
-        </DialogHeader>
-
-        <div className="space-y-4 mt-4 flex-1 min-h-0 overflow-y-auto pr-1">
-          {renderCollapsibleSettingsSections(
-            <>
+      <DialogContent
+        hideCloseButton
+        className="h-[calc(100vh-24px)] w-[calc(100vw-24px)] max-w-[1600px] overflow-hidden overflow-x-hidden p-0 flex flex-col"
+      >
+        {renderCollapsibleSettingsSections(
+          <>
           <section>
             <h2 className="mb-4 text-base font-medium text-foreground">
               Model & API settings
@@ -11570,6 +13527,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                               ? 'text-success'
                               : 'text-warning';
                           const canManageSkill = !skill.visibilityOwnerAgentId || skill.visibilityOwnerAgentId === activeAgentId;
+                          const learning = getSkillLearningMetadata(skill);
 
                           return (
                             <div
@@ -11624,6 +13582,19 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                                       </span>
                                       <span>Created: {formatIsoDateTime(skill.manifest.createdAt)}</span>
                                       <span>Updated: {formatIsoDateTime(skill.manifest.updatedAt)}</span>
+                                    </div>
+                                  )}
+                                  {(learning.sourceTaskId || learning.confidence !== undefined || learning.reason) && (
+                                    <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                                      {learning.sourceTaskId && (
+                                        <span>Source task: <code className="rounded bg-muted px-1">{learning.sourceTaskId}</code></span>
+                                      )}
+                                      {learning.confidence !== undefined && (
+                                        <span>Confidence: {Math.round(learning.confidence * 100)}%</span>
+                                      )}
+                                      {learning.reason && (
+                                        <span className="max-w-full truncate">Reason: {learning.reason}</span>
+                                      )}
                                     </div>
                                   )}
                                   {!skill.eligible && !skill.disabled && missingCount > 0 && (
@@ -11687,6 +13658,17 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                                   >
                                     {skill.editable ? 'Edit' : 'View'}
                                   </Button>
+                                  {skill.editable && canManageSkill && (skill.manifest?.versions?.length || 0) > 0 && (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      disabled={rollingBackUserSkill === `${skill.source}:${skill.id}`}
+                                      onClick={() => void handleRollbackUserSkillToLatest(skill)}
+                                    >
+                                      <RotateCcw className="mr-1 h-3.5 w-3.5" />
+                                      {rollingBackUserSkill === `${skill.source}:${skill.id}` ? 'Rolling back...' : 'Rollback'}
+                                    </Button>
+                                  )}
                                   {skill.editable && canManageSkill && skill.source !== 'bundled' && (
                                     <Button
                                       size="sm"
@@ -11703,6 +13685,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                         })
                       : (userSkillsReport?.skills || []).map((skill) => {
                           const canManageSkill = !skill.visibilityOwnerAgentId || skill.visibilityOwnerAgentId === activeAgentId;
+                          const learning = getSkillLearningMetadata(skill);
                           return (
                           <div key={`${skill.source}:${skill.id}`} className="flex items-center justify-between rounded-xl border border-border/60 p-4">
                             <div className="min-w-0">
@@ -11743,6 +13726,19 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                                   <span>Updated: {formatIsoDateTime(skill.manifest.updatedAt)}</span>
                                 </div>
                               )}
+                              {(learning.sourceTaskId || learning.confidence !== undefined || learning.reason) && (
+                                <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                                  {learning.sourceTaskId && (
+                                    <span>Source task: <code className="rounded bg-muted px-1">{learning.sourceTaskId}</code></span>
+                                  )}
+                                  {learning.confidence !== undefined && (
+                                    <span>Confidence: {Math.round(learning.confidence * 100)}%</span>
+                                  )}
+                                  {learning.reason && (
+                                    <span className="max-w-full truncate">Reason: {learning.reason}</span>
+                                  )}
+                                </div>
+                              )}
                             </div>
                             <div className="flex items-center gap-2">
                               <Button
@@ -11768,6 +13764,17 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                               >
                                 {skill.editable ? 'Edit' : 'View'}
                               </Button>
+                              {skill.editable && canManageSkill && (skill.manifest?.versions?.length || 0) > 0 && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  disabled={rollingBackUserSkill === `${skill.source}:${skill.id}`}
+                                  onClick={() => void handleRollbackUserSkillToLatest(skill)}
+                                >
+                                  <RotateCcw className="mr-1 h-3.5 w-3.5" />
+                                  {rollingBackUserSkill === `${skill.source}:${skill.id}` ? 'Rolling back...' : 'Rollback'}
+                                </Button>
+                              )}
                               {skill.editable && canManageSkill && skill.source !== 'bundled' && (
                                 <Button
                                   size="sm"
@@ -11786,6 +13793,132 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
               )}
               {(userSkillsError || userSkillsDepsError) && (
                 <p className="mt-3 text-xs text-destructive">{userSkillsDepsError || userSkillsError}</p>
+              )}
+            </div>
+
+            <div className="mt-6 rounded-lg border border-border bg-card p-5">
+              <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2 font-medium text-foreground">
+                    <History className="h-4 w-4" />
+                    Skill learning history
+                  </div>
+                  <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
+                    Recent skill curator runs and rollback-ready skill versions.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void refreshSkillCuratorHistory()}
+                    disabled={loadingSkillCuratorHistory || runningSkillCurator}
+                  >
+                    {loadingSkillCuratorHistory ? 'Refreshing...' : 'Refresh'}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void handleRunUserSkillCurator()}
+                    disabled={runningSkillCurator}
+                  >
+                    {runningSkillCurator ? 'Running...' : 'Run curator'}
+                  </Button>
+                </div>
+              </div>
+
+              <div className="grid gap-3 lg:grid-cols-2">
+                <div className="rounded-lg border border-border/60 bg-background/50 p-3">
+                  <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    Curator runs
+                  </div>
+                  {skillCuratorHistory.length === 0 ? (
+                    <div className="rounded-md border border-dashed border-border/70 px-3 py-4 text-xs text-muted-foreground">
+                      No skill curator runs recorded yet.
+                    </div>
+                  ) : (
+                    <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+                      {skillCuratorHistory.slice(0, 6).map((run) => {
+                        const appliedCount = run.actions.filter((action) => action.applied).length;
+                        return (
+                          <div key={run.id} className="rounded-md border border-border/60 bg-card px-3 py-2 text-[11px]">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-medium text-foreground">{formatIsoDateTime(run.finishedAt || run.startedAt)}</span>
+                              <span className="rounded-full border border-border px-1.5 py-0.5 uppercase tracking-wide text-[10px] text-muted-foreground">
+                                {run.dryRun ? 'dry run' : 'applied'}
+                              </span>
+                              <span>{run.scanned} scanned</span>
+                              <span>{run.findings.length} findings</span>
+                              <span>{appliedCount} applied</span>
+                            </div>
+                            {run.actions[0] && (
+                              <div className="mt-1 line-clamp-2 text-muted-foreground">
+                                {run.actions[0].message}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-lg border border-border/60 bg-background/50 p-3">
+                  <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    Version rollback
+                  </div>
+                  {skillsWithRollbackVersions.length === 0 ? (
+                    <div className="rounded-md border border-dashed border-border/70 px-3 py-4 text-xs text-muted-foreground">
+                      No archived skill versions yet.
+                    </div>
+                  ) : (
+                    <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+                      {skillsWithRollbackVersions.slice(0, 6).map((skill) => {
+                        const versions = skill.manifest?.versions || [];
+                        const latest = versions[versions.length - 1];
+                        const key = `${skill.source}:${skill.id}`;
+                        return (
+                          <div key={key} className="rounded-md border border-border/60 bg-card px-3 py-2 text-[11px]">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="truncate font-medium text-foreground">{skill.name}</div>
+                                <div className="mt-1 flex flex-wrap items-center gap-2 text-muted-foreground">
+                                  <span>Current v{skill.manifest?.version}</span>
+                                  {latest && <span>Rollback to v{latest.version}</span>}
+                                  {latest?.sourceTaskId && (
+                                    <span>Task: <code className="rounded bg-muted px-1">{latest.sourceTaskId}</code></span>
+                                  )}
+                                  {latest?.confidence !== undefined && (
+                                    <span>Confidence: {Math.round(latest.confidence * 100)}%</span>
+                                  )}
+                                </div>
+                                {latest?.changeReason && (
+                                  <div className="mt-1 line-clamp-2 text-muted-foreground">
+                                    {latest.changeReason}
+                                  </div>
+                                )}
+                              </div>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 px-2 text-[11px]"
+                                disabled={rollingBackUserSkill === key}
+                                onClick={() => void handleRollbackUserSkillToLatest(skill)}
+                              >
+                                <RotateCcw className="mr-1 h-3.5 w-3.5" />
+                                {rollingBackUserSkill === key ? 'Rolling back...' : 'Rollback'}
+                              </Button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {skillCuratorError && (
+                <p className="mt-3 text-xs text-destructive">{skillCuratorError}</p>
               )}
             </div>
             </>
@@ -13512,7 +15645,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                         </div>
 
                         {selectedGatewayConnectorHasRuntimeControls && (
-                          <div className="space-y-3 rounded-xl border border-border/60 p-3">
+                          <div className="space-y-3 rounded-lg border border-border/60 bg-background/60 p-3">
                             <div className="flex flex-wrap items-center justify-between gap-2">
                               <div className="text-sm font-medium text-foreground">
                                 Connector runtime status
@@ -13957,7 +16090,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                               </Button>
                             </div>
 
-                            <div className="grid gap-2 rounded-lg border border-border/60 p-3">
+                            <div className="grid gap-2 rounded-lg border border-border/60 bg-muted/20 p-3">
                               <label className="text-xs font-medium text-foreground">
                                 DM policy
                                 <InfoTip text="Pairing = users must pair first. Open = any DM user unless allowlist is set. Disabled = ignore DMs." />
@@ -15833,14 +17966,56 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                 </p>
               </div>
 
+              <div className="rounded-lg border border-border/70 bg-card/60 p-3 shadow-sm">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-medium text-foreground">Always-on runtime</div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {alwaysOnStatus
+                        ? `${alwaysOnReadyCount}/${alwaysOnEnabledCount || 0} enabled agents ready or busy; ${alwaysOnStatus.connectors.filter((connector) => connector.running).length}/${alwaysOnStatus.connectors.length} connector runtimes running.`
+                        : 'Status not loaded yet.'}
+                    </p>
+                    {connectorDeliveries.length > 0 && (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Recent deliveries: {connectorDeliveries.length - recentDeliveryFailureCount} ok, {recentDeliveryFailureCount} failed.
+                      </p>
+                    )}
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void refreshAlwaysOnStatus()}
+                    disabled={alwaysOnStatusLoading}
+                  >
+                    {alwaysOnStatusLoading ? 'Refreshing...' : 'Refresh'}
+                  </Button>
+                </div>
+              </div>
+
               <div className="space-y-3">
                 {agents.length === 0 ? (
                   <p className="text-sm text-muted-foreground">No agents yet.</p>
                 ) : (
                   agents.map((agent) => {
+                    const skillLearningMode =
+                      agent.skillAutomationMode === 'automatic' || agent.skillAutomationMode === 'approval' || agent.skillAutomationMode === 'off'
+                        ? agent.skillAutomationMode
+                        : agent.autoSkillEnabled
+                          ? (agent.autoSkillAutoPromoteLowRisk ? 'automatic' : 'approval')
+                          : 'off';
+                    const memoryLearningMode =
+                      agent.memoryWriteMode === 'automatic' || agent.memoryWriteMode === 'approval' || agent.memoryWriteMode === 'off'
+                        ? agent.memoryWriteMode
+                        : 'automatic';
+                    const alwaysStatus = alwaysOnAgentStatusById.get(agent.id);
+                    const deleteAgentDisabledReason = agents.length <= 1
+                      ? 'You cannot delete the only agent. Create another agent first, then you can delete this one if it is not the default.'
+                      : agent.id === defaultAgentId
+                        ? 'You cannot delete the default agent. Set another agent as the default first, then this delete button will become available.'
+                        : null;
                     return (
-                    <div key={agent.id} className="flex flex-col gap-3 rounded-xl border border-border/60 p-4">
-                      <div className="flex items-start justify-between gap-4">
+                    <div key={agent.id} className="flex flex-col gap-3 rounded-lg border border-border/60 bg-background/60 p-4">
+                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                         <div className="flex items-start gap-3">
                           <div
                             className="flex h-12 w-12 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg"
@@ -15868,6 +18043,24 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                                 Default
                               </span>
                             )}
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                                agent.alwaysOnEnabled
+                                  ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                                  : 'bg-muted text-muted-foreground'
+                              }`}
+                            >
+                              Always-on: {alwaysStatus?.status ?? (agent.alwaysOnEnabled ? 'enabled' : 'off')}
+                            </span>
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                                agent.deferredToolDiscoveryEnabled
+                                  ? 'bg-amber-500/10 text-amber-700 dark:text-amber-300'
+                                  : 'bg-muted text-muted-foreground'
+                              }`}
+                            >
+                              Tools: {agent.deferredToolDiscoveryEnabled ? 'On-demand' : 'Full mode'}
+                            </span>
                           </div>
                           {agent.roleName && (
                             <div className="mt-1">
@@ -15906,21 +18099,21 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                             </span>
                             <span
                               className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                                agent.autoSkillEnabled
+                                skillLearningMode !== 'off'
                                   ? 'bg-sky-500/10 text-sky-700 dark:text-sky-300'
                                   : 'bg-muted text-muted-foreground'
                               }`}
                             >
-                              Auto skill creation: {agent.autoSkillEnabled ? 'Enabled' : 'Disabled'}
+                              Skill learning: {skillLearningMode}
                             </span>
                             <span
                               className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                                agent.autoSkillAutoPromoteLowRisk
-                                  ? 'bg-indigo-500/10 text-indigo-700 dark:text-indigo-300'
+                                memoryLearningMode !== 'off'
+                                  ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
                                   : 'bg-muted text-muted-foreground'
                               }`}
                             >
-                              Auto-promote low risk: {agent.autoSkillAutoPromoteLowRisk ? 'Enabled' : 'Disabled'}
+                              Memory learning: {memoryLearningMode}
                             </span>
                             <span
                               className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
@@ -15952,7 +18145,49 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                           )}
                           </div>
                         </div>
-                        <div className="flex flex-wrap items-center gap-2">
+                        <div className="flex shrink-0 flex-wrap items-center gap-2 lg:justify-end">
+                          <InfoTip
+                            content={(
+                              <div className="space-y-3">
+                                <div>
+                                  <div className="font-semibold text-foreground">Set active</div>
+                                  <p className="mt-0.5 text-muted-foreground">
+                                    Uses this agent for new Chat Mode tasks now. It does not delete other agents or change their saved settings.
+                                  </p>
+                                </div>
+                                <div>
+                                  <div className="font-semibold text-foreground">Set default</div>
+                                  <p className="mt-0.5 text-muted-foreground">
+                                    Makes this the agent selected automatically when Open Deskmate starts. You can still switch agents manually.
+                                  </p>
+                                </div>
+                                <div>
+                                  <div className="font-semibold text-foreground">Edit</div>
+                                  <p className="mt-0.5 text-muted-foreground">
+                                    Loads the agent into the editor below so you can change role, avatar, model routing, automation, heartbeat, memory, skills, permissions, and workspace settings.
+                                  </p>
+                                </div>
+                                <div>
+                                  <div className="font-semibold text-foreground">Always-on</div>
+                                  <p className="mt-0.5 text-muted-foreground">
+                                    Allows background connector listeners, schedules, queued connector tasks, and heartbeat activity. Turning it off pauses heartbeat until Always-on is turned back on or resumed from the Heartbeat section.
+                                  </p>
+                                </div>
+                                <div>
+                                  <div className="font-semibold text-foreground">On-demand</div>
+                                  <p className="mt-0.5 text-muted-foreground">
+                                    Starts the agent with a smaller tool set and lets it enable extra tools only when needed. Each enablement is recorded in Search & Audit. Turning it off exposes the normal full tool set from the start.
+                                  </p>
+                                </div>
+                                <div>
+                                  <div className="font-semibold text-foreground">Chat tool compatibility check</div>
+                                  <p className="mt-0.5 text-muted-foreground">
+                                    Tests whether this agent's model, provider, local-model capability level, permissions, and on-demand discovery can work with Chat Mode tools.
+                                  </p>
+                                </div>
+                              </div>
+                            )}
+                          />
                           {agent.id !== activeAgentId && (
                             <ButtonTip text="Set this agent as active for new tasks.">
                               <Button size="sm" variant="outline" onClick={() => handleSetActiveAgent(agent.id)}>
@@ -15972,15 +18207,45 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                               Edit
                             </Button>
                           </ButtonTip>
-                          <ButtonTip text="Delete this agent (cannot delete the default agent).">
+                          <ButtonTip text={agent.alwaysOnEnabled ? 'Disable always-on status for this agent.' : 'Enable always-on status for this agent.'}>
                             <Button
                               size="sm"
-                              variant="destructive"
-                              onClick={() => handleDeleteAgent(agent.id)}
-                              disabled={agents.length <= 1 || agent.id === defaultAgentId}
+                              variant="outline"
+                              onClick={() => void handleToggleAgentAlwaysOn(agent, !agent.alwaysOnEnabled)}
                             >
-                              Delete
+                              {agent.alwaysOnEnabled ? 'Always-on off' : 'Always-on on'}
                             </Button>
+                          </ButtonTip>
+                          <ButtonTip text={agent.deferredToolDiscoveryEnabled ? 'Expose the normal full tool set from the start.' : 'Start tasks with a smaller core tool set. The agent can search for and enable extra toolsets only when needed, and each enablement is logged in Search & Audit.'}>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => void handleToggleAgentDeferredToolDiscovery(agent, !agent.deferredToolDiscoveryEnabled)}
+                            >
+                              {agent.deferredToolDiscoveryEnabled ? 'On-demand off' : 'On-demand on'}
+                            </Button>
+                          </ButtonTip>
+                          <ButtonTip text="Run the Chat tool compatibility check for this agent and its local model routing.">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => void handleRunChatToolCompatibilityCheck(agent)}
+                              disabled={chatToolCompatibilityRunningAgentId !== null}
+                            >
+                              {chatToolCompatibilityRunningAgentId === agent.id ? 'Checking...' : 'Chat tool compatibility check'}
+                            </Button>
+                          </ButtonTip>
+                          <ButtonTip text={deleteAgentDisabledReason ?? 'Delete this agent.'}>
+                            <span className="inline-flex">
+                              <Button
+                                size="sm"
+                                variant="destructive"
+                                onClick={() => handleDeleteAgent(agent.id)}
+                                disabled={Boolean(deleteAgentDisabledReason)}
+                              >
+                                Delete
+                              </Button>
+                            </span>
                           </ButtonTip>
                         </div>
                       </div>
@@ -15988,7 +18253,783 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                   );})
                 )}
               </div>
+              {(chatToolCompatibilityResult || chatToolCompatibilityError) && (
+                <div className="rounded-lg border border-border/70 bg-background/70 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="text-sm font-medium text-foreground">Chat tool compatibility check</div>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Full-tool mode remains the default. On-demand tool discovery can be enabled for agents that should start with a smaller core tool set and enable extra toolsets only when needed.
+                      </p>
+                    </div>
+                    {chatToolCompatibilityResult && (
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                          chatToolCompatibilityResult.safeToEnable
+                            ? 'bg-success/10 text-success'
+                            : 'bg-warning/10 text-warning'
+                        }`}
+                      >
+                        Safe to enable: {chatToolCompatibilityResult.safeToEnable ? 'Yes' : 'No'}
+                      </span>
+                    )}
+                  </div>
+                  {chatToolCompatibilityError && (
+                    <p className="mt-3 text-xs text-destructive">{chatToolCompatibilityError}</p>
+                  )}
+                  {chatToolCompatibilityResult && (
+                    <div className="mt-3 space-y-3">
+                      <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+                        <div>
+                          <span className="font-medium text-foreground">Agent:</span>{' '}
+                          {agents.find((agent) => agent.id === chatToolCompatibilityResult.agentId)?.name
+                            || chatToolCompatibilityResult.agentId}
+                        </div>
+                        <div>
+                          <span className="font-medium text-foreground">Model:</span>{' '}
+                          {formatSelectedModelLabel(chatToolCompatibilityResult.model)}
+                        </div>
+                        <div>
+                          <span className="font-medium text-foreground">Backend:</span>{' '}
+                          {chatToolCompatibilityResult.backendAvailable ? 'Available' : 'Not available'}
+                        </div>
+                        <div>
+                          <span className="font-medium text-foreground">Checked:</span>{' '}
+                          {formatIsoDateTime(chatToolCompatibilityResult.checkedAt)}
+                        </div>
+                      </div>
+                      <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+                        <div>
+                          <span className="font-medium text-foreground">Missing capabilities:</span>{' '}
+                          {chatToolCompatibilityResult.missingCapabilities.length > 0
+                            ? chatToolCompatibilityResult.missingCapabilities.join(', ')
+                            : 'None'}
+                        </div>
+                        <div>
+                          <span className="font-medium text-foreground">Missing tools:</span>{' '}
+                          {chatToolCompatibilityResult.missingTools.length > 0
+                            ? chatToolCompatibilityResult.missingTools.join(', ')
+                            : 'None'}
+                        </div>
+                      </div>
+                      <div className="rounded-md border border-border/60 bg-card px-3 py-2 text-xs text-muted-foreground">
+                        <span className="font-medium text-foreground">Recommendation:</span>{' '}
+                        {chatToolCompatibilityResult.recommendation}
+                      </div>
+                      <div className="space-y-2">
+                        {chatToolCompatibilityResult.cases.map((caseResult) => (
+                          <div
+                            key={caseResult.id}
+                            className="rounded-md border border-border/60 bg-card px-3 py-2"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex items-center gap-2 text-xs font-medium text-foreground">
+                                {caseResult.passed ? (
+                                  <CheckCircle2 className="h-3.5 w-3.5 text-success" />
+                                ) : (
+                                  <AlertCircle className="h-3.5 w-3.5 text-warning" />
+                                )}
+                                {caseResult.label}
+                              </div>
+                              <span
+                                className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                                  caseResult.passed
+                                    ? 'bg-success/10 text-success'
+                                    : 'bg-warning/10 text-warning'
+                                }`}
+                              >
+                                {caseResult.passed ? 'Pass' : 'Fail'}
+                              </span>
+                            </div>
+                            {caseResult.detail && (
+                              <p className="mt-1 text-xs text-muted-foreground">{caseResult.detail}</p>
+                            )}
+                            {(caseResult.missingCapabilities.length > 0 || caseResult.missingTools.length > 0) && (
+                              <p className="mt-1 text-[11px] text-muted-foreground">
+                                Missing: {[...caseResult.missingCapabilities, ...caseResult.missingTools].join(', ')}
+                              </p>
+                            )}
+                            {caseResult.recommendation && (
+                              <p className="mt-1 text-[11px] text-muted-foreground">
+                                {caseResult.recommendation}
+                              </p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
               {agentError && <p className="text-xs text-destructive">{agentError}</p>}
+            </div>
+
+            <div className="mt-4 space-y-4 rounded-lg border border-border bg-card/80 p-4 sm:p-5">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="font-medium text-foreground">
+                    Agent Builder
+                    <InfoTip text="Guided setup for a normal saved agent profile. The full agent settings editor below remains available for detailed changes." />
+                  </div>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Create a Hermes-style agent step by step, or clone visible settings from an existing agent.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={() => resetAgentBuilderDraft()}>
+                    Reset builder
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => setAgentBuilderExpanded((prev) => !prev)}>
+                    {agentBuilderExpanded ? 'Collapse' : 'Open builder'}
+                  </Button>
+                </div>
+              </div>
+
+              {agentBuilderExpanded && (
+                <>
+                  <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                    {AGENT_BUILDER_STEPS.map((step, index) => {
+                      const active = index === agentBuilderStepIndex;
+                      return (
+                        <button
+                          key={step.id}
+                          type="button"
+                          onClick={() => setAgentBuilderStepIndex(index)}
+                          className={`min-w-0 rounded-lg border px-3 py-2 text-left transition-colors ${
+                            active
+                              ? 'border-primary/60 bg-primary/10 text-foreground'
+                              : 'border-border/70 bg-background/60 text-muted-foreground hover:border-primary/40 hover:text-foreground'
+                          }`}
+                        >
+                          <div className="text-xs font-semibold uppercase tracking-[0.08em]">
+                            {index + 1}. {step.label}
+                          </div>
+                          <div className="mt-1 break-words text-[11px] leading-snug">{step.description}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className="rounded-lg border border-border/70 bg-background/60 p-4">
+                    <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div className="text-sm font-medium text-foreground">{agentBuilderCurrentStep.label}</div>
+                        <p className="mt-1 text-xs text-muted-foreground">{agentBuilderCurrentStep.description}</p>
+                      </div>
+                      <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                        Step {agentBuilderStepIndex + 1} of {AGENT_BUILDER_STEPS.length}
+                      </span>
+                    </div>
+
+                    {agentBuilderCurrentStep.id === 'purpose' && (
+                      <div className="grid gap-3">
+                        <div className="grid gap-1">
+                          <label className="text-xs text-muted-foreground">Start from existing agent</label>
+                          <select
+                            value={agentBuilderCloneSourceId}
+                            onChange={(e) => handleAgentBuilderCloneSourceChange(e.target.value)}
+                            className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                          >
+                            <option value="">Blank agent</option>
+                            {agents.map((agent) => (
+                              <option key={agent.id} value={agent.id}>
+                                Clone {agent.name}
+                              </option>
+                            ))}
+                          </select>
+                          {agentBuilderCloneSource && (
+                            <p className="text-xs text-muted-foreground">
+                              Cloned agent fields are editable before saving. Connector bindings are shown later but are not rewritten automatically.
+                            </p>
+                          )}
+                        </div>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <div className="grid gap-1">
+                            <label className="text-xs text-muted-foreground">Agent name</label>
+                            <input
+                              ref={agentBuilderNameInputRef}
+                              defaultValue={agentBuilderName}
+                              onBlur={(e) => setAgentBuilderName(e.target.value)}
+                              placeholder="Research Concierge"
+                              className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                            />
+                          </div>
+                          <div className="grid gap-1">
+                            <label className="text-xs text-muted-foreground">Role name</label>
+                            <input
+                              ref={agentBuilderRoleNameInputRef}
+                              defaultValue={agentBuilderRoleName}
+                              onBlur={(e) => setAgentBuilderRoleName(e.target.value)}
+                              placeholder="Planner, Researcher, Developer"
+                              className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                            />
+                          </div>
+                        </div>
+                        <div className="grid gap-1">
+                          <label className="text-xs text-muted-foreground">Description</label>
+                          <input
+                            ref={agentBuilderDescriptionInputRef}
+                            defaultValue={agentBuilderDescription}
+                            onBlur={(e) => setAgentBuilderDescription(e.target.value)}
+                            placeholder="What this agent is for"
+                            className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                          />
+                        </div>
+                        <div className="flex gap-2">
+                          <div className="grid flex-1 gap-1">
+                            <label className="text-xs text-muted-foreground">Workspace folder</label>
+                            <input
+                              ref={agentBuilderWorkspaceRootInputRef}
+                              defaultValue={agentBuilderWorkspaceRoot}
+                              onBlur={(e) => setAgentBuilderWorkspaceRoot(e.target.value)}
+                              placeholder="Optional default workspace"
+                              className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                            />
+                          </div>
+                          <Button size="sm" variant="outline" type="button" onClick={handleSelectAgentBuilderWorkspace}>
+                            Browse
+                          </Button>
+                        </div>
+                        <div className="grid gap-1">
+                          <label className="text-xs text-muted-foreground">Persona / system prompt</label>
+                          <textarea
+                            ref={agentBuilderSystemPromptInputRef}
+                            defaultValue={agentBuilderSystemPrompt}
+                            onBlur={(e) => setAgentBuilderSystemPrompt(e.target.value)}
+                            placeholder="Optional instruction addendum for this agent"
+                            className="min-h-[96px] rounded-md border border-input bg-background px-3 py-2 text-sm resize-none"
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {agentBuilderCurrentStep.id === 'model' && (
+                      <div className="grid gap-3">
+                        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-3 py-2">
+                          <div>
+                            <div className="text-sm font-medium text-foreground">Model routing</div>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              Inherit the global model or pin this agent to a specific provider and model.
+                            </p>
+                          </div>
+                          <label className="flex items-center gap-2 text-xs text-foreground">
+                            <input
+                              type="checkbox"
+                              checked={agentBuilderModelOverrideEnabled}
+                              onChange={(e) => {
+                                const enabled = e.target.checked;
+                                setAgentBuilderModelOverrideEnabled(enabled);
+                                if (enabled && !agentBuilderModelId.trim()) {
+                                  applyAgentBuilderModelForm(selectedModel ?? AGENT_FALLBACK_MODEL);
+                                }
+                              }}
+                            />
+                            Override global model
+                          </label>
+                        </div>
+                        {!agentBuilderModelOverrideEnabled && (
+                          <p className="text-xs text-muted-foreground">
+                            Using global default: {formatSelectedModelLabel(selectedModel)}
+                          </p>
+                        )}
+                        {agentBuilderModelOverrideEnabled && (
+                          <div className="grid gap-3">
+                            <div className="grid gap-1">
+                              <label className="text-xs text-muted-foreground">Provider</label>
+                              <select
+                                value={agentBuilderModelProvider}
+                                onChange={(e) => handleAgentBuilderModelProviderChange(e.target.value as ProviderType)}
+                                className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                              >
+                                {modelProviders
+                                  .filter((entry) => entry.id !== 'ollama')
+                                  .map((entry) => (
+                                    <option key={entry.id} value={entry.id}>
+                                      {entry.name}
+                                    </option>
+                                  ))}
+                                {!modelProviders.some((entry) => entry.id === agentBuilderModelProvider)
+                                  && agentBuilderModelProvider !== 'ollama'
+                                  && agentBuilderModelProvider !== 'custom' && (
+                                    <option value={agentBuilderModelProvider}>{agentBuilderModelProvider}</option>
+                                  )}
+                                <option value="ollama">Ollama</option>
+                                <option value="custom">Custom (manual)</option>
+                              </select>
+                            </div>
+                            {agentBuilderModelProvider !== 'ollama'
+                              && (modelProviders.find((entry) => entry.id === agentBuilderModelProvider)?.models?.length ?? 0) > 0 && (
+                              <div className="grid gap-1">
+                                <label className="text-xs text-muted-foreground">Model</label>
+                                <select
+                                  value={agentBuilderModelId}
+                                  onChange={(e) => setAgentBuilderModelId(e.target.value)}
+                                  className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                                >
+                                  {(modelProviders.find((entry) => entry.id === agentBuilderModelProvider)?.models ?? []).map((model) => (
+                                    <option key={model.fullId} value={model.fullId}>
+                                      {model.displayName}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                            )}
+                            {(agentBuilderModelProvider === 'custom'
+                              || (agentBuilderModelProvider !== 'ollama'
+                                && (modelProviders.find((entry) => entry.id === agentBuilderModelProvider)?.models?.length ?? 0) === 0)) && (
+                              <div className="grid gap-1">
+                                <label className="text-xs text-muted-foreground">Model ID</label>
+                                <input
+                                  ref={agentBuilderModelIdInputRef}
+                                  defaultValue={agentBuilderModelId}
+                                  onBlur={(e) => setAgentBuilderModelId(e.target.value)}
+                                  placeholder="provider/model-name"
+                                  className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                                />
+                              </div>
+                            )}
+                            {agentBuilderModelProvider === 'ollama' && (
+                              <>
+                                <div className="grid gap-1">
+                                  <label className="text-xs text-muted-foreground">Ollama model</label>
+                                  {ollamaModels.length > 0 ? (
+                                    <select
+                                      value={agentBuilderModelId.replace(/^ollama\//, '')}
+                                      onChange={(e) => setAgentBuilderModelId(`ollama/${e.target.value}`)}
+                                      className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                                    >
+                                      {ollamaModels.map((model) => (
+                                        <option key={model.id} value={model.id}>
+                                          {model.displayName}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  ) : (
+                                    <input
+                                      ref={agentBuilderModelIdInputRef}
+                                      defaultValue={agentBuilderModelId.replace(/^ollama\//, '')}
+                                      onBlur={(e) => setAgentBuilderModelId(e.target.value)}
+                                      placeholder="llama3.1:8b"
+                                      className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                                    />
+                                  )}
+                                </div>
+                                <div className="grid gap-1">
+                                  <label className="text-xs text-muted-foreground">Ollama base URL</label>
+                                  <input
+                                    ref={agentBuilderModelBaseUrlInputRef}
+                                    defaultValue={agentBuilderModelBaseUrl}
+                                    onBlur={(e) => setAgentBuilderModelBaseUrl(e.target.value)}
+                                    placeholder={ollamaUrl || 'http://localhost:11434'}
+                                    className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                                  />
+                                </div>
+                              </>
+                            )}
+                            {(agentBuilderModelProvider === 'custom'
+                              || (agentBuilderModelProvider !== 'ollama'
+                                && Boolean(modelProviders.find((entry) => entry.id === agentBuilderModelProvider)?.baseUrl))) && (
+                              <div className="grid gap-1">
+                                <label className="text-xs text-muted-foreground">Base URL</label>
+                                <input
+                                  ref={agentBuilderModelBaseUrlInputRef}
+                                  defaultValue={agentBuilderModelBaseUrl}
+                                  onBlur={(e) => setAgentBuilderModelBaseUrl(e.target.value)}
+                                  placeholder="https://api.example.com"
+                                  className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                                />
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {agentBuilderCurrentStep.id === 'tools' && (
+                      <div className="grid gap-3">
+                        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-3 py-2">
+                          <div>
+                            <div className="text-sm font-medium text-foreground">On-demand discovery</div>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              Start small and let the agent enable additional formal toolsets when task intent requires them.
+                            </p>
+                          </div>
+                          <label className="flex items-center gap-2 text-xs text-foreground">
+                            <input
+                              type="checkbox"
+                              checked={agentBuilderDeferredToolDiscoveryEnabled}
+                              onChange={(e) => setAgentBuilderDeferredToolDiscoveryEnabled(e.target.checked)}
+                            />
+                            Use on-demand discovery
+                          </label>
+                        </div>
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          {AGENT_BUILDER_TOOLSET_OPTIONS.map((option) => {
+                            const selected = agentBuilderToolsetIds.includes(option.id);
+                            return (
+                              <label
+                                key={option.id}
+                                className={`flex items-start gap-3 rounded-md border px-3 py-2 text-sm ${
+                                  selected ? 'border-primary/50 bg-primary/10' : 'border-border/60 bg-background'
+                                }`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={selected}
+                                  onChange={(e) => toggleAgentBuilderToolset(option.id, e.target.checked)}
+                                  className="mt-0.5"
+                                />
+                                <span>
+                                  <span className="block font-medium text-foreground">{option.label}</span>
+                                  <span className="mt-0.5 block text-xs text-muted-foreground">{option.description}</span>
+                                </span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {agentBuilderCurrentStep.id === 'memory' && (
+                      <div className="grid gap-3">
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <div className="grid gap-1">
+                            <label className="text-xs text-muted-foreground">Memory writes</label>
+                            <select
+                              value={agentBuilderMemoryWriteMode}
+                              onChange={(e) => setAgentBuilderMemoryWriteMode(e.target.value as 'automatic' | 'approval' | 'off')}
+                              className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                            >
+                              <option value="automatic">Automatic</option>
+                              <option value="approval">Ask first</option>
+                              <option value="off">Off</option>
+                            </select>
+                          </div>
+                          <div className="grid gap-1">
+                            <label className="text-xs text-muted-foreground">Skill learning</label>
+                            <select
+                              value={agentBuilderSkillAutomationMode}
+                              onChange={(e) => setAgentBuilderSkillAutomationMode(e.target.value as 'automatic' | 'approval' | 'off')}
+                              className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                            >
+                              <option value="automatic">Automatic</option>
+                              <option value="approval">Ask first</option>
+                              <option value="off">Off</option>
+                            </select>
+                          </div>
+                        </div>
+                        <label className="flex items-center gap-2 rounded-md border border-border/60 bg-background px-3 py-2 text-xs text-foreground">
+                          <input
+                            type="checkbox"
+                            checked={agentBuilderMemoryNotificationsEnabled}
+                            onChange={(e) => setAgentBuilderMemoryNotificationsEnabled(e.target.checked)}
+                          />
+                          Show memory update notifications in task activity
+                        </label>
+                        <label className="flex items-center gap-2 rounded-md border border-border/60 bg-background px-3 py-2 text-xs text-foreground">
+                          <input
+                            type="checkbox"
+                            checked={agentBuilderLoopEnabled}
+                            onChange={(e) => setAgentBuilderLoopEnabled(e.target.checked)}
+                          />
+                          Enable Active Automation Mode for multi-step autonomous loops
+                        </label>
+                      </div>
+                    )}
+
+                    {agentBuilderCurrentStep.id === 'connectors' && (
+                      <div className="grid gap-3">
+                        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-3 py-2">
+                          <div>
+                            <div className="text-sm font-medium text-foreground">Always-on availability</div>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              Connector and schedule enablement still stays in their own settings.
+                            </p>
+                          </div>
+                          <label className="flex items-center gap-2 text-xs text-foreground">
+                            <input
+                              type="checkbox"
+                              checked={agentBuilderAlwaysOnEnabled}
+                              onChange={(e) => setAgentBuilderAlwaysOnEnabled(e.target.checked)}
+                            />
+                            Enable always-on
+                          </label>
+                        </div>
+                        {agentBuilderConnectorSummaries.length === 0 ? (
+                          <p className="text-xs text-muted-foreground">
+                            No configured connector bindings are visible. Add or bind connectors in the Messaging Connector Extensions or App Connector Extensions sections.
+                          </p>
+                        ) : (
+                          <div className="space-y-2">
+                            {agentBuilderConnectorSummaries.slice(0, 8).map((connector) => (
+                              <div key={connector.key} className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border/60 bg-background/70 px-3 py-2 text-xs">
+                                <div>
+                                  <span className="font-medium text-foreground">{connector.name}</span>
+                                  <span className="text-muted-foreground"> • bound to {connector.boundAgentName}</span>
+                                </div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className={`rounded-full px-2 py-0.5 ${connector.enabled ? 'bg-success/10 text-success' : 'bg-muted text-muted-foreground'}`}>
+                                    {connector.enabled ? 'Enabled' : 'Disabled'}
+                                  </span>
+                                  <span className={`rounded-full px-2 py-0.5 ${connector.running ? 'bg-success/10 text-success' : 'bg-muted text-muted-foreground'}`}>
+                                    {connector.running ? 'Running' : connector.configured ? 'Configured' : 'Needs setup'}
+                                  </span>
+                                </div>
+                                {connector.lastError && (
+                                  <div className="w-full text-[11px] text-warning">{connector.lastError}</div>
+                                )}
+                              </div>
+                            ))}
+                            {agentBuilderConnectorSummaries.length > 8 && (
+                              <p className="text-xs text-muted-foreground">
+                                Showing 8 of {agentBuilderConnectorSummaries.length} configured connector entries.
+                              </p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {agentBuilderCurrentStep.id === 'subagents' && (
+                      <div className="grid gap-3">
+                        <label className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-sm text-foreground">
+                          <span>
+                            Enable helper subagents
+                            <span className="mt-1 block text-xs text-muted-foreground">
+                              Allows this agent to delegate bounded work to other saved agents.
+                            </span>
+                          </span>
+                          <input
+                            type="checkbox"
+                            checked={agentBuilderSubagentsEnabled}
+                            onChange={(e) => setAgentBuilderSubagentsEnabled(e.target.checked)}
+                          />
+                        </label>
+                        {agentBuilderSubagentsEnabled ? (
+                          <div className="grid gap-3 sm:grid-cols-2">
+                            <div className="grid gap-1">
+                              <label className="text-xs text-muted-foreground">Max child agents</label>
+                              <input
+                                type="number"
+                                min={1}
+                                max={12}
+                                ref={agentBuilderSubagentMaxChildrenInputRef}
+                                defaultValue={agentBuilderSubagentMaxChildren}
+                                onBlur={(e) => setAgentBuilderSubagentMaxChildren(e.target.value)}
+                                className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                              />
+                            </div>
+                            <div className="grid gap-1">
+                              <label className="text-xs text-muted-foreground">Max depth</label>
+                              <input
+                                type="number"
+                                min={1}
+                                max={4}
+                                ref={agentBuilderSubagentMaxDepthInputRef}
+                                defaultValue={agentBuilderSubagentMaxDepth}
+                                onBlur={(e) => setAgentBuilderSubagentMaxDepth(e.target.value)}
+                                className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                              />
+                            </div>
+                            <div className="grid gap-1 sm:col-span-2">
+                              <label className="text-xs text-muted-foreground">Allowed agent IDs</label>
+                              <input
+                                ref={agentBuilderSubagentAllowedAgentIdsInputRef}
+                                defaultValue={agentBuilderSubagentAllowedAgentIds}
+                                onBlur={(e) => setAgentBuilderSubagentAllowedAgentIds(e.target.value)}
+                                placeholder="Leave blank to allow any saved agent"
+                                className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                              />
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="text-xs text-muted-foreground">
+                            Subagent delegation disabled.
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {agentBuilderCurrentStep.id === 'appearance' && (
+                      <div className="grid gap-3">
+                        <div className="grid gap-1">
+                          <label className="text-xs text-muted-foreground">Avatar</label>
+                          <AgentAvatarPicker
+                            selectedAvatar={agentBuilderAvatar}
+                            selectedColor={agentBuilderAvatarColor}
+                            selectedImageDataUrl={agentBuilderAvatarImageDataUrl}
+                            onAvatarChange={setAgentBuilderAvatar}
+                            onColorChange={setAgentBuilderAvatarColor}
+                            onImageDataUrlChange={setAgentBuilderAvatarImageDataUrl}
+                          />
+                        </div>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <div className="grid gap-1">
+                            <label className="text-xs text-muted-foreground">Avatar frame</label>
+                            <select
+                              value={agentBuilderAvatarFrame}
+                              onChange={(e) => setAgentBuilderAvatarFrame(e.target.value)}
+                              className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                            >
+                              {AGENT_AVATAR_FRAME_OPTIONS.map((option) => (
+                                <option key={option} value={option}>
+                                  {option === 'none' ? 'Default' : option}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="grid gap-1">
+                            <label className="text-xs text-muted-foreground">Accent color</label>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="color"
+                                value={agentBuilderAppearancePreviewAccentColor}
+                                onChange={(e) => syncAgentBuilderTextFields({ appearanceAccentColor: e.target.value })}
+                                className="h-9 w-11 shrink-0 rounded-md border border-input bg-background p-1"
+                              />
+                              <input
+                                ref={agentBuilderAppearanceAccentColorInputRef}
+                                defaultValue={agentBuilderAppearanceAccentColor}
+                                onBlur={(e) => setAgentBuilderAppearanceAccentColor(e.target.value)}
+                                placeholder="#38bdf8"
+                                className="min-w-0 flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm"
+                              />
+                            </div>
+                          </div>
+                          <div className="grid gap-1">
+                            <label className="text-xs text-muted-foreground">Answer style</label>
+                            <select
+                              value={agentBuilderAnswerStyle}
+                              onChange={(e) => setAgentBuilderAnswerStyle(e.target.value)}
+                              className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                            >
+                              {AGENT_ANSWER_STYLE_OPTIONS.map((option) => (
+                                <option key={option} value={option}>
+                                  {option === 'balanced' ? 'Default' : option}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="grid gap-1">
+                            <label className="text-xs text-muted-foreground">Presence animation</label>
+                            <select
+                              value={agentBuilderPresenceAnimation}
+                              onChange={(e) => setAgentBuilderPresenceAnimation(e.target.value)}
+                              className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                            >
+                              {AGENT_PRESENCE_ANIMATION_OPTIONS.map((option) => (
+                                <option key={option} value={option}>
+                                  {option === 'none' ? 'Default' : option}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="grid gap-1">
+                            <label className="text-xs text-muted-foreground">Agent reactions</label>
+                            <select
+                              value={agentBuilderReactionMode}
+                              onChange={(e) => setAgentBuilderReactionMode(e.target.value as AgentReactionModeOption)}
+                              className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                            >
+                              {AGENT_REACTION_MODE_OPTIONS.map((option) => (
+                                <option key={option} value={option}>
+                                  {option === 'off'
+                                    ? 'Off'
+                                    : option === 'minimal'
+                                      ? 'Minimal'
+                                      : option === 'standard'
+                                        ? 'Standard'
+                                        : 'Playful'}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <label className="flex items-center gap-2 self-end rounded-md border border-border/60 bg-background px-3 py-2 text-xs text-foreground">
+                            <input
+                              type="checkbox"
+                              checked={agentBuilderShowAvatarOnAnswers}
+                              onChange={(e) => setAgentBuilderShowAvatarOnAnswers(e.target.checked)}
+                            />
+                            Show avatar on answers
+                          </label>
+                        </div>
+                      </div>
+                    )}
+
+                    {agentBuilderCurrentStep.id === 'test' && (
+                      <div className="grid gap-3">
+                        <div className="grid gap-2">
+                          {agentBuilderReadinessItems.map((item) => (
+                            <div key={item.id} className="rounded-md border border-border/60 bg-background px-3 py-2">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="text-sm font-medium text-foreground">{item.title}</div>
+                                <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${getAgentBuilderReadinessBadgeClass(item.status)}`}>
+                                  {item.status === 'ok' ? 'Ready' : item.status === 'warning' ? 'Needs attention' : 'Info'}
+                                </span>
+                              </div>
+                              <p className="mt-1 text-xs text-muted-foreground">{item.detail}</p>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => void handleRunAgentBuilderReadinessCheck()}
+                            disabled={agentBuilderReadinessRunning}
+                          >
+                            {agentBuilderReadinessRunning ? 'Checking...' : 'Run Chat tool compatibility check'}
+                          </Button>
+                          <span className="text-xs text-muted-foreground">
+                            Uses the existing local compatibility proof and saved provider status only.
+                          </span>
+                        </div>
+                        {agentBuilderReadinessError && (
+                          <p className="text-xs text-destructive">{agentBuilderReadinessError}</p>
+                        )}
+                        {agentBuilderReadinessResult && (
+                          <div className="rounded-md border border-border/60 bg-card px-3 py-2 text-xs text-muted-foreground">
+                            <div className="font-medium text-foreground">
+                              Safe to enable: {agentBuilderReadinessResult.safeToEnable ? 'Yes' : 'No'}
+                            </div>
+                            <div className="mt-1">Backend: {agentBuilderReadinessResult.backendAvailable ? 'Available' : 'Not available'}</div>
+                            <div className="mt-1">Checked: {formatIsoDateTime(agentBuilderReadinessResult.checkedAt)}</div>
+                            <div className="mt-1">{agentBuilderReadinessResult.recommendation}</div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setAgentBuilderStepIndex((prev) => Math.max(0, prev - 1))}
+                        disabled={agentBuilderStepIndex === 0 || agentBuilderSaving}
+                      >
+                        Previous
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setAgentBuilderStepIndex((prev) => Math.min(AGENT_BUILDER_STEPS.length - 1, prev + 1))}
+                        disabled={agentBuilderStepIndex === AGENT_BUILDER_STEPS.length - 1 || agentBuilderSaving}
+                      >
+                        Next
+                      </Button>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {agentBuilderStatus && <span className="text-xs text-success">{agentBuilderStatus}</span>}
+                      {agentBuilderError && <span className="text-xs text-destructive">{agentBuilderError}</span>}
+                      <Button onClick={() => void handleSaveAgentBuilder()} disabled={agentBuilderSaving}>
+                        {agentBuilderSaving ? 'Creating...' : 'Create agent'}
+                      </Button>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
 
             <div className="mt-4 rounded-lg border border-border bg-card p-5 space-y-3">
@@ -16214,6 +19255,321 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                     }}
                   />
                 </div>
+                <div className="rounded-lg border border-border bg-background/60 p-3 space-y-3">
+                  <div className="text-xs font-medium text-muted-foreground">
+                    Appearance
+                    <InfoTip text="Optional Chat Mode presentation hints for this agent. Leaving these at defaults keeps the current chat behavior." />
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="grid gap-1">
+                      <label className="text-xs text-muted-foreground">
+                        Avatar frame
+                        <InfoTip text="Changes the decorative frame around this agent's avatar in Chat Mode answer bubbles and agent hover cards. It does not change the actual avatar image." />
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <select
+                          ref={agentAvatarFrameInputRef}
+                          value={agentAvatarFrame}
+                          onChange={(e) => setAgentAvatarFrame(e.target.value)}
+                          className="min-w-0 flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm"
+                        >
+                          {AGENT_AVATAR_FRAME_OPTIONS.map((option) => (
+                            <option key={option} value={option}>
+                              {option === 'none' ? 'Default' : option}
+                            </option>
+                          ))}
+                        </select>
+                        <div
+                          className={`flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden border border-border/70 bg-muted/70 ${getAvatarFrameClass(agentAvatarFrame)}`}
+                          style={{
+                            backgroundColor: agentAvatarColor ? `${agentAvatarColor}18` : undefined,
+                            boxShadow: agentAvatarFrame === 'badge' ? `0 0 0 2px ${agentAppearancePreviewAccentColor}55` : undefined,
+                          }}
+                          title={`Avatar frame preview: ${agentAvatarFrame === 'none' ? 'Default' : agentAvatarFrame}`}
+                        >
+                          <AgentAvatarIcon
+                            avatar={agentAvatar}
+                            color={agentAvatarColor || agentAppearancePreviewAccentColor}
+                            imageDataUrl={agentAvatarImageDataUrl}
+                            className={(agentAvatarImageDataUrl || isAgentCharacterAvatar(agentAvatar)) ? 'h-full w-full' : 'h-5 w-5'}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="grid gap-1">
+                      <label className="text-xs text-muted-foreground">
+                        Accent color
+                        <InfoTip text="Sets this agent's visual accent color for agent-specific chat UI such as badges, frames, and subtle highlights. It does not affect the model or tools." />
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="color"
+                          value={agentAppearancePreviewAccentColor}
+                          onChange={(e) => setAgentAppearanceAccentColor(e.target.value)}
+                          className="h-9 w-11 shrink-0 rounded-md border border-input bg-background p-1"
+                          aria-label="Choose accent color"
+                        />
+                        <input
+                          ref={agentAppearanceAccentColorInputRef}
+                          type="text"
+                          value={agentAppearanceAccentColor}
+                          onChange={(e) => setAgentAppearanceAccentColor(e.target.value)}
+                          placeholder="#38bdf8"
+                          className="min-w-0 flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm"
+                        />
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                        {AGENT_ACCENT_SWATCHES.map((color) => {
+                          const selected = agentAppearanceAccentColor.trim().toLowerCase() === color.toLowerCase();
+                          return (
+                            <button
+                              key={color}
+                              type="button"
+                              className={`flex h-6 w-6 items-center justify-center rounded-full border transition-transform hover:scale-110 focus:outline-none focus:ring-2 focus:ring-ring/50 ${
+                                selected ? 'border-foreground' : 'border-border'
+                              }`}
+                              style={{ backgroundColor: color }}
+                              title={`Use ${color}`}
+                              aria-label={`Use accent color ${color}`}
+                              onClick={() => setAgentAppearanceAccentColor(color)}
+                            >
+                              {selected ? <Check className="h-3.5 w-3.5 text-white drop-shadow" /> : null}
+                            </button>
+                          );
+                        })}
+                        <button
+                          type="button"
+                          className="ml-1 rounded-md border border-border bg-background px-2 py-1 text-[11px] font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                          onClick={() => setAgentAppearanceAccentColor('')}
+                        >
+                          Default
+                        </button>
+                      </div>
+                    </div>
+                    <div className="grid gap-1">
+                      <label className="text-xs text-muted-foreground">
+                        Answer style
+                        <InfoTip text="Changes the visual treatment of this agent's answer bubbles where supported. It is appearance-only and does not change the answer content." />
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <select
+                          ref={agentAnswerStyleInputRef}
+                          value={agentAnswerStyle}
+                          onChange={(e) => setAgentAnswerStyle(e.target.value)}
+                          className="min-w-0 flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm"
+                        >
+                          {AGENT_ANSWER_STYLE_OPTIONS.map((option) => (
+                            <option key={option} value={option}>
+                              {option === 'balanced' ? 'Default' : option}
+                            </option>
+                          ))}
+                        </select>
+                        <div
+                          className={`w-28 shrink-0 rounded-xl border bg-card text-card-foreground ${getAnswerStylePreviewClass(agentAnswerStyle)}`}
+                          style={{
+                            borderColor: `${agentAppearancePreviewAccentColor}55`,
+                            boxShadow: agentAnswerStyle === 'playful' ? `0 10px 28px ${agentAppearancePreviewAccentColor}22` : undefined,
+                          }}
+                          title={`Answer style preview: ${agentAnswerStyle === 'balanced' ? 'Default' : agentAnswerStyle}`}
+                        >
+                          <div className="truncate font-semibold">Answer</div>
+                          <div className="mt-0.5 h-1 w-16 rounded-full bg-muted-foreground/25" />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="grid gap-1">
+                      <label className="text-xs text-muted-foreground">
+                        Chat background
+                        <InfoTip text="Chooses the Chat Mode background for this agent. If no background is set, the normal theme background is used. It only changes the chat area background." />
+                      </label>
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <button
+                            type="button"
+                            className="flex min-h-[48px] w-full items-center justify-between gap-3 rounded-md border border-input bg-background px-3 py-2 text-left text-sm transition-colors hover:border-primary/45 hover:bg-muted/40"
+                          >
+                            <span className="flex min-w-0 items-center gap-3">
+                              {selectedAgentChatBackground ? (
+                                <img
+                                  src={selectedAgentChatBackground.src}
+                                  alt=""
+                                  className="h-8 w-12 shrink-0 rounded-md border border-border object-cover"
+                                />
+                              ) : (
+                                <span className="h-8 w-12 shrink-0 rounded-md border border-border bg-gradient-to-br from-background via-muted/50 to-background" />
+                              )}
+                              <span className="min-w-0">
+                                <span className="block truncate font-medium text-foreground">
+                                  {selectedAgentChatBackground?.label || 'Default theme'}
+                                </span>
+                                <span className="block truncate text-xs text-muted-foreground">
+                                  {selectedAgentChatBackground ? 'Agent-specific chat background' : 'Uses the normal dark or light theme background'}
+                                </span>
+                              </span>
+                            </span>
+                            <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent
+                          align="start"
+                          sideOffset={8}
+                          collisionPadding={12}
+                          className="w-[420px] overflow-hidden p-0"
+                          style={{ maxHeight: 'min(520px, calc(var(--radix-popover-content-available-height) - 8px))' }}
+                        >
+                          <div className="flex max-h-[inherit] flex-col p-3">
+                            <div className="mb-3 shrink-0">
+                              <div className="text-sm font-semibold text-foreground">Agent chat background</div>
+                              <p className="mt-0.5 text-xs text-muted-foreground">
+                                Choose a background for this agent. The chat bubbles stay unchanged.
+                              </p>
+                            </div>
+                            <div className="min-h-0 overflow-y-auto pr-1">
+                              <div className="grid grid-cols-2 gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => setAgentChatBackgroundId(DEFAULT_CHAT_BACKGROUND_ID)}
+                                  className={`group relative overflow-hidden rounded-lg border p-2 text-left transition-colors ${
+                                    agentChatBackgroundId === DEFAULT_CHAT_BACKGROUND_ID
+                                      ? 'border-primary/60 bg-primary/10'
+                                      : 'border-border bg-background hover:border-primary/40'
+                                  }`}
+                                >
+                                  <div className="mb-2 h-20 rounded-md border border-border/70 bg-gradient-to-br from-background via-muted/40 to-background" />
+                                  <div className="text-xs font-medium text-foreground">Default theme</div>
+                                  <div className="text-[11px] text-muted-foreground">Dark or light theme background</div>
+                                  {agentChatBackgroundId === DEFAULT_CHAT_BACKGROUND_ID ? (
+                                    <span className="absolute right-2 top-2 rounded-full bg-primary p-1 text-primary-foreground">
+                                      <Check className="h-3 w-3" />
+                                    </span>
+                                  ) : null}
+                                </button>
+                                {CHAT_BACKGROUNDS.map((background) => {
+                                  const selected = agentChatBackgroundId === background.id;
+                                  return (
+                                    <button
+                                      key={background.id}
+                                      type="button"
+                                      onClick={() => setAgentChatBackgroundId(background.id)}
+                                      className={`group relative overflow-hidden rounded-lg border p-2 text-left transition-colors ${
+                                        selected
+                                          ? 'border-primary/60 bg-primary/10'
+                                          : 'border-border bg-background hover:border-primary/40'
+                                      }`}
+                                      title={background.label}
+                                    >
+                                      <img
+                                        src={background.src}
+                                        alt={background.label}
+                                        className="mb-2 h-20 w-full rounded-md border border-border/70 object-cover transition-transform duration-200 group-hover:scale-[1.02]"
+                                        loading="lazy"
+                                      />
+                                      <div className="truncate text-xs font-medium text-foreground">{background.label}</div>
+                                      {selected ? (
+                                        <span className="absolute right-2 top-2 rounded-full bg-primary p-1 text-primary-foreground">
+                                          <Check className="h-3 w-3" />
+                                        </span>
+                                      ) : null}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          </div>
+                        </PopoverContent>
+                      </Popover>
+                    </div>
+                    <div className="grid gap-1">
+                      <label className="text-xs text-muted-foreground">
+                        Presence animation
+                        <InfoTip text="Controls how much animation appears for this agent's factual working states, such as thinking, searching, or writing. Reduced-motion settings still take priority." />
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <select
+                          ref={agentPresenceAnimationInputRef}
+                          value={agentPresenceAnimation}
+                          onChange={(e) => setAgentPresenceAnimation(e.target.value)}
+                          className="min-w-0 flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm"
+                        >
+                          {AGENT_PRESENCE_ANIMATION_OPTIONS.map((option) => (
+                            <option key={option} value={option}>
+                              {option === 'none' ? 'Default' : option}
+                            </option>
+                          ))}
+                        </select>
+                        <div
+                          className="flex h-10 w-28 shrink-0 items-center gap-2 rounded-xl border border-border/70 bg-card px-2 text-card-foreground"
+                          title={`Presence animation preview: ${agentPresenceAnimation === 'none' ? 'Default' : agentPresenceAnimation}`}
+                        >
+                          <span
+                            className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-border/60 bg-muted/60 ${getPresenceAnimationPreviewClass(agentPresenceAnimation)}`}
+                            style={{
+                              color: agentAppearancePreviewAccentColor,
+                              boxShadow: agentPresenceAnimation === 'glow' ? `0 0 16px ${agentAppearancePreviewAccentColor}66` : undefined,
+                            }}
+                          >
+                            <Sparkles className="h-3 w-3" />
+                          </span>
+                          <span className="min-w-0 truncate text-[11px] font-semibold">
+                            {agentPresenceAnimation === 'typing' ? 'Typing...' : 'Working'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="grid gap-1">
+                      <label className="text-xs text-muted-foreground">
+                        Agent reactions
+                        <InfoTip text="Chooses how many verified reaction badges can appear under this agent's answers. These badges only use confirmed app events, such as sources found, files linked, memory updated, or task done." />
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <select
+                          ref={agentReactionModeInputRef}
+                          value={agentReactionMode}
+                          onChange={(e) => setAgentReactionMode(e.target.value as AgentReactionModeOption)}
+                          className="min-w-0 flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm"
+                        >
+                          {AGENT_REACTION_MODE_OPTIONS.map((option) => (
+                            <option key={option} value={option}>
+                              {option === 'off'
+                                ? 'Off'
+                                : option === 'minimal'
+                                  ? 'Minimal'
+                                  : option === 'standard'
+                                    ? 'Standard'
+                                    : 'Playful'}
+                            </option>
+                          ))}
+                        </select>
+                        <div
+                          className="flex h-10 w-28 shrink-0 items-center gap-2 rounded-xl border border-border/70 bg-card px-2 text-card-foreground"
+                          title={`Agent reactions preview: ${agentReactionMode}`}
+                        >
+                          <span
+                            className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-border/60 bg-muted/60"
+                            style={{ color: agentAppearancePreviewAccentColor }}
+                          >
+                            <Sparkles className="h-3 w-3" />
+                          </span>
+                          <span className="min-w-0 truncate text-[11px] font-semibold">
+                            {agentReactionMode === 'off' ? 'Hidden' : `${agentReactionMode[0].toUpperCase()}${agentReactionMode.slice(1)}`}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                    <label className="flex items-center gap-2 self-end rounded-md border border-border/60 bg-background px-3 py-2 text-xs text-foreground">
+                      <input
+                        ref={agentShowAvatarOnAnswersInputRef}
+                        type="checkbox"
+                        checked={agentShowAvatarOnAnswers}
+                        onChange={(e) => setAgentShowAvatarOnAnswers(e.target.checked)}
+                      />
+                      <span>
+                        Show avatar on answers
+                        <InfoTip text="Shows this agent's avatar at the top of answer bubbles. If turned off, answers stay more compact and the avatar can be re-enabled from the answer controls." />
+                      </span>
+                    </label>
+                  </div>
+                </div>
                 <div className="grid gap-1">
                   <label className="text-xs text-muted-foreground">
                     Description
@@ -16228,6 +19584,98 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                     placeholder="Short description (optional)"
                     className="rounded-md border border-input bg-background px-3 py-2 text-sm"
                   />
+                </div>
+                <div className="rounded-lg border border-border bg-background/60 p-3 space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <label className="text-xs text-muted-foreground">
+                      Always-on status
+                      <InfoTip text="Marks this agent as available for background connectors, schedules, and heartbeat status reporting. Connector and schedule enablement still stay under their own settings." />
+                    </label>
+                    <label className="flex items-center gap-2 text-xs text-foreground">
+                      <input
+                        type="checkbox"
+                        checked={agentAlwaysOnEnabled}
+                        onChange={(e) => setAgentAlwaysOnEnabled(e.target.checked)}
+                      />
+                      Enable always-on
+                    </label>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Turning this off pauses connector listeners, schedules, and heartbeat activity. It does not erase the heartbeat setting.
+                  </p>
+                </div>
+                <div className="rounded-lg border border-border bg-background/60 p-3 space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <label className="text-xs text-muted-foreground">
+                      Workboard dispatch
+                      <InfoTip text="When Always-on is enabled, this agent scans selected projects for Ready work items assigned to this agent ID and starts them as background tasks." />
+                    </label>
+                    <label className="flex items-center gap-2 text-xs text-foreground">
+                      <input
+                        type="checkbox"
+                        checked={agentWorkboardDispatchEnabled}
+                        onChange={(e) => setAgentWorkboardDispatchEnabled(e.target.checked)}
+                      />
+                      Enable dispatch
+                    </label>
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {agentAlwaysOnEnabled
+                      ? 'Selected projects are scanned while Always-on is running.'
+                      : 'Requires Always-on to run.'}
+                  </div>
+                  {agentWorkboardDispatchEnabled && (
+                    <div className="grid gap-2">
+                      {workboardDispatchProjects.length === 0 ? (
+                        <div className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
+                          No active Workboard projects found.
+                        </div>
+                      ) : (
+                        <div className="grid max-h-40 gap-1 overflow-auto rounded-md border border-border/60 bg-muted/20 p-2">
+                          {workboardDispatchProjects.map((project) => {
+                            const selected = agentWorkboardDispatchProjectIds.includes(project.id);
+                            return (
+                              <label key={project.id} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-xs text-foreground hover:bg-background/70">
+                                <input
+                                  type="checkbox"
+                                  checked={selected}
+                                  onChange={(event) => {
+                                    setAgentWorkboardDispatchProjectIds((prev) => {
+                                      if (event.target.checked) {
+                                        return prev.includes(project.id) ? prev : [...prev, project.id];
+                                      }
+                                      return prev.filter((id) => id !== project.id);
+                                    });
+                                  }}
+                                />
+                                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: project.color || '#64748b' }} />
+                                <span className="min-w-0 truncate">{project.name}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+                <div className="rounded-lg border border-border bg-background/60 p-3 space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <label className="text-xs text-muted-foreground">
+                      Use on-demand tool discovery
+                      <InfoTip text="On-demand tool discovery reduces tool/context clutter and lets the agent enable research, coding, Build runtime, desktop, or custom tools as the task requires. If a newly enabled MCP tool needs loading, Open Deskmate reloads it automatically and continues when possible. Turn this off to expose the normal full tool set from the start." />
+                    </label>
+                    <label className="flex items-center gap-2 text-xs text-foreground">
+                      <input
+                        type="checkbox"
+                        checked={agentDeferredToolDiscoveryEnabled}
+                        onChange={(e) => setAgentDeferredToolDiscoveryEnabled(e.target.checked)}
+                      />
+                      Use on-demand discovery
+                    </label>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Start tasks with a smaller core tool set. The agent can search for and enable extra toolsets only when needed, and each enablement is logged in Search & Audit.
+                  </p>
                 </div>
                 <div className="rounded-lg border border-border bg-background/60 p-3 space-y-3">
                   <div className="flex items-center justify-between">
@@ -16985,60 +20433,69 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                     </p>
                   )}
                 </div>
-                <div className="rounded-lg border border-border bg-background/60 p-3 space-y-2">
+                <div className="rounded-lg border border-border bg-background/60 p-3 space-y-3">
                   <div className="text-xs text-muted-foreground">
-                    Skill autonomy controls
-                    <InfoTip text="Auto skill creation lets the agent draft reusable skills on its own. Auto-promote low risk allows those drafted skills to be promoted automatically only when risk is low." />
+                    Automatic learning
+                    <InfoTip text="Hermes-style learning lets the agent remember useful durable facts and maintain reusable skills after completed tasks. Automatic mode applies high-confidence updates in the background and records history for rollback." />
                   </div>
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs text-muted-foreground">
-                      Agent auto skill creation
-                      <InfoTip text="Allow this agent to draft reusable skills when it detects repeatable workflows. You can disable this per agent." />
-                    </label>
-                    <label className="flex items-center gap-2 text-xs text-foreground">
-                      <input
-                        type="checkbox"
-                        checked={agentAutoSkillEnabled}
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="grid gap-1">
+                      <label className="text-xs text-muted-foreground">
+                        Memory writes
+                        <InfoTip text="Automatic writes useful durable memory directly. Ask first stages memory changes for review. Off disables post-task memory learning." />
+                      </label>
+                      <select
+                        value={agentMemoryWriteMode}
+                        onChange={(e) => setAgentMemoryWriteMode(e.target.value as 'automatic' | 'approval' | 'off')}
+                        className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      >
+                        <option value="automatic">Automatic</option>
+                        <option value="approval">Ask first</option>
+                        <option value="off">Off</option>
+                      </select>
+                    </div>
+                    <div className="grid gap-1">
+                      <label className="text-xs text-muted-foreground">
+                        Skill learning
+                        <InfoTip text="Automatic saves high-confidence reusable skills and curates duplicates/stale generated skills. Ask first stages reusable skill drafts. Off disables post-task skill learning." />
+                      </label>
+                      <select
+                        value={agentSkillAutomationMode}
                         onChange={(e) => {
-                          const enabled = e.target.checked;
-                          setAgentAutoSkillEnabled(enabled);
-                          if (!enabled) {
-                            setAgentAutoSkillAutoPromoteLowRisk(false);
-                          }
+                          const mode = e.target.value as 'automatic' | 'approval' | 'off';
+                          setAgentSkillAutomationMode(mode);
                         }}
-                      />
-                      Enable auto skills
-                    </label>
+                        className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      >
+                        <option value="automatic">Automatic</option>
+                        <option value="approval">Ask first</option>
+                        <option value="off">Off</option>
+                      </select>
+                    </div>
                   </div>
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs text-muted-foreground">
-                      Auto-promote low-risk skills
-                      <InfoTip text="When enabled, low-risk drafted skills can be promoted automatically. High-risk skills still require manual review." />
-                    </label>
-                    <label className="flex items-center gap-2 text-xs text-foreground">
-                      <input
-                        type="checkbox"
-                        checked={agentAutoSkillAutoPromoteLowRisk}
-                        disabled={!agentAutoSkillEnabled}
-                        onChange={(e) => setAgentAutoSkillAutoPromoteLowRisk(e.target.checked)}
-                      />
-                      Enable auto-promotion
-                    </label>
-                  </div>
+                  <label className="flex items-center gap-2 text-xs text-foreground">
+                    <input
+                      type="checkbox"
+                      checked={agentMemoryNotificationsEnabled}
+                      onChange={(e) => setAgentMemoryNotificationsEnabled(e.target.checked)}
+                    />
+                    Show memory update notifications in task activity
+                  </label>
                   <p className="text-xs text-muted-foreground">
-                    {!agentAutoSkillEnabled
-                      ? 'Auto skill creation is disabled. This agent will not auto-create new skills.'
-                      : agentAutoSkillAutoPromoteLowRisk
-                        ? 'Auto skill creation and low-risk auto-promotion are enabled.'
-                        : 'Auto skill creation is enabled, but promotion still requires confirmation.'}
+                    Automatic learning runs after completed tasks and does not delay final answers. Low-confidence learning is skipped silently.
                   </p>
                 </div>
                 <div className="rounded-lg border border-border bg-background/60 p-3 space-y-3">
                   <div className="flex items-center justify-between">
-                    <label className="text-xs text-muted-foreground">
-                      Heartbeat
-                      <InfoTip text="Run periodic autonomous check-ins for this agent on an interval or at a daily time." />
-                    </label>
+                    <div className="flex items-center gap-2">
+                      <label className="text-xs text-muted-foreground">
+                        Heartbeat
+                        <InfoTip text="Run periodic autonomous check-ins for this agent on an interval or at a daily time. The checkbox stores the heartbeat preference; heartbeat only actively runs while Always-on is enabled." />
+                      </label>
+                      <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] ${agentHeartbeatStatus.className}`}>
+                        {agentHeartbeatStatus.label}
+                      </span>
+                    </div>
                     <label className="flex items-center gap-2 text-xs text-foreground">
                       <input
                         type="checkbox"
@@ -17054,6 +20511,24 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                       Enable heartbeat
                     </label>
                   </div>
+                  <p className="text-xs text-muted-foreground">
+                    {agentHeartbeatStatus.detail}
+                  </p>
+                  {agentHeartbeatEnabled && !agentAlwaysOnEnabled ? (
+                    <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setAgentAlwaysOnEnabled(true)}
+                      >
+                        Resume heartbeat
+                      </Button>
+                      <span className="text-xs text-amber-700 dark:text-amber-200">
+                        Turns Always-on back on so the saved heartbeat schedule can run.
+                      </span>
+                    </div>
+                  ) : null}
                   {agentHeartbeatEnabled ? (
                     <div className="grid gap-3">
                       <div className="grid gap-1">
@@ -17378,6 +20853,309 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
 
           <section>
             <h2 className="mb-4 text-base font-medium text-foreground">
+              Execution Profiles
+              <InfoTip text="Foundation for choosing where tasks run. This release stores non-secret local, SSH, Docker, and cloud worker metadata only; actual task execution remains local." />
+            </h2>
+            {isSettingsSectionExpandedByHeading('Execution Profiles') && (
+            <div className="rounded-lg border border-border bg-card p-5 space-y-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="font-medium text-foreground">Profiles</div>
+                  <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
+                    Save reusable execution targets without passwords, tokens, or private keys. Remote runners are placeholders in this v1 foundation.
+                  </p>
+                </div>
+                <Button size="sm" variant="outline" onClick={resetExecutionProfileForm}>
+                  New profile
+                </Button>
+              </div>
+
+              {executionProfilesError && (
+                <div className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                  {executionProfilesError}
+                </div>
+              )}
+              {executionProfilesStatus && !executionProfilesError && (
+                <div className="rounded-md bg-success/10 px-3 py-2 text-xs text-success">
+                  {executionProfilesStatus}
+                </div>
+              )}
+
+              <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
+                <div className="space-y-2">
+                  {executionProfilesLoading ? (
+                    <div className="text-sm text-muted-foreground">Loading profiles...</div>
+                  ) : executionProfiles.length === 0 ? (
+                    <div className="rounded-md border border-dashed border-border/70 px-3 py-4 text-sm text-muted-foreground">
+                      No execution profiles found.
+                    </div>
+                  ) : (
+                    executionProfiles.map((profile) => (
+                      <div
+                        key={profile.id}
+                        className={`rounded-md border border-border/70 bg-background/70 p-3 ${profile.archived ? 'opacity-65' : ''}`}
+                      >
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-medium text-foreground">{profile.name}</span>
+                              <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                                {EXECUTION_PROFILE_KIND_LABELS[profile.kind]}
+                              </span>
+                              {profile.id === executionProfilesDefaultId && (
+                                <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+                                  Default
+                                </span>
+                              )}
+                              {profile.archived && (
+                                <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                                  Archived
+                                </span>
+                              )}
+                            </div>
+                            <div className="mt-1 text-xs text-muted-foreground">
+                              {describeExecutionProfile(profile)}
+                            </div>
+                            <div className="mt-1 text-xs text-muted-foreground">
+                              Health: {profile.health.status.replace(/_/g, ' ')} - {profile.health.message}
+                            </div>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-2">
+                            <Button size="sm" variant="outline" onClick={() => editExecutionProfile(profile)}>
+                              Edit
+                            </Button>
+                            {profile.archived ? (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleArchiveExecutionProfile(profile, false)}
+                                disabled={executionProfilesSaving}
+                              >
+                                Restore
+                              </Button>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleArchiveExecutionProfile(profile, true)}
+                                disabled={executionProfilesSaving || profile.id === executionProfilesDefaultId}
+                              >
+                                Archive
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                <div className="space-y-3 rounded-md border border-border/70 bg-background/70 p-3">
+                  <div>
+                    <div className="text-sm font-medium text-foreground">
+                      {executionProfileFormId ? 'Edit profile' : 'Create profile'}
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Connection secrets are intentionally omitted from this form.
+                    </p>
+                  </div>
+
+                  <div className="grid gap-2">
+                    <label className="text-xs text-muted-foreground">Name</label>
+                    <input
+                      type="text"
+                      value={executionProfileName}
+                      onChange={(e) => setExecutionProfileName(e.target.value)}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      placeholder="e.g. Staging SSH"
+                    />
+                  </div>
+
+                  <div className="grid gap-2">
+                    <label className="text-xs text-muted-foreground">Kind</label>
+                    <select
+                      value={executionProfileKind}
+                      onChange={(e) => setExecutionProfileKind(e.target.value as ExecutionProfileKind)}
+                      disabled={executionProfileFormId === 'local-windows'}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    >
+                      {EXECUTION_PROFILE_KIND_OPTIONS.map((option) => (
+                        <option key={option.kind} value={option.kind}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="text-[11px] text-muted-foreground">
+                      {EXECUTION_PROFILE_KIND_OPTIONS.find((option) => option.kind === executionProfileKind)?.description}
+                    </div>
+                  </div>
+
+                  <div className="grid gap-2">
+                    <label className="text-xs text-muted-foreground">Workspace root override</label>
+                    <input
+                      type="text"
+                      value={executionProfileWorkspaceRoot}
+                      onChange={(e) => setExecutionProfileWorkspaceRoot(e.target.value)}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      placeholder="Optional path"
+                    />
+                  </div>
+
+                  {executionProfileKind === 'local_windows' && (
+                    <div className="grid gap-2">
+                      <label className="text-xs text-muted-foreground">Shell</label>
+                      <select
+                        value={executionProfileShell}
+                        onChange={(e) => setExecutionProfileShell(e.target.value === 'cmd' ? 'cmd' : 'powershell')}
+                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      >
+                        <option value="powershell">PowerShell</option>
+                        <option value="cmd">Command Prompt</option>
+                      </select>
+                    </div>
+                  )}
+
+                  {executionProfileKind === 'ssh' && (
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="grid gap-2 sm:col-span-2">
+                        <label className="text-xs text-muted-foreground">Host</label>
+                        <input
+                          type="text"
+                          value={executionProfileHost}
+                          onChange={(e) => setExecutionProfileHost(e.target.value)}
+                          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                          placeholder="host.example.com"
+                        />
+                      </div>
+                      <div className="grid gap-2">
+                        <label className="text-xs text-muted-foreground">Port</label>
+                        <input
+                          type="number"
+                          value={executionProfilePort}
+                          onChange={(e) => setExecutionProfilePort(e.target.value)}
+                          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                          min={1}
+                          max={65535}
+                        />
+                      </div>
+                      <div className="grid gap-2">
+                        <label className="text-xs text-muted-foreground">Username</label>
+                        <input
+                          type="text"
+                          value={executionProfileUsername}
+                          onChange={(e) => setExecutionProfileUsername(e.target.value)}
+                          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                          placeholder="Optional"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {executionProfileKind === 'docker' && (
+                    <div className="grid gap-3">
+                      <div className="grid gap-2">
+                        <label className="text-xs text-muted-foreground">Image</label>
+                        <input
+                          type="text"
+                          value={executionProfileDockerImage}
+                          onChange={(e) => setExecutionProfileDockerImage(e.target.value)}
+                          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                          placeholder="node:20"
+                        />
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div className="grid gap-2">
+                          <label className="text-xs text-muted-foreground">Docker context</label>
+                          <input
+                            type="text"
+                            value={executionProfileDockerContext}
+                            onChange={(e) => setExecutionProfileDockerContext(e.target.value)}
+                            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                            placeholder="Optional"
+                          />
+                        </div>
+                        <div className="grid gap-2">
+                          <label className="text-xs text-muted-foreground">Container name</label>
+                          <input
+                            type="text"
+                            value={executionProfileContainerName}
+                            onChange={(e) => setExecutionProfileContainerName(e.target.value)}
+                            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                            placeholder="Optional"
+                          />
+                        </div>
+                      </div>
+                      <div className="grid gap-2">
+                        <label className="text-xs text-muted-foreground">Working directory</label>
+                        <input
+                          type="text"
+                          value={executionProfileWorkingDir}
+                          onChange={(e) => setExecutionProfileWorkingDir(e.target.value)}
+                          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                          placeholder="Optional"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {executionProfileKind === 'cloud_worker' && (
+                    <div className="grid gap-3">
+                      <div className="grid gap-2">
+                        <label className="text-xs text-muted-foreground">Worker URL</label>
+                        <input
+                          type="url"
+                          value={executionProfileWorkerUrl}
+                          onChange={(e) => setExecutionProfileWorkerUrl(e.target.value)}
+                          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                          placeholder="https://worker.example.com"
+                        />
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div className="grid gap-2">
+                          <label className="text-xs text-muted-foreground">Provider label</label>
+                          <input
+                            type="text"
+                            value={executionProfileProviderLabel}
+                            onChange={(e) => setExecutionProfileProviderLabel(e.target.value)}
+                            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                            placeholder="Optional"
+                          />
+                        </div>
+                        <div className="grid gap-2">
+                          <label className="text-xs text-muted-foreground">Region</label>
+                          <input
+                            type="text"
+                            value={executionProfileRegion}
+                            onChange={(e) => setExecutionProfileRegion(e.target.value)}
+                            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                            placeholder="Optional"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <Button size="sm" onClick={handleSaveExecutionProfile} disabled={executionProfilesSaving}>
+                      {executionProfilesSaving ? 'Saving...' : executionProfileFormId ? 'Save changes' : 'Create profile'}
+                    </Button>
+                    {executionProfileFormId && (
+                      <Button size="sm" variant="outline" onClick={resetExecutionProfileForm}>
+                        Cancel edit
+                      </Button>
+                    )}
+                    <Button size="sm" variant="outline" onClick={refreshExecutionProfiles} disabled={executionProfilesLoading}>
+                      Refresh
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            )}
+          </section>
+
+          <section>
+            <h2 className="mb-4 text-base font-medium text-foreground">
               Workspace Defaults
               <InfoTip text="Sets the default working folder for new tasks. No installs required." />
             </h2>
@@ -17422,6 +21200,119 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
             <div className="rounded-lg border border-border bg-card p-5 space-y-6">
               {workspaceRoot ? (
                 <>
+                  <div className="space-y-3 rounded-lg border border-border/70 bg-background/50 p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <div className="font-medium text-foreground">Memory Manager</div>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Search, edit, delete, and restore workspace memory files used as agent context.
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                        <span>{memoryDailyFiles.length} daily file{memoryDailyFiles.length === 1 ? '' : 's'}</span>
+                        <span>{memorySnapshots.length} snapshot{memorySnapshots.length === 1 ? '' : 's'}</span>
+                        <span>{memoryChanges.length} history item{memoryChanges.length === 1 ? '' : 's'}</span>
+                      </div>
+                    </div>
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <div className="relative min-w-0 flex-1">
+                        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                        <input
+                          type="search"
+                          value={memorySearchQuery}
+                          onChange={(e) => setMemorySearchQuery(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleSearchMemory();
+                            }
+                          }}
+                          className="w-full rounded-md border border-input bg-background py-2 pl-9 pr-3 text-sm"
+                          placeholder="Search USER.md, MEMORY.md, daily notes, and snapshots"
+                        />
+                      </div>
+                      <Button size="sm" variant="outline" onClick={handleSearchMemory} disabled={memoryLoading || !memorySearchQuery.trim()}>
+                        <Search className="h-4 w-4" />
+                        Search
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={refreshMemoryState} disabled={memoryLoading}>
+                        <RotateCcw className="h-4 w-4" />
+                        Refresh
+                      </Button>
+                    </div>
+                    {memorySearchResults.length > 0 && (
+                      <div className="max-h-60 space-y-2 overflow-y-auto pr-1">
+                        {memorySearchResults.map((result) => (
+                          <button
+                            type="button"
+                            key={`${result.id}-${result.lineNumber || 'meta'}`}
+                            className="w-full rounded-md border border-border/60 bg-card px-3 py-2 text-left hover:bg-accent/40"
+                            onClick={() => {
+                              if (result.kind === 'daily' && result.date) {
+                                handleDailyDateChange(result.date);
+                              }
+                              if (result.kind === 'snapshot' && result.fileName) {
+                                handleSelectMemorySnapshot(result.fileName);
+                              }
+                            }}
+                          >
+                            <div className="flex min-w-0 items-center justify-between gap-3">
+                              <div className="min-w-0 truncate text-xs font-medium text-foreground">
+                                {result.relativePath}
+                              </div>
+                              <div className="shrink-0 text-[11px] text-muted-foreground">
+                                {result.kind}{result.lineNumber ? ` • line ${result.lineNumber}` : ''}
+                              </div>
+                            </div>
+                            <div className="mt-1 line-clamp-2 whitespace-pre-wrap text-[11px] text-muted-foreground">
+                              {result.matchExcerpt}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {memoryStatus && (
+                      <div className="rounded-md bg-green-500/10 px-3 py-2 text-xs text-green-700 dark:text-green-300">
+                        {memoryStatus}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="space-y-3">
+                    <div>
+                      <div className="font-medium text-foreground">User profile memory (USER.md)</div>
+                      <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
+                        Stable facts about the user, standing preferences, clients, and recurring working style.
+                      </p>
+                    </div>
+                    <textarea
+                      key={`memory-user-${activeAgentId || 'none'}-${workspaceRoot || 'none'}`}
+                      ref={memoryUserRef}
+                      defaultValue={memoryUser}
+                      onBlur={(e) => setMemoryUser(e.target.value)}
+                      className="w-full min-h-[120px] rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      placeholder="Add durable user profile notes here..."
+                    />
+                    <div className="flex items-center gap-2">
+                      <Button size="sm" onClick={handleSaveUserMemory} disabled={memorySaving || memoryLoading}>
+                        <Save className="h-4 w-4" />
+                        {memorySaving ? 'Saving…' : 'Save USER.md'}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleDeleteMemoryFile('user', { label: 'USER.md' })}
+                        disabled={memorySaving || memoryLoading || !memoryUser.trim()}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                        Delete
+                      </Button>
+                      <span className="text-xs text-muted-foreground">
+                        {`${workspaceRoot}\\USER.md`}
+                      </span>
+                    </div>
+                  </div>
+
                   <div className="space-y-3">
                     <div>
                       <div className="font-medium text-foreground">Long-term memory (MEMORY.md)</div>
@@ -17439,7 +21330,17 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                     />
                     <div className="flex items-center gap-2">
                       <Button size="sm" onClick={handleSaveLongTermMemory} disabled={memorySaving || memoryLoading}>
+                        <Save className="h-4 w-4" />
                         {memorySaving ? 'Saving…' : 'Save MEMORY.md'}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleDeleteMemoryFile('long-term', { label: 'MEMORY.md' })}
+                        disabled={memorySaving || memoryLoading || !memoryLongTerm.trim()}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                        Delete
                       </Button>
                       <span className="text-xs text-muted-foreground">
                         {`${workspaceRoot}\\MEMORY.md`}
@@ -17484,12 +21385,221 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                     />
                     <div className="flex items-center gap-2">
                       <Button size="sm" onClick={handleSaveDailyMemory} disabled={memorySaving || memoryLoading || !memoryDailyDate}>
+                        <Save className="h-4 w-4" />
                         {memorySaving ? 'Saving…' : 'Save daily memory'}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleDeleteMemoryFile('daily', { date: memoryDailyDate, label: `memory/${memoryDailyDate}.md` })}
+                        disabled={memorySaving || memoryLoading || !memoryDailyDate || !memoryDaily.trim()}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                        Delete
                       </Button>
                       <span className="text-xs text-muted-foreground">
                         {`${workspaceRoot}\\memory\\${memoryDailyDate || 'YYYY-MM-DD'}.md`}
                       </span>
                     </div>
+                  </div>
+
+                  <div className="space-y-3 rounded-lg border border-border/70 bg-background/50 p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <div className="font-medium text-foreground">Session snapshots</div>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Compact notes saved from prior sessions under <code>memory/YYYY-MM-DD-*.md</code>.
+                        </p>
+                      </div>
+                      <div className="text-[11px] text-muted-foreground">
+                        {memorySnapshots.length} available
+                      </div>
+                    </div>
+                    {memorySnapshots.length > 0 ? (
+                      <div className="grid gap-3 lg:grid-cols-[minmax(190px,260px)_minmax(0,1fr)]">
+                        <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+                          {memorySnapshots.map((snapshot) => (
+                            <button
+                              key={snapshot.id}
+                              type="button"
+                              className={`w-full rounded-md border px-3 py-2 text-left ${memorySelectedSnapshotFileName === snapshot.fileName ? 'border-primary/50 bg-primary/5' : 'border-border/60 bg-card hover:bg-accent/40'}`}
+                              onClick={() => snapshot.fileName && handleSelectMemorySnapshot(snapshot.fileName)}
+                            >
+                              <div className="flex min-w-0 items-center gap-2">
+                                <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                <span className="min-w-0 truncate text-xs font-medium text-foreground">
+                                  {snapshot.fileName}
+                                </span>
+                              </div>
+                              <div className="mt-1 text-[11px] text-muted-foreground">
+                                {snapshot.updatedAt ? new Date(snapshot.updatedAt).toLocaleString() : 'Not saved'}
+                              </div>
+                              {snapshot.taskId && (
+                                <div className="mt-1 truncate text-[11px] text-muted-foreground">
+                                  task: {snapshot.taskId}
+                                </div>
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="min-w-0 space-y-3">
+                          {memorySelectedSnapshotFileName ? (
+                            <>
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="min-w-0">
+                                  <div className="truncate text-xs font-medium text-foreground">
+                                    {memorySelectedSnapshotFileName}
+                                  </div>
+                                  <div className="text-[11px] text-muted-foreground">
+                                    {memorySnapshots.find((snapshot) => snapshot.fileName === memorySelectedSnapshotFileName)?.relativePath}
+                                  </div>
+                                </div>
+                                <div className="flex shrink-0 items-center gap-2">
+                                  {memorySnapshots.find((snapshot) => snapshot.fileName === memorySelectedSnapshotFileName)?.taskId && (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-7 px-2 text-[11px]"
+                                      onClick={() => {
+                                        const taskId = memorySnapshots.find((snapshot) => snapshot.fileName === memorySelectedSnapshotFileName)?.taskId;
+                                        if (taskId) handleOpenMemoryTask(taskId);
+                                      }}
+                                    >
+                                      <ExternalLink className="h-3.5 w-3.5" />
+                                      Open task
+                                    </Button>
+                                  )}
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 px-2 text-[11px]"
+                                    onClick={() => handleDeleteMemoryFile('snapshot', {
+                                      fileName: memorySelectedSnapshotFileName,
+                                      label: memorySelectedSnapshotFileName,
+                                    })}
+                                    disabled={memorySaving || memoryLoading}
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                    Delete
+                                  </Button>
+                                </div>
+                              </div>
+                              <textarea
+                                key={`memory-snapshot-${activeAgentId || 'none'}-${memorySelectedSnapshotFileName}`}
+                                ref={memorySnapshotRef}
+                                defaultValue={memorySnapshotContent}
+                                onBlur={(e) => setMemorySnapshotContent(e.target.value)}
+                                className="w-full min-h-[180px] rounded-md border border-input bg-background px-3 py-2 text-sm"
+                                placeholder="Session snapshot content"
+                              />
+                              <Button size="sm" onClick={handleSaveMemorySnapshot} disabled={memorySaving || memoryLoading}>
+                                <Save className="h-4 w-4" />
+                                {memorySaving ? 'Saving…' : 'Save snapshot'}
+                              </Button>
+                            </>
+                          ) : (
+                            <div className="flex min-h-[180px] items-center justify-center rounded-md border border-dashed border-border/70 px-3 py-4 text-xs text-muted-foreground">
+                              Select a session snapshot to inspect or edit it.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="rounded-md border border-dashed border-border/70 px-3 py-4 text-xs text-muted-foreground">
+                        No session snapshots saved yet.
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="space-y-3 rounded-lg border border-border/70 bg-background/50 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="flex items-center gap-2 font-medium text-foreground">
+                          <History className="h-4 w-4 text-muted-foreground" />
+                          Learning history
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Recent automatic, staged, and manual memory changes. Staged changes can be applied or rolled back here.
+                        </p>
+                      </div>
+                      <Button size="sm" variant="outline" onClick={refreshMemoryState} disabled={memoryLoading}>
+                        <RotateCcw className="h-4 w-4" />
+                        Refresh
+                      </Button>
+                    </div>
+                    {memoryChanges.length > 0 ? (
+                      <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+                        {memoryChanges.map((change) => (
+                          <div key={change.id} className="rounded-md border border-border/60 bg-card px-3 py-2">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="min-w-0">
+                                <div className="truncate text-xs font-medium text-foreground">
+                                  {change.preview.file}
+                                </div>
+                                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+                                  <span>{change.kind}</span>
+                                  <span>{change.status}</span>
+                                  <span>{new Date(change.createdAt).toLocaleString()}</span>
+                                  {change.source && <span>source: {change.source}</span>}
+                                </div>
+                              </div>
+                              <div className="flex shrink-0 items-center gap-2">
+                                {change.taskId && (
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="h-7 px-2 text-[11px]"
+                                    onClick={() => handleOpenMemoryTask(change.taskId!)}
+                                    disabled={memorySaving}
+                                  >
+                                    <ExternalLink className="h-3.5 w-3.5" />
+                                    Task
+                                  </Button>
+                                )}
+                                {change.status === 'staged' && (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 px-2 text-[11px]"
+                                    onClick={() => handleApplyMemoryChange(change.id)}
+                                    disabled={memorySaving}
+                                  >
+                                    <CheckCircle2 className="h-3.5 w-3.5" />
+                                    Apply
+                                  </Button>
+                                )}
+                                {change.status !== 'reverted' && (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 px-2 text-[11px]"
+                                    onClick={() => handleRollbackMemoryChange(change.id)}
+                                    disabled={memorySaving}
+                                  >
+                                    <RotateCcw className="h-3.5 w-3.5" />
+                                    {change.status === 'staged' ? 'Discard' : 'Restore'}
+                                  </Button>
+                                )}
+                              </div>
+                            </div>
+                            {change.preview.afterExcerpt && (
+                              <div className="mt-2 line-clamp-3 whitespace-pre-wrap rounded-md bg-background/70 px-2 py-1.5 text-[11px] text-muted-foreground">
+                                {change.preview.afterExcerpt}
+                              </div>
+                            )}
+                            {change.status === 'reverted' && change.preview.beforeExcerpt && (
+                              <div className="mt-2 line-clamp-2 whitespace-pre-wrap rounded-md bg-background/70 px-2 py-1.5 text-[11px] text-muted-foreground">
+                                Restored previous content: {change.preview.beforeExcerpt}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="rounded-md border border-dashed border-border/70 px-3 py-4 text-xs text-muted-foreground">
+                        No memory learning changes recorded yet.
+                      </div>
+                    )}
                   </div>
                 </>
               ) : (
@@ -18286,6 +22396,18 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                   </p>
                 </div>
               )}
+              <div className="mt-5 flex flex-col gap-3 border-t border-border/60 pt-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <div className="font-medium text-foreground">Local search and audit</div>
+                  <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
+                    Search local history and inspect unified audit events.
+                  </p>
+                </div>
+                <Button size="sm" variant="outline" onClick={() => setSearchAuditOpen(true)}>
+                  <FileSearch className="h-4 w-4" />
+                  Open
+                </Button>
+              </div>
             </div>
             )}
           </section>
@@ -18354,9 +22476,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
             </div>
             )}
           </section>
-            </>
-          )}
-        </div>
+          </>
+        )}
 
         {creatingUserSkill && (
         <Dialog
@@ -18975,6 +23096,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
           </DialogContent>
         </Dialog>
         )}
+        <SearchAuditDialog open={searchAuditOpen} onOpenChange={setSearchAuditOpen} />
       </DialogContent>
     </Dialog>
   );

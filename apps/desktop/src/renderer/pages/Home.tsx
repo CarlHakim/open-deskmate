@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo, memo, type CSSProperties } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import TaskInputBar, { type TaskInputBarHandle } from '../components/landing/TaskInputBar';
@@ -15,7 +15,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { CheckCircle2, ChevronDown, Code, Sparkles, User } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import type { SelectedModel } from '@accomplish/shared';
+import type { AgentAppearance, SelectedModel } from '@accomplish/shared';
 import { createAppSlashCommands } from '../lib/app-commands';
 import { usePluginSlashCommands } from '../hooks/usePluginSlashCommands';
 import {
@@ -23,7 +23,12 @@ import {
   SELECTED_MODEL_CHANGED_EVENT,
 } from '../lib/selected-model-events';
 import { cn } from '@/lib/utils';
-import ChatBackgroundSwitcher, { useChatBackgroundSelection } from '@/components/chat/ChatBackgroundSwitcher';
+import ChatBackgroundSwitcher from '@/components/chat/ChatBackgroundSwitcher';
+import {
+  DEFAULT_CHAT_BACKGROUND_ID,
+  getChatBackground,
+  normalizeChatBackgroundId,
+} from '@/lib/chat-backgrounds';
 import { useTopBarControls } from '../stores/topBarControlsStore';
 
 // Import use case images for proper bundling in production
@@ -183,9 +188,11 @@ export default function HomePage() {
   const [globalWorkspace, setGlobalWorkspace] = useState<string | null>(null);
   const [globalSelectedModel, setGlobalSelectedModel] = useState<SelectedModel | null>(null);
   const [privacyMode, setPrivacyMode] = useState<'normal' | 'incognito'>('normal');
-  const { startTask, isLoading, addTaskUpdate, setPermissionRequest, error } = useTaskStore();
-  const { agents, activeAgentId, loadAgents } = useAgentStore();
+  const { startTask, isLoading, addTaskUpdate, error } = useTaskStore();
+  const { agents, activeAgentId, loadAgents, upsertAgent } = useAgentStore();
   const activeAgent = agents.find((agent) => agent.id === activeAgentId);
+  const [pendingAgentChatBackgroundId, setPendingAgentChatBackgroundId] = useState<string | null>(null);
+  const [pendingAgentAppearance, setPendingAgentAppearance] = useState<Partial<AgentAppearance>>({});
   const navigate = useNavigate();
   const location = useLocation();
   const accomplish = getAccomplish();
@@ -216,15 +223,10 @@ export default function HomePage() {
       addTaskUpdate(event);
     });
 
-    const unsubscribePermission = accomplish.onPermissionRequest((request) => {
-      setPermissionRequest(request);
-    });
-
     return () => {
       unsubscribeTask();
-      unsubscribePermission();
     };
-  }, [addTaskUpdate, setPermissionRequest, accomplish]);
+  }, [addTaskUpdate, accomplish]);
 
   useEffect(() => {
     void loadAgents();
@@ -355,12 +357,68 @@ export default function HomePage() {
   const defaultWorkspace = activeAgent?.workspaceRoot ?? globalWorkspace ?? null;
   const activeAgentDisplayName = activeAgent?.name || activeAgentId || 'main';
   const effectiveSelectedModel = activeAgent?.selectedModel ?? globalSelectedModel;
-  const {
-    selectedId: chatBackgroundId,
-    selectedBackground,
-    backgroundStyle: chatBackgroundStyle,
-    setSelectedId: setChatBackgroundId,
-  } = useChatBackgroundSelection();
+  useEffect(() => {
+    setPendingAgentChatBackgroundId(null);
+    setPendingAgentAppearance({});
+  }, [
+    activeAgent?.id,
+    activeAgent?.appearance?.accentColor,
+    activeAgent?.appearance?.answerStyle,
+    activeAgent?.appearance?.avatarFrame,
+    activeAgent?.appearance?.chatBackgroundId,
+    activeAgent?.appearance?.presenceAnimation,
+    activeAgent?.appearance?.reactionMode,
+    activeAgent?.appearance?.showAvatarOnAnswers,
+  ]);
+
+  const agentChatBackgroundId = normalizeChatBackgroundId(
+    pendingAgentChatBackgroundId
+    ?? activeAgent?.appearance?.chatBackgroundId
+    ?? DEFAULT_CHAT_BACKGROUND_ID
+  );
+  const effectiveAgentAppearance = useMemo<AgentAppearance>(() => ({
+    ...(activeAgent?.appearance || {}),
+    ...pendingAgentAppearance,
+  }), [activeAgent?.appearance, pendingAgentAppearance]);
+  const selectedBackground = getChatBackground(agentChatBackgroundId);
+  const chatBackgroundStyle = useMemo<CSSProperties>(() => {
+    if (!selectedBackground) return {};
+    return {
+      backgroundImage: `linear-gradient(135deg, hsl(var(--background) / 0.22), hsl(var(--background) / 0.38)), url("${selectedBackground.src}")`,
+      backgroundPosition: 'center',
+      backgroundSize: 'cover',
+      backgroundRepeat: 'no-repeat',
+    };
+  }, [selectedBackground]);
+  const handleUpdateAgentAppearance = useCallback((patch: Partial<AgentAppearance>) => {
+    const normalizedPatch: Partial<AgentAppearance> = { ...patch };
+    if (Object.prototype.hasOwnProperty.call(patch, 'chatBackgroundId')) {
+      const normalized = normalizeChatBackgroundId(patch.chatBackgroundId);
+      setPendingAgentChatBackgroundId(normalized);
+      normalizedPatch.chatBackgroundId = normalized === DEFAULT_CHAT_BACKGROUND_ID ? undefined : normalized;
+    }
+    setPendingAgentAppearance((prev) => ({ ...prev, ...normalizedPatch }));
+    const targetAgentId = String(activeAgentId || '').trim();
+    const targetAgent = useAgentStore.getState().agents.find((agent) => agent.id === targetAgentId);
+    if (!targetAgent) return;
+
+    const nextAppearance = {
+      ...(targetAgent.appearance || {}),
+      ...normalizedPatch,
+    };
+    const hasAppearance = Object.values(nextAppearance).some((value) => value !== undefined);
+    void upsertAgent({
+      id: targetAgent.id,
+      name: targetAgent.name,
+      appearance: hasAppearance ? nextAppearance : null,
+    }).catch(() => {
+      setPendingAgentChatBackgroundId(null);
+      setPendingAgentAppearance({});
+    });
+  }, [activeAgentId, upsertAgent]);
+  const handleSelectAgentChatBackground = useCallback((id: string) => {
+    handleUpdateAgentAppearance({ chatBackgroundId: id });
+  }, [handleUpdateAgentAppearance]);
   const landingModelBadgeLabel = useMemo(
     () => formatSelectedModelBadgeLabel(effectiveSelectedModel),
     [effectiveSelectedModel]
@@ -414,7 +472,15 @@ export default function HomePage() {
           className={cn('relative flex-1 overflow-y-auto bg-background', !selectedBackground && 'gradient-subtle')}
           style={chatBackgroundStyle}
         >
-          <ChatBackgroundSwitcher selectedId={chatBackgroundId} onSelect={setChatBackgroundId} />
+          <ChatBackgroundSwitcher
+            selectedId={agentChatBackgroundId}
+            onSelect={handleSelectAgentChatBackground}
+            appearance={effectiveAgentAppearance}
+            onAppearanceChange={handleUpdateAgentAppearance}
+            agentAvatar={activeAgent?.avatar}
+            agentAvatarColor={activeAgent?.avatarColor}
+            agentAvatarImageDataUrl={activeAgent?.avatarImageDataUrl}
+          />
           <div className="min-h-full flex items-center justify-center p-8">
             <div className="w-full max-w-4xl flex flex-col items-center gap-10">
         {/* Main Title */}

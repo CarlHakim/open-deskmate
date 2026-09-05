@@ -1,12 +1,32 @@
 import { randomUUID } from 'crypto';
-import type { ProviderType, SelectedModel, UserSkillGenerateFromTaskRequest, UserSkillGenerateFromTaskResponse, UserSkillWorkflowDraft } from '@accomplish/shared';
+import fs from 'fs';
+import path from 'path';
+import type {
+  ProviderType,
+  SelectedModel,
+  UserSkillAutomationDraftRecord,
+  UserSkillAutomationMode,
+  UserSkillGenerateFromTaskRequest,
+  UserSkillGenerateFromTaskResponse,
+  UserSkillPostTaskAutomationRequest,
+  UserSkillPostTaskAutomationResult,
+  UserSkillSource,
+  UserSkillTaskReusabilityEvaluation,
+  UserSkillWorkflowDraft,
+} from '@accomplish/shared';
 import { getModelEntry } from './context/model-registry';
 import { addTurnLog } from '../store/tokenUsage';
-import { getTask } from '../store/taskHistory';
+import { getTask, type StoredTask } from '../store/taskHistory';
 import { getApiKey } from '../store/secureStorage';
-import { resolveSelectedModelForAgent } from './agent-context';
+import { getAgentContext, resolveSelectedModelForAgent } from './agent-context';
 import { getModelProvider } from './model-providers';
 import { buildOpenAICompatibleChatCompletionsUrl } from './openai-compatible';
+import {
+  getManagedSkillsDir,
+  listUserSkills,
+  resolveUserSkillAutomationMode,
+  writeUserSkillFile,
+} from './user-skills';
 
 const SYSTEM_PROMPT = [
   'You are Deskmate.',
@@ -52,6 +72,19 @@ const SYSTEM_PROMPT = [
   '- Do not include secrets.',
   '- IMPORTANT: This app runs on Windows often. Do NOT require "bash" unless the user explicitly asked for bash. Prefer cmd.exe, PowerShell, or Node-based commands.',
 ].join('\n');
+
+const AUTOMATION_STORE_DIR = '.automation';
+const AUTOMATION_DRAFTS_FILE = 'skill-drafts.json';
+const MAX_STAGED_DRAFTS = 100;
+const AUTOMATIC_SAVE_CONFIDENCE = 0.72;
+const STAGE_CONFIDENCE = 0.52;
+
+type GeneratedDraftAutomationReadiness = {
+  automatic: boolean;
+  confidence: number;
+  reasons: string[];
+  blockers: string[];
+};
 
 function modelIdFromSelectedModel(selectedModel: SelectedModel): string {
   const raw = selectedModel.model || '';
@@ -248,6 +281,10 @@ function yamlQuoted(value: string): string {
   return JSON.stringify(String(value || ''));
 }
 
+function escapeRegExp(value: string): string {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 const SKILL_NAME_STOP_WORDS = new Set([
   'a',
   'an',
@@ -333,8 +370,58 @@ const SKILL_ACTION_WORDS = new Set([
   'workflow',
 ]);
 
-function skillNameTokens(value: string, includeActionWords = true): string[] {
+const SKILL_TARGET_GENERIC_WORDS = new Set([
+  'app',
+  'apps',
+  'article',
+  'client',
+  'clients',
+  'component',
+  'components',
+  'data',
+  'document',
+  'documents',
+  'file',
+  'files',
+  'folder',
+  'folders',
+  'image',
+  'images',
+  'issue',
+  'issues',
+  'page',
+  'pages',
+  'photo',
+  'photos',
+  'place',
+  'places',
+  'project',
+  'projects',
+  'repo',
+  'repository',
+  'result',
+  'results',
+  'site',
+  'source',
+  'sources',
+  'link',
+  'links',
+  'task',
+  'tasks',
+  'town',
+  'workflow',
+  'workflows',
+]);
+
+function splitNameLikeText(value: string): string {
   return String(value || '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/[._/\\:]+/g, ' ');
+}
+
+function skillNameTokens(value: string, includeActionWords = true): string[] {
+  return splitNameLikeText(value)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
     .split(/\s+/)
@@ -342,6 +429,12 @@ function skillNameTokens(value: string, includeActionWords = true): string[] {
     .filter((token) => token.length > 2)
     .filter((token) => !SKILL_NAME_STOP_WORDS.has(token))
     .filter((token) => includeActionWords || !SKILL_ACTION_WORDS.has(token));
+}
+
+function targetSpecificTokens(value: string): string[] {
+  return skillNameTokens(value, false)
+    .filter((token) => !SKILL_TARGET_GENERIC_WORDS.has(token))
+    .filter((token) => !/^\d+$/.test(token));
 }
 
 function normalizedNameForComparison(value: string): string {
@@ -353,6 +446,42 @@ function firstMarkdownHeading(skillMd: string): string {
   return match?.[1]?.trim().replace(/\s+#*$/, '') || '';
 }
 
+function promptTargetTokenSet(prompt: string): Set<string> {
+  const text = String(prompt || '');
+  const targets = new Set<string>();
+  const addTokens = (value: string) => {
+    for (const token of targetSpecificTokens(value)) {
+      targets.add(token);
+    }
+  };
+
+  for (const match of text.matchAll(/[`"']([^`"']{3,120})[`"']/g)) {
+    addTokens(match[1] || '');
+  }
+
+  for (const match of text.matchAll(/\b[A-Za-z]:[\\/][^\s"'`]+|(?:[./\\]?[\w.-]+[\\/])+[\w.-]+/g)) {
+    addTokens(match[0] || '');
+  }
+
+  for (const match of text.matchAll(/\b[\w.-]+\.(?:tsx?|jsx?|mjs|cjs|json|md|mdx|ya?ml|toml|css|scss|html|py|go|rs|java|kt|swift|cs|cpp|c|h|sql|csv|xlsx?|docx?|pptx?|pdf|png|jpe?g|webp|svg|gif)\b/gi)) {
+    addTokens(match[0] || '');
+  }
+
+  for (const match of text.matchAll(/\b(?:of|about|for|called|named|from|in|at|with|using|inside|within|against|into|under)\s+([^,.!?;\n]{3,120})/gi)) {
+    const phrase = String(match[1] || '')
+      .replace(/\b(?:please|and|then|that|where|which|while|without|before|after)\b[\s\S]*$/i, '')
+      .trim();
+    addTokens(phrase);
+  }
+
+  const words = text.match(/\b[A-Z][A-Za-z0-9]*(?:[A-Z][A-Za-z0-9]*)?\b/g) || [];
+  for (const word of words.slice(0, 40)) {
+    addTokens(word);
+  }
+
+  return targets;
+}
+
 function looksTaskSpecificName(name: string, prompt: string): boolean {
   const normalizedName = normalizedNameForComparison(name);
   if (!normalizedName) return false;
@@ -360,6 +489,11 @@ function looksTaskSpecificName(name: string, prompt: string): boolean {
 
   const nameTokens = skillNameTokens(name, true);
   if (nameTokens.length === 0) return false;
+
+  const targetTokens = promptTargetTokenSet(prompt);
+  const nameSpecificTokens = targetSpecificTokens(name);
+  const targetOverlap = nameSpecificTokens.filter((token) => targetTokens.has(token)).length;
+  if (targetOverlap >= 1) return true;
 
   const promptTokens = new Set(skillNameTokens(prompt, true));
   const promptSpecificTokens = new Set(skillNameTokens(prompt, false));
@@ -381,6 +515,113 @@ function genericPromptName(prompt: string): string {
   const title = titleFromText(cleaned, '');
   if (!title || looksTaskSpecificName(title, prompt)) return '';
   return /\b(workflow|skill|process)\b/i.test(title) ? title : `${title} Workflow`;
+}
+
+function isPathLikeTarget(value: string): boolean {
+  return /\b[A-Za-z]:[\\/]/.test(value)
+    || /(?:[./\\]?[\w.-]+[\\/])+[\w.-]+/.test(value)
+    || /\b[\w.-]+\.(?:tsx?|jsx?|mjs|cjs|json|md|mdx|ya?ml|toml|css|scss|html|py|go|rs|java|kt|swift|cs|cpp|c|h|sql|csv|xlsx?|docx?|pptx?|pdf|png|jpe?g|webp|svg|gif)\b/i.test(value);
+}
+
+function placeholderForPromptTarget(prompt: string, phrase: string): string {
+  if (isPathLikeTarget(phrase)) return '<file>';
+  if (isImageGalleryPrompt(prompt)) return '<place>';
+  if (/\b(document|doc|pdf|spreadsheet|sheet|deck|slide|file)\b/i.test(prompt)) return '<document>';
+  if (/\b(repo|repository|codebase|project|app|website|component|runtime|bug|fix|implement|build)\b/i.test(prompt)) return '<target>';
+  if (/\b(research|look up|find|compare|summari[sz]e|overview|report)\b/i.test(prompt)) return '<topic>';
+  return '<target>';
+}
+
+function cleanReplacementPhrase(value: string): string {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .replace(/^[\s"'`([{<]+|[\s"'`)\]}>.,;:!?]+$/g, '')
+    .trim();
+}
+
+function collectTargetReplacementPhrases(prompt: string): Array<{ phrase: string; placeholder: string }> {
+  const promptText = String(prompt || '');
+  const replacements = new Map<string, { phrase: string; placeholder: string }>();
+  const addPhrase = (raw: string, placeholder?: string) => {
+    const phrase = cleanReplacementPhrase(raw);
+    if (phrase.length < 3 || phrase.length > 160) return;
+    if (/^<[^>\n]+>$/.test(phrase)) return;
+    const specificTokens = targetSpecificTokens(phrase);
+    if (specificTokens.length === 0 && !isPathLikeTarget(phrase)) return;
+    const lower = phrase.toLowerCase();
+    if (SKILL_ACTION_WORDS.has(lower) || SKILL_TARGET_GENERIC_WORDS.has(lower)) return;
+    replacements.set(lower, {
+      phrase,
+      placeholder: placeholder || placeholderForPromptTarget(promptText, phrase),
+    });
+  };
+
+  for (const match of promptText.matchAll(/[`"']([^`"']{3,120})[`"']/g)) {
+    addPhrase(match[1] || '');
+  }
+
+  for (const match of promptText.matchAll(/\b[A-Za-z]:[\\/][^\s"'`]+|(?:[./\\]?[\w.-]+[\\/])+[\w.-]+/g)) {
+    const phrase = match[0] || '';
+    addPhrase(phrase, '<file>');
+    const base = path.basename(phrase);
+    addPhrase(base, '<file>');
+    addPhrase(base.replace(/\.[^.]+$/, ''), '<file>');
+  }
+
+  for (const match of promptText.matchAll(/\b[\w.-]+\.(?:tsx?|jsx?|mjs|cjs|json|md|mdx|ya?ml|toml|css|scss|html|py|go|rs|java|kt|swift|cs|cpp|c|h|sql|csv|xlsx?|docx?|pptx?|pdf|png|jpe?g|webp|svg|gif)\b/gi)) {
+    const phrase = match[0] || '';
+    addPhrase(phrase, '<file>');
+    addPhrase(phrase.replace(/\.[^.]+$/, ''), '<file>');
+  }
+
+  for (const match of promptText.matchAll(/\b(?:of|about|for|called|named|from|in|at|inside|within|against|into|under)\s+([^,.!?;\n]{3,120})/gi)) {
+    const phrase = String(match[1] || '')
+      .replace(/\b(?:please|and|then|that|where|which|while|without|before|after|with|using)\b[\s\S]*$/i, '')
+      .trim();
+    addPhrase(phrase);
+  }
+
+  for (const match of promptText.matchAll(/\b[A-Z][A-Za-z0-9._-]*(?:\s+[A-Z][A-Za-z0-9._-]*){0,3}\b/g)) {
+    addPhrase(match[0] || '');
+  }
+
+  return Array.from(replacements.values())
+    .filter((entry) => entry.phrase.length >= 3)
+    .sort((a, b) => b.phrase.length - a.phrase.length);
+}
+
+function replaceTargetPhrase(text: string, phrase: string, placeholder: string): string {
+  if (!text || !phrase) return text;
+  const escaped = escapeRegExp(phrase);
+  const isWordLike = /^[A-Za-z0-9][A-Za-z0-9 _.-]*[A-Za-z0-9]$/.test(phrase);
+  const pattern = isWordLike
+    ? new RegExp(`(?<![A-Za-z0-9_-])${escaped}(?![A-Za-z0-9_-])`, 'gi')
+    : new RegExp(escaped, 'gi');
+  return text.replace(pattern, placeholder);
+}
+
+function generalizeTargetText(text: string, prompt: string): string {
+  let out = String(text || '');
+  for (const replacement of collectTargetReplacementPhrases(prompt)) {
+    out = replaceTargetPhrase(out, replacement.phrase, replacement.placeholder);
+  }
+  return out
+    .replace(/(<place>)(?:\s+(?:in|from|of|at)\s+(?:the\s+)?<place>)+/gi, '$1')
+    .replace(/(<file>)(?:\s+(?:in|from|of|at)\s+(?:the\s+)?<file>)+/gi, '$1')
+    .replace(/\s+([.,;:!?])/g, '$1');
+}
+
+function generalizeSkillMarkdownTargets(skillMd: string, prompt: string): string {
+  const split = splitSkillMarkdown(skillMd);
+  const body = split.bodyLines.join('\n');
+  const generalizedBody = generalizeTargetText(body, prompt);
+  if (!split.hasFrontMatter) return generalizedBody.trim();
+  return [
+    '---',
+    ...split.frontMatterLines,
+    '---',
+    ...generalizedBody.replace(/^\n+/, '').split(/\n/),
+  ].join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 function reusableIdentityForDraft(params: {
@@ -749,6 +990,784 @@ function applySkillIdentityToFrontmatter(params: {
   return next.join('\n').trim();
 }
 
+function applySkillHeading(params: { skillMd: string; name: string }): string {
+  const raw = normalizeSkillMarkdownText(params.skillMd);
+  const lines = raw.split(/\n/);
+  const endIdx = lines[0]?.trim() === '---'
+    ? lines.findIndex((line, index) => index > 0 && line.trim() === '---')
+    : -1;
+  const startIndex = endIdx >= 0 ? endIdx + 1 : 0;
+  for (let index = startIndex; index < lines.length; index += 1) {
+    if (!/^#\s+\S/.test(lines[index] || '')) continue;
+    lines[index] = `# ${params.name}`;
+    return lines.join('\n').trim();
+  }
+  lines.splice(startIndex, 0, '', `# ${params.name}`, '');
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+type SkillMarkdownSplit = {
+  frontMatterLines: string[];
+  bodyLines: string[];
+  hasFrontMatter: boolean;
+};
+
+function splitSkillMarkdown(raw: string): SkillMarkdownSplit {
+  const lines = normalizeSkillMarkdownText(raw).split(/\n/);
+  if (lines[0]?.trim() !== '---') {
+    return {
+      frontMatterLines: [],
+      bodyLines: lines,
+      hasFrontMatter: false,
+    };
+  }
+  const endIdx = lines.findIndex((line, index) => index > 0 && line.trim() === '---');
+  if (endIdx === -1) {
+    return {
+      frontMatterLines: [],
+      bodyLines: lines,
+      hasFrontMatter: false,
+    };
+  }
+  return {
+    frontMatterLines: lines.slice(1, endIdx),
+    bodyLines: lines.slice(endIdx + 1),
+    hasFrontMatter: true,
+  };
+}
+
+function stripMetadataFromFrontMatter(frontMatterLines: string[]): { cleanLines: string[]; metadata: Record<string, unknown> } {
+  const cleanLines: string[] = [];
+  let metadata: Record<string, unknown> = {};
+
+  for (let i = 0; i < frontMatterLines.length; i += 1) {
+    const line = frontMatterLines[i] ?? '';
+    const match = line.match(/^([A-Za-z0-9_-]+)\s*:\s*(.*)$/);
+    if (!match || /^\s/.test(line)) {
+      cleanLines.push(line);
+      continue;
+    }
+
+    const key = String(match[1] || '').trim().toLowerCase();
+    const rawValue = String(match[2] || '').trim();
+    if (key !== 'metadata') {
+      cleanLines.push(line);
+      continue;
+    }
+
+    if (rawValue === '|' || rawValue === '>') {
+      const block: string[] = [];
+      i += 1;
+      while (i < frontMatterLines.length) {
+        const next = frontMatterLines[i] ?? '';
+        if (!next.trim()) {
+          block.push('');
+          i += 1;
+          continue;
+        }
+        if (!/^\s/.test(next)) {
+          i -= 1;
+          break;
+        }
+        block.push(next.replace(/^\s{2,}/, ''));
+        i += 1;
+      }
+      const rawJson = block.join('\n').trim();
+      if (rawJson.startsWith('{')) {
+        try {
+          const parsed = JSON.parse(rawJson);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            metadata = parsed as Record<string, unknown>;
+          }
+        } catch {
+          // Leave invalid metadata behind; the generated draft will receive fresh metadata.
+        }
+      }
+      continue;
+    }
+  }
+
+  return { cleanLines, metadata };
+}
+
+function renderMetadataFrontMatterLines(metadata: Record<string, unknown>): string[] {
+  return [
+    'metadata: |',
+    ...JSON.stringify(metadata, null, 2).split('\n').map((line) => `  ${line}`),
+  ];
+}
+
+function upsertAutomationMetadata(params: {
+  skillMd: string;
+  skillId: string;
+  agentId?: string;
+  agentName?: string;
+  taskId: string;
+  mode: UserSkillAutomationMode;
+  draftId: string;
+  evaluation: UserSkillTaskReusabilityEvaluation;
+  applied: boolean;
+  nowIso?: string;
+}): string {
+  const nowIso = params.nowIso || new Date().toISOString();
+  const split = splitSkillMarkdown(params.skillMd);
+  const { cleanLines, metadata } = stripMetadataFromFrontMatter(split.frontMatterLines);
+  const existingOpenDeskmate =
+    metadata.opendeskmate && typeof metadata.opendeskmate === 'object' && !Array.isArray(metadata.opendeskmate)
+      ? metadata.opendeskmate as Record<string, unknown>
+      : {};
+  const existingVisibility =
+    existingOpenDeskmate.visibility && typeof existingOpenDeskmate.visibility === 'object' && !Array.isArray(existingOpenDeskmate.visibility)
+      ? existingOpenDeskmate.visibility as Record<string, unknown>
+      : {};
+
+  const nextOpenDeskmate: Record<string, unknown> = {
+    ...existingOpenDeskmate,
+    skillKey: String(existingOpenDeskmate.skillKey || params.skillId),
+    generatedBy: String(existingOpenDeskmate.generatedBy || 'hermes-task-automation'),
+    generatedByAgentName: String(existingOpenDeskmate.generatedByAgentName || params.agentName || '').trim() || undefined,
+    generatedByAgentId: String(existingOpenDeskmate.generatedByAgentId || params.agentId || '').trim() || undefined,
+    origin: String(existingOpenDeskmate.origin || 'post-task-automation'),
+    requiresReview: !params.applied,
+    automation: {
+      mode: params.mode,
+      confidence: params.evaluation.confidence,
+      confidenceLabel: params.evaluation.confidenceLabel,
+      sourceTaskId: params.taskId,
+      draftId: params.draftId,
+      reason: automationReasonFromEvaluation(params.evaluation, params.applied),
+      reasons: params.evaluation.reasons.slice(0, 8),
+      ...(params.applied ? { appliedAt: nowIso } : { stagedAt: nowIso }),
+    },
+  };
+
+  if (params.agentId) {
+    nextOpenDeskmate.visibility = {
+      ...existingVisibility,
+      scope: existingVisibility.scope || 'private',
+      ownerAgentId: existingVisibility.ownerAgentId || params.agentId,
+      sharedWithAgentIds: Array.isArray(existingVisibility.sharedWithAgentIds)
+        ? existingVisibility.sharedWithAgentIds
+        : [],
+    };
+  }
+
+  const nextMetadata: Record<string, unknown> = {
+    ...metadata,
+    opendeskmate: Object.fromEntries(
+      Object.entries(nextOpenDeskmate).filter(([, value]) => value !== undefined)
+    ),
+  };
+
+  const frontMatterLines = [
+    ...cleanLines.filter((line, index, arr) => {
+      if (line.trim()) return true;
+      return arr.slice(index + 1).some((later) => later.trim());
+    }),
+    ...renderMetadataFrontMatterLines(nextMetadata),
+  ];
+  const bodyLines = split.hasFrontMatter ? split.bodyLines : split.bodyLines;
+  return [
+    '---',
+    ...frontMatterLines,
+    '---',
+    ...bodyLines,
+  ].join('\n').replace(/\n{3,}/g, '\n\n').trim() + '\n';
+}
+
+function automationDraftStorePath(): string {
+  return path.join(getManagedSkillsDir(), AUTOMATION_STORE_DIR, AUTOMATION_DRAFTS_FILE);
+}
+
+function readAutomationDraftRecords(): UserSkillAutomationDraftRecord[] {
+  const filePath = automationDraftStorePath();
+  if (!fs.existsSync(filePath)) return [];
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as { drafts?: unknown };
+    if (!Array.isArray(parsed.drafts)) return [];
+    return parsed.drafts
+      .filter((entry): entry is UserSkillAutomationDraftRecord =>
+        Boolean(entry && typeof entry === 'object' && (entry as UserSkillAutomationDraftRecord).id)
+      )
+      .slice(0, MAX_STAGED_DRAFTS);
+  } catch {
+    return [];
+  }
+}
+
+function writeAutomationDraftRecords(records: UserSkillAutomationDraftRecord[]): void {
+  const filePath = automationDraftStorePath();
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(
+    filePath,
+    JSON.stringify({ drafts: records.slice(0, MAX_STAGED_DRAFTS) }, null, 2),
+    'utf8'
+  );
+}
+
+export function listStagedUserSkillAutomationDrafts(params?: { agentId?: string }): UserSkillAutomationDraftRecord[] {
+  const records = readAutomationDraftRecords()
+    .filter((record) => record.status === 'staged')
+    .filter((record) => !params?.agentId || record.agentId === params.agentId)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return records;
+}
+
+function stageAutomationDraftRecord(params: {
+  taskId: string;
+  agentId?: string;
+  mode: UserSkillAutomationMode;
+  draft: UserSkillWorkflowDraft;
+  evaluation: UserSkillTaskReusabilityEvaluation;
+  nowIso?: string;
+}): UserSkillAutomationDraftRecord {
+  const nowIso = params.nowIso || new Date().toISOString();
+  const draftId = randomUUID();
+  const record: UserSkillAutomationDraftRecord = {
+    id: draftId,
+    taskId: params.taskId,
+    agentId: params.agentId,
+    mode: params.mode,
+    status: 'staged',
+    createdAt: nowIso,
+    reason: automationReasonFromEvaluation(params.evaluation, false),
+    draft: {
+      ...params.draft,
+      skillMd: upsertAutomationMetadata({
+        skillMd: params.draft.skillMd,
+        skillId: params.draft.skillId,
+        agentId: params.agentId,
+        taskId: params.taskId,
+        mode: params.mode,
+        draftId,
+        evaluation: params.evaluation,
+        applied: false,
+        nowIso,
+      }),
+    },
+    evaluation: params.evaluation,
+  };
+  const records = [record, ...readAutomationDraftRecords().filter((entry) => entry.id !== draftId)];
+  writeAutomationDraftRecords(records);
+  return record;
+}
+
+function clampConfidence(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(1, Number(value.toFixed(2))));
+}
+
+function confidenceLabel(confidence: number): UserSkillTaskReusabilityEvaluation['confidenceLabel'] {
+  if (confidence >= AUTOMATIC_SAVE_CONFIDENCE) return 'high';
+  if (confidence >= STAGE_CONFIDENCE) return 'medium';
+  return 'low';
+}
+
+function automationReasonFromEvaluation(
+  evaluation: UserSkillTaskReusabilityEvaluation,
+  applied: boolean
+): string {
+  const prefix = applied ? 'Applied' : 'Staged';
+  const reason = evaluation.reasons[0] || evaluation.blockers[0] || 'Task looked reusable enough for skill learning.';
+  return `${prefix} from completed task with ${evaluation.confidenceLabel} confidence: ${reason}`;
+}
+
+function taskMessageText(task: Pick<StoredTask, 'prompt' | 'summary' | 'messages'>): string {
+  return [
+    task.prompt,
+    task.summary,
+    ...(task.messages || []).map((message) => message.content || ''),
+  ].join('\n');
+}
+
+export function evaluateTaskForSkillReuse(
+  task: Pick<StoredTask, 'prompt' | 'summary' | 'status' | 'messages' | 'privacyMode'>
+): UserSkillTaskReusabilityEvaluation {
+  const reasons: string[] = [];
+  const blockers: string[] = [];
+  let score = 0;
+
+  if (task.status !== 'completed') {
+    blockers.push('Task is not completed.');
+  }
+  if (task.privacyMode === 'incognito') {
+    blockers.push('Incognito tasks are not used for automatic skill learning.');
+  }
+
+  const prompt = String(task.prompt || '').trim();
+  const text = taskMessageText(task).toLowerCase();
+  const messages = task.messages || [];
+  const toolCount = messages.filter((message) => message.type === 'tool').length;
+  const assistantCount = messages.filter((message) => message.type === 'assistant').length;
+
+  if (prompt.length < 18) {
+    blockers.push('Prompt is too short to infer a reusable workflow.');
+  } else {
+    score += 0.12;
+  }
+
+  if (task.summary && task.summary.trim().length > 20) {
+    score += 0.1;
+    reasons.push('Task has a useful summary.');
+  }
+
+  if (toolCount >= 2) {
+    score += 0.24;
+    reasons.push('Workflow used multiple tool calls.');
+  } else if (toolCount === 1) {
+    score += 0.1;
+    reasons.push('Workflow used a tool call.');
+  }
+
+  if (assistantCount >= 2 || messages.length >= 5) {
+    score += 0.12;
+    reasons.push('Task had enough steps to generalize.');
+  }
+
+  if (/\b(workflow|repeat|reusable|template|process|standard|checklist|playbook|steps?)\b/i.test(text)) {
+    score += 0.16;
+    reasons.push('Task text suggests repeatable procedure.');
+  }
+
+  if (/\b(build|implement|fix|debug|research|compare|summari[sz]e|generate|create|update|audit|review|analy[sz]e|collect|find)\b/i.test(prompt)) {
+    score += 0.12;
+    reasons.push('Prompt has a reusable task verb.');
+  }
+
+  if (/\b(verify|test|check|source|fallback|format|criteria|requirements?)\b/i.test(text)) {
+    score += 0.1;
+    reasons.push('Task included checks, sources, or constraints.');
+  }
+
+  if (/\b(thanks|thank you|yes|no|ok|okay|cool|great|hello|hi)\b\.?$/i.test(prompt) && prompt.length < 40) {
+    score -= 0.3;
+    blockers.push('Prompt looks conversational rather than procedural.');
+  }
+
+  if (/\b(password|secret|token|api key|credential|private key)\b/i.test(text)) {
+    score -= 0.2;
+    blockers.push('Task appears to involve secrets or credentials.');
+  }
+
+  const confidence = clampConfidence(blockers.length > 0 ? Math.min(score, 0.49) : score);
+  return {
+    reusable: blockers.length === 0 && confidence >= STAGE_CONFIDENCE,
+    confidence,
+    confidenceLabel: confidenceLabel(confidence),
+    reasons,
+    blockers,
+  };
+}
+
+function isGeneratedSkillMetadata(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const metadata = value as Record<string, unknown>;
+  const env =
+    metadata.opendeskmate && typeof metadata.opendeskmate === 'object'
+      ? metadata.opendeskmate as Record<string, unknown>
+      : metadata.clawdbot && typeof metadata.clawdbot === 'object'
+        ? metadata.clawdbot as Record<string, unknown>
+        : {};
+  const markers = [
+    env.generatedBy,
+    env.origin,
+    env.createdBy,
+  ].map((entry) => String(entry || '').trim().toLowerCase());
+  return markers.some((marker) =>
+    marker.includes('task-save-skill')
+    || marker.includes('hermes')
+    || marker === 'agent-auto'
+    || marker === 'agent_auto'
+    || marker === 'agent-user-instruction'
+  );
+}
+
+function isAutomationOwnedSkillMetadata(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const metadata = value as Record<string, unknown>;
+  const env =
+    metadata.opendeskmate && typeof metadata.opendeskmate === 'object'
+      ? metadata.opendeskmate as Record<string, unknown>
+      : metadata.clawdbot && typeof metadata.clawdbot === 'object'
+        ? metadata.clawdbot as Record<string, unknown>
+        : {};
+  const automation = env.automation && typeof env.automation === 'object' && !Array.isArray(env.automation)
+    ? env.automation as Record<string, unknown>
+    : {};
+  const markers = [
+    env.generatedBy,
+    env.origin,
+    env.createdBy,
+  ].map((entry) => String(entry || '').trim().toLowerCase());
+
+  if (String(env.origin || '').trim().toLowerCase() === 'post-task-automation') return true;
+  if (String(env.generatedBy || '').trim().toLowerCase().includes('hermes-task-automation')) return true;
+  if (String(automation.appliedAt || '').trim()) return true;
+  if (String(automation.mode || '').trim().toLowerCase() === 'automatic' && String(automation.sourceTaskId || '').trim()) {
+    return true;
+  }
+  return markers.some((marker) => marker === 'agent-auto' || marker === 'agent_auto');
+}
+
+type ListedUserSkill = ReturnType<typeof listUserSkills>['skills'][number];
+
+function metadataEnvelope(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const metadata = value as Record<string, unknown>;
+  if (metadata.opendeskmate && typeof metadata.opendeskmate === 'object' && !Array.isArray(metadata.opendeskmate)) {
+    return metadata.opendeskmate as Record<string, unknown>;
+  }
+  if (metadata.clawdbot && typeof metadata.clawdbot === 'object' && !Array.isArray(metadata.clawdbot)) {
+    return metadata.clawdbot as Record<string, unknown>;
+  }
+  return {};
+}
+
+function normalizedIdentityKey(value: unknown): string {
+  return normalizeSkillId(String(value || '').trim()).toLowerCase();
+}
+
+function skillMetadataKey(skill: ListedUserSkill): string {
+  const env = metadataEnvelope(skill.metadata);
+  return normalizedIdentityKey(env.skillKey || skill.id);
+}
+
+function draftMetadataKey(draft: UserSkillWorkflowDraft): string {
+  const split = splitSkillMarkdown(draft.skillMd);
+  const { metadata } = stripMetadataFromFrontMatter(split.frontMatterLines);
+  const env = metadataEnvelope(metadata);
+  return normalizedIdentityKey(env.skillKey || draft.skillId);
+}
+
+function normalizeAgentIdForComparison(value: unknown): string {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64);
+}
+
+function canModifySkillForAgent(skill: ListedUserSkill, agentId?: string): boolean {
+  const ownerAgentId = normalizeAgentIdForComparison(skill.visibilityOwnerAgentId);
+  if (!ownerAgentId) return true;
+  const requesterAgentId = normalizeAgentIdForComparison(agentId)
+    || normalizeAgentIdForComparison(getAgentContext(agentId).agentId);
+  if (!requesterAgentId) return true;
+  return requesterAgentId === ownerAgentId;
+}
+
+function uniqueManagedSkillId(baseSkillId: string, takenIds: Set<string>): string {
+  const base = normalizeSkillId(baseSkillId);
+  if (!takenIds.has(base) && !fs.existsSync(path.join(getManagedSkillsDir(), base))) return base;
+
+  for (let index = 2; index < 10_000; index += 1) {
+    const suffix = `-${index}`;
+    const candidate = `${base.slice(0, Math.max(1, 64 - suffix.length))}${suffix}`;
+    if (takenIds.has(candidate)) continue;
+    if (fs.existsSync(path.join(getManagedSkillsDir(), candidate))) continue;
+    return candidate;
+  }
+
+  return `${base.slice(0, 54)}-${Date.now().toString(36)}`.slice(0, 64);
+}
+
+function skillIdentityTokens(value: string): Set<string> {
+  return new Set(
+    skillNameTokens(value, true)
+      .filter((token) => !SKILL_TARGET_GENERIC_WORDS.has(token))
+      .filter((token) => token !== 'skill' && token !== 'workflow' && token !== 'process')
+  );
+}
+
+function skillIdentitySimilarity(a: string, b: string): number {
+  const left = skillIdentityTokens(a);
+  const right = skillIdentityTokens(b);
+  if (left.size === 0 || right.size === 0) return 0;
+  let overlap = 0;
+  for (const token of left) {
+    if (right.has(token)) overlap += 1;
+  }
+  return overlap / Math.max(left.size, right.size);
+}
+
+function findGeneratedSkillUpdateTarget(
+  skills: ListedUserSkill[],
+  draft: UserSkillWorkflowDraft
+): ListedUserSkill | undefined {
+  const exact = skills.find((skill) => skill.id === draft.skillId);
+  if (
+    exact?.editable
+    && (exact.manifest?.state ?? 'active') === 'active'
+    && isAutomationOwnedSkillMetadata(exact.metadata)
+  ) {
+    return exact;
+  }
+
+  const draftIdentity = `${draft.skillId} ${draft.name} ${draft.description || ''}`;
+  const candidates = skills
+    .filter((skill) =>
+      skill.editable
+      && (skill.manifest?.state ?? 'active') === 'active'
+      && isAutomationOwnedSkillMetadata(skill.metadata)
+    )
+    .map((skill) => ({
+      skill,
+      score: skillIdentitySimilarity(draftIdentity, `${skill.id} ${skill.name} ${skill.description || ''}`),
+    }))
+    .filter((entry) => entry.score >= 0.82)
+    .sort((a, b) => b.score - a.score);
+
+  return candidates[0]?.skill;
+}
+
+function generatedSkillPriority(skill: ListedUserSkill, agentId?: string): number {
+  const perf = skill.manifest?.performance;
+  return (
+    (canModifySkillForAgent(skill, agentId) ? 1_000 : 0)
+    + (isAutomationOwnedSkillMetadata(skill.metadata) ? 100 : 0)
+    + (skill.source === 'managed' ? 20 : 0)
+    + (skill.id.match(/-\d+$/) ? 0 : 10)
+    + ((perf?.successCount ?? 0) * 3)
+    + (perf?.samples ?? 0)
+  );
+}
+
+function findGeneratedSkillDuplicateTarget(
+  skills: ListedUserSkill[],
+  draft: UserSkillWorkflowDraft,
+  agentId?: string
+): ListedUserSkill | undefined {
+  const draftKey = draftMetadataKey(draft);
+  const draftIdentity = `${draft.skillId} ${draft.name} ${draft.description || ''}`;
+  const activeGenerated = skills
+    .filter((skill) =>
+      skill.editable
+      && (skill.manifest?.state ?? 'active') === 'active'
+      && isGeneratedSkillMetadata(skill.metadata)
+    );
+
+  const exactKeyMatches = activeGenerated
+    .filter((skill) => skillMetadataKey(skill) === draftKey)
+    .sort((a, b) => generatedSkillPriority(b, agentId) - generatedSkillPriority(a, agentId));
+  if (exactKeyMatches[0]) return exactKeyMatches[0];
+
+  const similar = activeGenerated
+    .map((skill) => ({
+      skill,
+      score: skillIdentitySimilarity(draftIdentity, `${skill.id} ${skill.name} ${skill.description || ''}`),
+    }))
+    .filter((entry) => entry.score >= 0.9)
+    .sort((a, b) =>
+      b.score - a.score
+      || generatedSkillPriority(b.skill, agentId) - generatedSkillPriority(a.skill, agentId)
+    );
+
+  return similar[0]?.skill;
+}
+
+function remainingTaskSpecificHits(draft: UserSkillWorkflowDraft, prompt: string): string[] {
+  const text = `${draft.skillId}\n${draft.name}\n${draft.description || ''}\n${draft.skillMd}`;
+  const hits: string[] = [];
+  const seen = new Set<string>();
+  for (const replacement of collectTargetReplacementPhrases(prompt)) {
+    const phrase = replacement.phrase;
+    if (phrase.length < 4) continue;
+    const escaped = escapeRegExp(phrase);
+    const pattern = /^[A-Za-z0-9][A-Za-z0-9 _.-]*[A-Za-z0-9]$/.test(phrase)
+      ? new RegExp(`(?<![A-Za-z0-9_-])${escaped}(?![A-Za-z0-9_-])`, 'i')
+      : new RegExp(escaped, 'i');
+    if (!pattern.test(text)) continue;
+    const key = phrase.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    hits.push(phrase);
+  }
+  return hits.slice(0, 8);
+}
+
+function assessDraftAutomationReadiness(params: {
+  draft: UserSkillWorkflowDraft;
+  prompt: string;
+  evaluation: UserSkillTaskReusabilityEvaluation;
+}): GeneratedDraftAutomationReadiness {
+  const reasons: string[] = [];
+  const blockers: string[] = [];
+  let score = params.evaluation.confidence;
+  const normalizedSkillMd = normalizeSkillMarkdownText(params.draft.skillMd);
+  const split = splitSkillMarkdown(normalizedSkillMd);
+  const body = split.bodyLines.join('\n').trim();
+  const placeholderCount = (body.match(/<[^>\n]{2,80}>/g) || []).length;
+  const headingCount = (body.match(/^#{1,3}\s+\S.+$/gm) || []).length;
+
+  if (!params.evaluation.reusable) {
+    blockers.push(params.evaluation.blockers[0] || 'Task was not evaluated as reusable.');
+  }
+  if (params.evaluation.confidence < AUTOMATIC_SAVE_CONFIDENCE) {
+    blockers.push('Task confidence is below the automatic save threshold.');
+  }
+  if (body.length < 220) {
+    blockers.push('Draft body is too thin for automatic save.');
+  } else {
+    score += 0.03;
+    reasons.push('Draft body has enough detail.');
+  }
+  if (headingCount < 3) {
+    blockers.push('Draft is missing reusable workflow sections.');
+  }
+  if (!/\b(tool call overview|workflow|steps?)\b/i.test(body)) {
+    blockers.push('Draft is missing a workflow or tool overview section.');
+  }
+  if (!/\b(verify|verification|check|test|fallback)\b/i.test(body)) {
+    blockers.push('Draft is missing verification or fallback guidance.');
+  } else {
+    score += 0.02;
+    reasons.push('Draft includes verification or fallback guidance.');
+  }
+  if (placeholderCount === 0 && collectTargetReplacementPhrases(params.prompt).length > 0) {
+    blockers.push('Draft does not expose generalized placeholders for the original target.');
+  } else if (placeholderCount > 0) {
+    score += 0.02;
+    reasons.push('Draft uses generalized placeholders.');
+  }
+
+  const rawTranscriptMarkers = [
+    'Transcript (chronological):',
+    'Task prompt:',
+    '[tool:',
+    '[assistant]',
+    '[user]',
+  ];
+  const marker = rawTranscriptMarkers.find((candidate) => normalizedSkillMd.includes(candidate));
+  if (marker) {
+    blockers.push(`Draft still contains raw transcript marker: ${marker}`);
+  }
+
+  const remainingTargets = remainingTaskSpecificHits(params.draft, params.prompt);
+  if (remainingTargets.length > 0) {
+    blockers.push(`Draft still mentions task-specific target text: ${remainingTargets.slice(0, 3).join(', ')}`);
+  }
+
+  if (looksTaskSpecificName(params.draft.name, params.prompt) || looksTaskSpecificName(params.draft.skillId, params.prompt)) {
+    blockers.push('Draft name or skill ID still looks tied to the completed task target.');
+  }
+
+  const confidence = clampConfidence(score);
+  return {
+    automatic: blockers.length === 0 && confidence >= AUTOMATIC_SAVE_CONFIDENCE,
+    confidence,
+    reasons,
+    blockers,
+  };
+}
+
+async function applyAutomationDraft(params: {
+  taskId: string;
+  agentId?: string;
+  mode: UserSkillAutomationMode;
+  draft: UserSkillWorkflowDraft;
+  evaluation: UserSkillTaskReusabilityEvaluation;
+}): Promise<{
+  disposition: 'saved' | 'updated' | 'skipped';
+  skillId: string;
+  source: UserSkillSource;
+  manifest?: UserSkillPostTaskAutomationResult['manifest'];
+  draftRecord?: UserSkillAutomationDraftRecord;
+  message?: string;
+}> {
+  const nowIso = new Date().toISOString();
+  const draftId = randomUUID();
+  const report = listUserSkills({ agentId: params.agentId });
+  const allSkillsReport = listUserSkills();
+  const takenIds = new Set(allSkillsReport.skills.map((skill) => skill.id));
+  const scopedExisting = findGeneratedSkillUpdateTarget(report.skills, params.draft);
+  const globalDuplicate = scopedExisting
+    ? undefined
+    : findGeneratedSkillDuplicateTarget(allSkillsReport.skills, params.draft, params.agentId);
+  const existing = scopedExisting
+    ?? (
+      globalDuplicate
+      && isAutomationOwnedSkillMetadata(globalDuplicate.metadata)
+      && canModifySkillForAgent(globalDuplicate, params.agentId)
+        ? globalDuplicate
+        : undefined
+    );
+
+  if (!existing && globalDuplicate) {
+    return {
+      disposition: 'skipped',
+      skillId: globalDuplicate.id,
+      source: globalDuplicate.source,
+      message: `Skipped creating duplicate generated skill ${params.draft.skillId}; existing skill ${globalDuplicate.id} already uses the same workflow key.`,
+    };
+  }
+
+  const canUpdateExisting = Boolean(existing);
+  const skillId = canUpdateExisting
+    ? existing!.id
+    : uniqueManagedSkillId(params.draft.skillId, takenIds);
+  const source: UserSkillSource = canUpdateExisting && existing?.source ? existing.source : 'managed';
+  const agentContext = getAgentContext(params.agentId);
+  const reason = automationReasonFromEvaluation(params.evaluation, true);
+  const skillMd = upsertAutomationMetadata({
+    skillMd: applySkillIdentityToFrontmatter({
+      skillMd: params.draft.skillMd,
+      skillId,
+      description: params.draft.description || 'Reusable workflow saved from a completed task.',
+    }),
+    skillId,
+    agentId: agentContext.agentId || params.agentId,
+    agentName: agentContext.agent?.name,
+    taskId: params.taskId,
+    mode: params.mode,
+    draftId,
+    evaluation: params.evaluation,
+    applied: true,
+    nowIso,
+  });
+
+  const writeResult = await writeUserSkillFile({
+    skillId,
+    relPath: 'SKILL.md',
+    content: skillMd,
+    source,
+    agentId: params.agentId,
+    changeReason: reason,
+    sourceTaskId: params.taskId,
+    confidence: params.evaluation.confidence,
+    changeSource: 'post-task-skill-automation',
+  });
+  const draftRecord: UserSkillAutomationDraftRecord = {
+    id: draftId,
+    taskId: params.taskId,
+    agentId: params.agentId,
+    mode: params.mode,
+    status: 'applied',
+    createdAt: nowIso,
+    appliedAt: nowIso,
+    skillId,
+    source,
+    reason,
+    draft: {
+      ...params.draft,
+      skillId,
+      skillMd,
+    },
+    evaluation: params.evaluation,
+  };
+  const records = [draftRecord, ...readAutomationDraftRecords().filter((entry) => entry.id !== draftId)];
+  writeAutomationDraftRecords(records);
+
+  return {
+    disposition: canUpdateExisting ? 'updated' : 'saved',
+    skillId,
+    source,
+    manifest: writeResult.manifest,
+    draftRecord,
+  };
+}
+
 function fallbackSkillMarkdown(params: { plan: FallbackSkillPlan; transcript: string }): string {
   const tools = observedToolNamesFromTranscript(params.transcript);
   const metadata = {
@@ -930,7 +1949,7 @@ function normalizeDraft(value: unknown, fallback: { taskPrompt: string; transcri
   const skillId = reusableIdentity?.skillId
     ?? normalizeSkillId(String(obj.skillId ?? obj.skill_id ?? obj.id ?? '').trim() || inferredName || fallback.taskPrompt);
   const name = reusableIdentity?.name ?? inferredName ?? titleFromText(skillId);
-  const description = reusableIdentity?.description ?? inferredDescription;
+  const description = generalizeTargetText(reusableIdentity?.description ?? inferredDescription, fallback.taskPrompt);
   skillMd = ensureSkillMarkdownFrontmatter({
     skillId,
     name,
@@ -942,6 +1961,11 @@ function normalizeDraft(value: unknown, fallback: { taskPrompt: string; transcri
     skillId,
     description,
   });
+  skillMd = applySkillHeading({
+    skillMd,
+    name,
+  });
+  skillMd = generalizeSkillMarkdownTargets(skillMd, fallback.taskPrompt);
 
   return {
     skillId,
@@ -1135,3 +2159,145 @@ export async function generateUserSkillFromTask(req: UserSkillGenerateFromTaskRe
     return { ok: true, draft };
   }
 }
+
+export async function runPostTaskSkillAutomation(
+  req: UserSkillPostTaskAutomationRequest
+): Promise<UserSkillPostTaskAutomationResult> {
+  const task = getTask(req.taskId, req.agentId);
+  const agentContext = getAgentContext(req.agentId);
+  const mode = req.modeOverride ?? resolveUserSkillAutomationMode(agentContext.agent);
+
+  if (!task) {
+    return {
+      ok: false,
+      mode,
+      disposition: 'error',
+      message: 'Task not found.',
+      taskId: req.taskId,
+      agentId: req.agentId,
+      error: 'Task not found',
+    };
+  }
+
+  if (mode === 'off') {
+    return {
+      ok: true,
+      mode,
+      disposition: 'noop',
+      message: 'Skill automation is off.',
+      taskId: req.taskId,
+      agentId: task.agentId ?? req.agentId,
+    };
+  }
+
+  const evaluation = evaluateTaskForSkillReuse(task);
+  if (!evaluation.reusable) {
+    return {
+      ok: true,
+      mode,
+      disposition: 'skipped',
+      message: evaluation.blockers[0] || 'Task did not look reusable enough to turn into a skill.',
+      taskId: req.taskId,
+      agentId: task.agentId ?? req.agentId,
+      evaluation,
+    };
+  }
+
+  const generated = await generateUserSkillFromTask({
+    taskId: req.taskId,
+    agentId: task.agentId ?? req.agentId,
+  });
+  if (!generated.ok || !generated.draft) {
+    return {
+      ok: false,
+      mode,
+      disposition: 'error',
+      message: generated.error || 'Failed to generate a reusable skill draft.',
+      taskId: req.taskId,
+      agentId: task.agentId ?? req.agentId,
+      evaluation,
+      error: generated.error || 'Failed to generate draft',
+    };
+  }
+
+  const draftReadiness = assessDraftAutomationReadiness({
+    draft: generated.draft,
+    prompt: task.prompt,
+    evaluation,
+  });
+
+  if (mode === 'automatic' && draftReadiness.automatic) {
+    try {
+      const applied = await applyAutomationDraft({
+        taskId: req.taskId,
+        agentId: task.agentId ?? req.agentId,
+        mode,
+        draft: generated.draft,
+        evaluation,
+      });
+      return {
+        ok: true,
+        mode,
+        disposition: applied.disposition,
+        message: applied.message || (applied.disposition === 'skipped'
+          ? `Skipped duplicate generated skill ${applied.skillId}.`
+          : applied.disposition === 'updated'
+          ? `Updated generated skill ${applied.skillId} (${Math.round(evaluation.confidence * 100)}% confidence).`
+          : `Saved generated skill ${applied.skillId} (${Math.round(evaluation.confidence * 100)}% confidence).`),
+        taskId: req.taskId,
+        agentId: task.agentId ?? req.agentId,
+        skillId: applied.skillId,
+        draftRecord: applied.draftRecord,
+        evaluation,
+        manifest: applied.manifest,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        mode,
+        disposition: 'error',
+        message: (error as Error)?.message || 'Failed to save generated skill.',
+        taskId: req.taskId,
+        agentId: task.agentId ?? req.agentId,
+        evaluation,
+        error: (error as Error)?.message || 'Failed to save generated skill',
+      };
+    }
+  }
+
+  const staged = stageAutomationDraftRecord({
+    taskId: req.taskId,
+    agentId: task.agentId ?? req.agentId,
+    mode,
+    draft: generated.draft,
+    evaluation,
+  });
+  return {
+    ok: true,
+    mode,
+    disposition: 'staged',
+    message: mode === 'approval'
+      ? `Reusable skill draft staged for approval (${Math.round(evaluation.confidence * 100)}% confidence).`
+      : evaluation.confidence >= AUTOMATIC_SAVE_CONFIDENCE && draftReadiness.blockers.length > 0
+        ? `Reusable skill draft staged for review: ${draftReadiness.blockers[0]}`
+        : `Reusable skill draft staged because confidence was below the automatic save threshold (${Math.round(evaluation.confidence * 100)}%).`,
+    taskId: req.taskId,
+    agentId: task.agentId ?? req.agentId,
+    skillId: generated.draft.skillId,
+    draftRecord: staged,
+    evaluation,
+  };
+}
+
+export const __automationTest = {
+  assessDraftAutomationReadiness,
+  evaluateTaskForSkillReuse,
+  fallbackPlanFromPrompt,
+  findGeneratedSkillDuplicateTarget,
+  findGeneratedSkillUpdateTarget,
+  generalizeTargetText,
+  looksTaskSpecificName,
+  normalizeDraft,
+  upsertAutomationMetadata,
+  uniqueManagedSkillId,
+};

@@ -566,9 +566,9 @@ describe('StreamParser', () => {
   });
 
   describe('error events for malformed JSON', () => {
-    it('should emit error for invalid JSON starting with {', () => {
+    it('should emit error for invalid OpenCode event JSON', () => {
       // Arrange
-      const malformedJson = '{invalid json here}\n';
+      const malformedJson = '{"type": bad}\n';
 
       // Act
       parser.feed(malformedJson);
@@ -597,7 +597,7 @@ describe('StreamParser', () => {
 
     it('should continue parsing after error', () => {
       // Arrange
-      const malformed = '{bad}\n';
+      const malformed = '{"type": bad}\n';
       const validMessage: OpenCodeMessage = {
         type: 'text',
         part: {

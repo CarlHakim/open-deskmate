@@ -60,6 +60,7 @@ import {
   detectScenarioFromPrompt,
 } from '../test-utils/mock-task-flow';
 import { TaskActivityRuntime } from './task-activity';
+import { schedulePostTaskLearning } from './post-task-learning';
 import { buildAssistantContentWithReasoning } from './task-message-reasoning';
 import { resolveSelectedModelForAgent } from '../services/agent-context';
 import {
@@ -780,6 +781,7 @@ function finalizeDesktopTurnUsage(taskId: string): {
 function createDesktopTaskCallbacks(params: {
   taskId: string;
   agentId?: string;
+  source?: string;
   taskManager: TaskManager;
   forwardToRenderer: (channel: string, data: unknown) => void;
   attachmentTempFile: string | null;
@@ -913,6 +915,12 @@ function createDesktopTaskCallbacks(params: {
       if (sessionId) {
         updateTaskSessionId(taskId, sessionId);
       }
+      schedulePostTaskLearning({
+        taskId,
+        agentId,
+        source: params.source,
+        status: result.status,
+      });
       cleanupDesktopActivity(taskId);
     },
 
@@ -1084,6 +1092,7 @@ export async function startDesktopTaskFlow(params: {
   const callbacks = createDesktopTaskCallbacks({
     taskId,
     agentId: validatedConfig.agentId,
+    source: validatedConfig.buildMode ? 'build' : 'chat',
     taskManager,
     forwardToRenderer: createDesktopRendererForwarder(window, sender),
     attachmentTempFile,
@@ -1310,6 +1319,7 @@ export async function resumeDesktopSessionFlow(params: {
   const callbacks = createDesktopTaskCallbacks({
     taskId,
     agentId: resumeConfig.agentId,
+    source: resumeConfig.buildMode ? 'build' : 'chat',
     taskManager,
     forwardToRenderer: createDesktopRendererForwarder(window, sender),
     attachmentTempFile,

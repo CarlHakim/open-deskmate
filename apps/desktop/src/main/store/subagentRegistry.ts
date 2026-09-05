@@ -65,6 +65,12 @@ export function getSubagentRun(runId: string): SubagentRunRecord | undefined {
   return readAll()[key];
 }
 
+export function findSubagentRunByChildTaskId(childTaskId: string): SubagentRunRecord | undefined {
+  const key = (childTaskId ?? '').trim();
+  if (!key) return undefined;
+  return Object.values(readAll()).find((entry) => entry.childTaskId === key);
+}
+
 export function listSubagentRuns(parentTaskId?: string, options?: { includeArchived?: boolean }): SubagentRunRecord[] {
   const all = Object.values(readAll()).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   const filtered = options?.includeArchived ? all : all.filter((entry) => !entry.archivedAt);

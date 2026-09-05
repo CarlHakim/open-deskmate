@@ -161,6 +161,32 @@ describe('taskStore Integration', () => {
   });
 
   describe('startTask', () => {
+    it('should show an optimistic first-prompt task as running while startTask is pending', async () => {
+      // Arrange
+      const { useTaskStore } = await import('@/stores/taskStore');
+      let resolveStartTask: (task: Task) => void = () => {};
+      const pendingStartTask = new Promise<Task>((resolve) => {
+        resolveStartTask = resolve;
+      });
+      const mockTask = createMockTask('task-123', 'Test prompt', 'running');
+      mockAccomplish.startTask.mockReturnValueOnce(pendingStartTask);
+
+      // Act
+      const startPromise = useTaskStore.getState().startTask({
+        prompt: 'Test prompt',
+        taskId: 'task-123',
+      });
+      const optimisticState = useTaskStore.getState();
+
+      // Assert
+      expect(optimisticState.currentTask?.id).toBe('task-123');
+      expect(optimisticState.currentTask?.status).toBe('running');
+      expect(optimisticState.tasks[0]?.status).toBe('running');
+
+      resolveStartTask(mockTask);
+      await startPromise;
+    });
+
     it('should call startTask API and update state on success', async () => {
       // Arrange
       const { useTaskStore } = await import('@/stores/taskStore');
@@ -328,7 +354,8 @@ describe('taskStore Integration', () => {
         'Continue please',
         'task-123',
         undefined,
-        'normal'
+        'normal',
+        null
       );
       expect(state.currentTask?.status).toBe('running');
     });
@@ -354,7 +381,8 @@ describe('taskStore Integration', () => {
         'More work',
         'task-123',
         undefined,
-        'normal'
+        'normal',
+        null
       );
     });
 

@@ -66,12 +66,15 @@ import type {
   GatewayRouteBinding,
   GatewayRunRecord,
   GatewaySessionRecord,
+  PermissionRequest,
   PermissionResponse,
   ModelConfig,
   ProviderConfig,
   TaskConfig,
   AutomationDraftRequest,
   AutomationDraftResult,
+  ChatToolCompatibilityCheckRequest,
+  ChatToolCompatibilityCheckResult,
   UsagePeriod,
   UsageBudgetSettings,
   UsageBudgetStatus,
@@ -96,6 +99,8 @@ import type {
   UsageProjectWorkItemUpdate,
   ChecklistListPromptGenerateRequest,
   ChecklistListPromptGenerateResponse,
+  ChatPostcardDraftGenerateRequest,
+  ChatPostcardDraftGenerateResponse,
   WorkItemNotePromptGenerateRequest,
   WorkItemNotePromptGenerateResponse,
   UsagePricingAutofillRequest,
@@ -105,12 +110,66 @@ import type {
   HelpDocsListResponse,
   HelpDocsSearchResponse,
   HelpDocsUpdatedEvent,
+  ExecutionProfile,
+  ExecutionProfileCreateInput,
+  ExecutionProfileListResult,
+  ExecutionProfileUpdateInput,
+  AgentAlwaysOnStatus,
+  AlwaysOnStatusSnapshot,
+  ConnectorDeliveryListResponse,
+  MemoryChangeHistoryFilter,
+  MemoryChangeRecord,
+  MemorySearchResponse,
+  AuditEventRecord,
+  AuditExportRequest,
+  AuditExportResult,
+  AuditGetRequest,
+  AuditListRequest,
+  AuditListResult,
+  SearchIndexRebuildRequest,
+  SearchIndexRebuildResult,
+  SearchItemDetail,
+  SearchItemGetRequest,
+  SearchQueryRequest,
+  SearchQueryResult,
   PluginCommandContribution,
   PluginDiagnosticsState,
   PluginDiagnosticsRecord,
   PluginRecord,
   PluginRegistryState,
+  UserSkillCuratorHistoryResponse,
+  UserSkillCuratorRunRecord,
+  UserSkillPostTaskAutomationResult,
+  ResolvedToolsetDefinition,
+  ToolCapability,
+  ToolCapabilityListResult,
+  ToolDiscoveryEnableRequest,
+  ToolDiscoveryEnableResult,
+  ToolDiscoveryEnabledListResult,
+  ToolDiscoverySearchResult,
+  ToolsetId,
+  ToolsetListResult,
 } from '@accomplish/shared';
+
+type TaskWindowKind = 'chat-task' | 'build-task' | 'subagent-run' | 'workboard-item';
+
+type TaskWindowOpenRequest =
+  | { kind: 'chat-task'; taskId: string; agentId?: string; title?: string }
+  | { kind: 'build-task'; sessionId: string; agentId?: string; taskId?: string; title?: string }
+  | { kind: 'subagent-run'; runId: string; title?: string }
+  | { kind: 'workboard-item'; projectId: string; itemId: string; title?: string };
+
+type TaskWindowFocusRequest = ({ key: string } | { windowId: number } | TaskWindowOpenRequest);
+
+type TaskWindowInfo = {
+  key: string;
+  windowId: number;
+  kind: TaskWindowKind;
+  title: string;
+  route: string;
+  target: TaskWindowOpenRequest;
+  focused: boolean;
+};
 
 // Expose the accomplish API to the renderer
 const accomplishAPI = {
@@ -123,6 +182,14 @@ const accomplishAPI = {
     ipcRenderer.invoke('shell:open-external', url),
   openPath: (filePath: string): Promise<{ ok: boolean; path: string; error?: string }> =>
     ipcRenderer.invoke('shell:open-path', filePath),
+
+  // Task windows
+  openTaskWindow: (target: TaskWindowOpenRequest): Promise<TaskWindowInfo> =>
+    ipcRenderer.invoke('task-window:open', target),
+  listTaskWindows: (): Promise<TaskWindowInfo[]> =>
+    ipcRenderer.invoke('task-window:list'),
+  focusTaskWindow: (target: TaskWindowFocusRequest): Promise<TaskWindowInfo | null> =>
+    ipcRenderer.invoke('task-window:focus', target),
 
   // Help docs
   listHelpDocs: (): Promise<HelpDocsListResponse> =>
@@ -139,6 +206,25 @@ const accomplishAPI = {
     ipcRenderer.invoke('help-docs:open-folder'),
   openHelpAsset: (docId: string, assetPath: string): Promise<{ ok: boolean; path: string }> =>
     ipcRenderer.invoke('help-docs:open-asset', { docId, assetPath }),
+
+  runChatToolCompatibilityCheck: (
+    payload: ChatToolCompatibilityCheckRequest
+  ): Promise<ChatToolCompatibilityCheckResult> =>
+    ipcRenderer.invoke('chat-tool-compatibility:check', payload),
+
+  // Local search and audit history
+  rebuildSearchIndex: (payload?: SearchIndexRebuildRequest): Promise<SearchIndexRebuildResult> =>
+    ipcRenderer.invoke('search:index:rebuild', payload),
+  querySearch: (payload: SearchQueryRequest): Promise<SearchQueryResult> =>
+    ipcRenderer.invoke('search:query', payload),
+  getSearchItem: (payload: SearchItemGetRequest): Promise<SearchItemDetail | null> =>
+    ipcRenderer.invoke('search:item:get', payload),
+  listAuditEvents: (payload?: AuditListRequest): Promise<AuditListResult> =>
+    ipcRenderer.invoke('audit:list', payload),
+  getAuditEvent: (payload: AuditGetRequest): Promise<AuditEventRecord | null> =>
+    ipcRenderer.invoke('audit:get', payload),
+  exportAuditEvents: (payload?: AuditExportRequest): Promise<AuditExportResult> =>
+    ipcRenderer.invoke('audit:export', payload),
 
   // Dialog
   selectFolder: (defaultPath?: string): Promise<string | null> =>
@@ -159,7 +245,7 @@ const accomplishAPI = {
   deleteTask: (taskId: string): Promise<void> =>
     ipcRenderer.invoke('task:delete', taskId),
   clearTaskHistory: (agentId?: string): Promise<void> => ipcRenderer.invoke('task:clear-history', agentId),
-  listSavedPrompts: (): Promise<Array<{ id: string; title: string; content: string; category: string; createdAt: string; updatedAt: string }>> =>
+  listSavedPrompts: (): Promise<Array<{ id: string; title: string; content: string; category: string; description?: string; icon?: string; color?: string; createdAt: string; updatedAt: string }>> =>
     ipcRenderer.invoke('saved-prompts:list'),
   listSavedPromptCategories: (): Promise<string[]> =>
     ipcRenderer.invoke('saved-prompts:categories:list'),
@@ -167,17 +253,20 @@ const accomplishAPI = {
     ipcRenderer.invoke('saved-prompts:categories:create', name),
   renameSavedPromptCategory: (payload: { from: string; to: string }): Promise<{
     categories: string[];
-    prompts: Array<{ id: string; title: string; content: string; category: string; createdAt: string; updatedAt: string }>;
+    prompts: Array<{ id: string; title: string; content: string; category: string; description?: string; icon?: string; color?: string; createdAt: string; updatedAt: string }>;
   }> => ipcRenderer.invoke('saved-prompts:categories:rename', payload),
   deleteSavedPromptCategory: (payload: { name: string; replacement?: string }): Promise<{
     categories: string[];
-    prompts: Array<{ id: string; title: string; content: string; category: string; createdAt: string; updatedAt: string }>;
+    prompts: Array<{ id: string; title: string; content: string; category: string; description?: string; icon?: string; color?: string; createdAt: string; updatedAt: string }>;
   }> => ipcRenderer.invoke('saved-prompts:categories:delete', payload),
-  upsertSavedPrompt: (payload: { id?: string; title: string; content: string; category?: string; createdAt?: string; updatedAt?: string }): Promise<{
+  upsertSavedPrompt: (payload: { id?: string; title: string; content: string; category?: string; description?: string; icon?: string; color?: string; createdAt?: string; updatedAt?: string }): Promise<{
     id: string;
     title: string;
     content: string;
     category: string;
+    description?: string;
+    icon?: string;
+    color?: string;
     createdAt: string;
     updatedAt: string;
   }> => ipcRenderer.invoke('saved-prompts:upsert', payload),
@@ -185,6 +274,8 @@ const accomplishAPI = {
     ipcRenderer.invoke('saved-prompts:delete', id),
 
   // Permission responses
+  getPendingPermissionRequests: (payload?: { taskId?: string }): Promise<PermissionRequest[]> =>
+    ipcRenderer.invoke('permission:pending', payload),
   respondToPermission: (response: PermissionResponse): Promise<void> =>
     ipcRenderer.invoke('permission:respond', response),
 
@@ -318,6 +409,16 @@ const accomplishAPI = {
     ipcRenderer.invoke('settings:set-agent-speed-mode', mode),
   setBuildDiffEnforcementMode: (mode: BuildDiffEnforcementMode): Promise<BuildDiffEnforcementMode> =>
     ipcRenderer.invoke('settings:set-build-diff-enforcement-mode', mode),
+  listExecutionProfiles: (payload?: { includeArchived?: boolean }): Promise<ExecutionProfileListResult> =>
+    ipcRenderer.invoke('settings:execution-profiles:list', payload),
+  createExecutionProfile: (payload: ExecutionProfileCreateInput): Promise<ExecutionProfile> =>
+    ipcRenderer.invoke('settings:execution-profiles:create', payload),
+  updateExecutionProfile: (profileId: string, update: ExecutionProfileUpdateInput): Promise<ExecutionProfile> =>
+    ipcRenderer.invoke('settings:execution-profiles:update', { profileId, update }),
+  archiveExecutionProfile: (profileId: string, archived?: boolean): Promise<ExecutionProfile> =>
+    ipcRenderer.invoke('settings:execution-profiles:archive', { profileId, archived }),
+  checkExecutionProfileHealth: (profileId: string): Promise<ExecutionProfile> =>
+    ipcRenderer.invoke('settings:execution-profiles:health-check', { profileId }),
   saveDataUrlToFile: (dataUrl: string, baseName?: string): Promise<{ filePath: string }> =>
     ipcRenderer.invoke('files:save-data-url', { dataUrl, baseName }),
   saveDataUrlToFileAs: (dataUrl: string, baseName?: string): Promise<{ filePath?: string; cancelled?: boolean }> =>
@@ -334,10 +435,20 @@ const accomplishAPI = {
     ipcRenderer.invoke('settings:set-workspace-root', root),
   getMemoryState: (payload?: { agentId?: string; date?: string }): Promise<unknown> =>
     ipcRenderer.invoke('settings:memory:get', payload),
-  readMemoryFile: (payload: { kind: 'long-term' | 'daily'; date?: string; agentId?: string }): Promise<unknown> =>
+  readMemoryFile: (payload: { kind: 'user' | 'long-term' | 'daily' | 'snapshot'; date?: string; fileName?: string; agentId?: string }): Promise<unknown> =>
     ipcRenderer.invoke('settings:memory:read', payload),
-  saveMemoryFile: (payload: { kind: 'long-term' | 'daily'; date?: string; agentId?: string; content?: string }): Promise<unknown> =>
+  saveMemoryFile: (payload: { kind: 'user' | 'long-term' | 'daily' | 'snapshot'; date?: string; fileName?: string; agentId?: string; content?: string }): Promise<unknown> =>
     ipcRenderer.invoke('settings:memory:save', payload),
+  deleteMemoryFile: (payload: { kind: 'user' | 'long-term' | 'daily' | 'snapshot'; date?: string; fileName?: string; agentId?: string }): Promise<unknown> =>
+    ipcRenderer.invoke('settings:memory:delete', payload),
+  searchMemory: (payload: { query: string; agentId?: string; limit?: number }): Promise<MemorySearchResponse> =>
+    ipcRenderer.invoke('settings:memory:search', payload),
+  listMemoryChanges: (payload?: MemoryChangeHistoryFilter): Promise<{ changes: MemoryChangeRecord[] }> =>
+    ipcRenderer.invoke('memory:changes:list', payload),
+  applyMemoryChange: (changeId: string): Promise<MemoryChangeRecord> =>
+    ipcRenderer.invoke('memory:changes:apply', { changeId }),
+  rollbackMemoryChange: (changeId: string): Promise<MemoryChangeRecord> =>
+    ipcRenderer.invoke('memory:changes:rollback', { changeId }),
   getRuntimeHooks: (): Promise<unknown> =>
     ipcRenderer.invoke('settings:runtime-hooks:get'),
   saveRuntimeHooks: (raw: string): Promise<unknown> =>
@@ -386,6 +497,20 @@ const accomplishAPI = {
     ipcRenderer.invoke('agents:set-active', agentId),
   getActiveAgent: (): Promise<string> =>
     ipcRenderer.invoke('agents:get-active'),
+  getAlwaysOnStatus: (): Promise<AlwaysOnStatusSnapshot> =>
+    ipcRenderer.invoke('always-on:status:get'),
+  startAlwaysOnManager: (): Promise<AlwaysOnStatusSnapshot> =>
+    ipcRenderer.invoke('always-on:manager:start'),
+  stopAlwaysOnManager: (): Promise<AlwaysOnStatusSnapshot> =>
+    ipcRenderer.invoke('always-on:manager:stop'),
+  restartAlwaysOnManager: (): Promise<AlwaysOnStatusSnapshot> =>
+    ipcRenderer.invoke('always-on:manager:restart'),
+  setAgentAlwaysOn: (agentId: string, enabled: boolean): Promise<AgentAlwaysOnStatus> =>
+    ipcRenderer.invoke('always-on:agent:set', { agentId, enabled }),
+  restartAgentAlwaysOn: (agentId: string): Promise<AlwaysOnStatusSnapshot['agents'][number]> =>
+    ipcRenderer.invoke('always-on:agent:restart', { agentId }),
+  listConnectorDeliveries: (payload?: { limit?: number }): Promise<ConnectorDeliveryListResponse> =>
+    ipcRenderer.invoke('connector-deliveries:list', payload),
 
   // Discord connector
   getDiscordConfig: (): Promise<unknown> =>
@@ -608,7 +733,7 @@ const accomplishAPI = {
     ipcRenderer.invoke('build-mode:quality-checks:run', payload),
   getBuildQualityChecks: (payload: { agentId: string; workspaceRelativePath?: string }): Promise<BuildQualityCheckRun | null> =>
     ipcRenderer.invoke('build-mode:quality-checks:get', payload),
-  runStartCommandOnce: (payload: { agentId: string; workspaceRelativePath?: string; envOverrides?: Record<string, string>; commandOverride?: string }): Promise<{ snapshot: BuildSessionSnapshot; result: BuildRuntimeCommandResult }> =>
+  runStartCommandOnce: (payload: { agentId: string; workspaceRelativePath?: string; executionProfileId?: string | null; envOverrides?: Record<string, string>; commandOverride?: string }): Promise<{ snapshot: BuildSessionSnapshot; result: BuildRuntimeCommandResult }> =>
     ipcRenderer.invoke('build-mode:runtime:run-once', payload),
   getBuildRuntimeLogs: (payload: { agentId: string; cursor?: number; limit?: number }): Promise<BuildLogsResponse> =>
     ipcRenderer.invoke('build-mode:runtime:logs', payload),
@@ -758,7 +883,7 @@ const accomplishAPI = {
     ipcRenderer.invoke('build-mode:history:delete', payload),
   listSubagents: (payload: { parentTaskId: string }): Promise<{ runs: SubagentRunDetail[]; tree: SubagentRunTreeNode[]; activeCount: number }> =>
     ipcRenderer.invoke('subagents:list', payload),
-  listAllSubagents: (payload?: { includeArchived?: boolean }): Promise<{ runs: SubagentRunDetail[] }> =>
+  listAllSubagents: (payload?: { includeArchived?: boolean; query?: string; limit?: number }): Promise<{ runs: SubagentRunDetail[]; total?: number; truncated?: boolean }> =>
     ipcRenderer.invoke('subagents:list-all', payload ?? {}),
   getSubagent: (payload: { runId: string }): Promise<SubagentRunDetail | null> =>
     ipcRenderer.invoke('subagents:get', payload),
@@ -813,6 +938,22 @@ const accomplishAPI = {
     ipcRenderer.invoke('user-skills:assistant:model:set', model),
   listModelProviders: (): Promise<ProviderConfig[]> =>
     ipcRenderer.invoke('model-providers:list'),
+  listToolsets: (): Promise<ToolsetListResult> =>
+    ipcRenderer.invoke('toolsets:list'),
+  searchToolsets: (query: string): Promise<ToolDiscoverySearchResult> =>
+    ipcRenderer.invoke('toolsets:search', query),
+  describeToolset: (toolsetId: string): Promise<ResolvedToolsetDefinition | null> =>
+    ipcRenderer.invoke('toolsets:describe', toolsetId),
+  listTools: (payload?: { toolsetIds?: ToolsetId[] }): Promise<ToolCapabilityListResult> =>
+    ipcRenderer.invoke('tools:list', payload),
+  searchTools: (query: string): Promise<ToolDiscoverySearchResult> =>
+    ipcRenderer.invoke('tools:search', query),
+  describeTool: (toolName: string): Promise<ToolCapability | null> =>
+    ipcRenderer.invoke('tools:describe', toolName),
+  listEnabledTaskTools: (payload?: { agentId?: string; taskId?: string; deferredToolDiscoveryEnabled?: boolean; requestedToolsetIds?: ToolsetId[]; initialToolsetIds?: ToolsetId[] }): Promise<ToolDiscoveryEnabledListResult> =>
+    ipcRenderer.invoke('tools:enabled:list', payload),
+  enableTaskTools: (payload: { request: ToolDiscoveryEnableRequest; agentId?: string; taskId?: string; deferredToolDiscoveryEnabled?: boolean; requestedToolsetIds?: ToolsetId[]; initialToolsetIds?: ToolsetId[] }): Promise<ToolDiscoveryEnableResult> =>
+    ipcRenderer.invoke('tools:enable', payload),
   listCustomModelProviders: (): Promise<ProviderConfig[]> =>
     ipcRenderer.invoke('model-providers:custom:list'),
   listBuiltinProviderModelOverrides: (): Promise<Record<string, ModelConfig[]>> =>
@@ -883,6 +1024,12 @@ const accomplishAPI = {
     ipcRenderer.invoke('user-skills:zip:cleanup', payload),
   generateUserSkillFromTask: (payload: { taskId: string; agentId?: string }): Promise<unknown> =>
     ipcRenderer.invoke('user-skills:generate-from-task', payload),
+  runPostTaskSkillAutomation: (payload: { taskId: string; agentId?: string; modeOverride?: 'automatic' | 'approval' | 'off' }): Promise<UserSkillPostTaskAutomationResult> =>
+    ipcRenderer.invoke('user-skills:automation:post-task', payload),
+  runUserSkillCurator: (payload?: { agentId?: string; dryRun?: boolean }): Promise<UserSkillCuratorRunRecord> =>
+    ipcRenderer.invoke('user-skills:curator:run', payload),
+  listUserSkillCuratorHistory: (): Promise<UserSkillCuratorHistoryResponse> =>
+    ipcRenderer.invoke('user-skills:curator:history'),
   askUserSkillAssistant: (payload: {
     question: string;
     skillId?: string;
@@ -897,6 +1044,8 @@ const accomplishAPI = {
     ipcRenderer.invoke('settings-assistant:list-prompt:generate', payload),
   generateWorkItemNotePrompt: (payload: WorkItemNotePromptGenerateRequest): Promise<WorkItemNotePromptGenerateResponse> =>
     ipcRenderer.invoke('settings-assistant:note-prompt:generate', payload),
+  generateChatPostcardDraft: (payload: ChatPostcardDraftGenerateRequest): Promise<ChatPostcardDraftGenerateResponse> =>
+    ipcRenderer.invoke('settings-assistant:postcard:generate', payload),
 
   // Automations
   listSchedules: (): Promise<unknown[]> =>
@@ -921,10 +1070,10 @@ const accomplishAPI = {
     error?: string;
   }> => ipcRenderer.invoke('ollama:test-connection', url),
 
-  getOllamaConfig: (): Promise<{ baseUrl: string; enabled: boolean; lastValidated?: number; models?: Array<{ id: string; displayName: string; size: number }>; toolMode?: 'off' | 'internet' | 'workspace-read' | 'workspace-edit' | 'desktop' | 'full' } | null> =>
+  getOllamaConfig: (): Promise<{ baseUrl: string; enabled: boolean; lastValidated?: number; models?: Array<{ id: string; displayName: string; size: number; toolsetIds?: ToolsetId[] }>; toolMode?: 'off' | 'internet' | 'workspace-read' | 'workspace-edit' | 'desktop' | 'full'; toolsetIds?: ToolsetId[] } | null> =>
     ipcRenderer.invoke('ollama:get-config'),
 
-  setOllamaConfig: (config: { baseUrl: string; enabled: boolean; lastValidated?: number; models?: Array<{ id: string; displayName: string; size: number }>; toolMode?: 'off' | 'internet' | 'workspace-read' | 'workspace-edit' | 'desktop' | 'full' } | null): Promise<void> =>
+  setOllamaConfig: (config: { baseUrl: string; enabled: boolean; lastValidated?: number; models?: Array<{ id: string; displayName: string; size: number; toolsetIds?: ToolsetId[] }>; toolMode?: 'off' | 'internet' | 'workspace-read' | 'workspace-edit' | 'desktop' | 'full'; toolsetIds?: ToolsetId[] } | null): Promise<void> =>
     ipcRenderer.invoke('ollama:set-config', config),
 
   // Event subscriptions

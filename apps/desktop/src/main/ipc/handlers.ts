@@ -63,9 +63,19 @@ import {
   assignUsageProjectToTasks,
 } from '../services/usage-project-assignments';
 import type { FolderConfig, FolderUpdateConfig } from '@accomplish/shared';
-import { getMemoryState, readMemoryFile, saveMemoryFile } from '../services/memory';
+import {
+  applyStagedMemoryFileWrite,
+  deleteMemoryFile,
+  getMemoryState,
+  listMemoryChangeHistory,
+  readMemoryFile,
+  rollbackMemoryFileChange,
+  saveMemoryFile,
+  searchMemory,
+} from '../services/memory';
 import { planNextJobs } from '../services/proactive-planner';
-import { generateUserSkillFromTask } from '../services/skill-workflow-generator';
+import { generateUserSkillFromTask, runPostTaskSkillAutomation } from '../services/skill-workflow-generator';
+import { listUserSkillCuratorHistory, runUserSkillCurator } from '../services/skill-curator';
 import { buildDevProcessManager } from '../services/build-mode/dev-process-manager';
 import {
   captureWorkspaceBaseline,
@@ -121,6 +131,14 @@ import {
   setActiveBuildModePreset,
   upsertBuildModePreset,
 } from '../store/buildModePresets';
+import {
+  archiveExecutionProfile,
+  assertExecutionProfileRunnable,
+  checkExecutionProfileHealth,
+  createExecutionProfile,
+  listExecutionProfiles,
+  updateExecutionProfile,
+} from '../store/executionProfiles';
 import {
   archiveBuildTaskSession,
   createBuildTaskSession,
@@ -199,6 +217,17 @@ import {
 } from '../plugins/plugin-registry';
 import { listRegisteredPluginCommands } from '../plugins/plugin-runtime';
 import {
+  getLocalSearchItem,
+  queryLocalSearch,
+  rebuildLocalSearchIndex,
+} from '../services/local-search';
+import {
+  exportAuditEvents,
+  getAuditEvent,
+  listAuditEvents,
+  recordSystemAuditEvent,
+} from '../services/audit';
+import {
   storeApiKey,
   getApiKey,
   deleteApiKey,
@@ -276,7 +305,7 @@ import {
   writeUserSkillFile,
 } from '../services/user-skills';
 import { askUserSkillAssistant } from '../services/user-skill-assistant';
-import { generateChecklistListPrompt, generateWorkItemNotePrompt } from '../services/checklist-list-prompt-generator';
+import { generateChatPostcardDraft, generateChecklistListPrompt, generateWorkItemNotePrompt } from '../services/checklist-list-prompt-generator';
 import { getUserSkillConfig, setUserSkillConfig } from '../store/userSkillsConfig';
 import { buildAttachmentsPrefix } from '../utils/file-attachments';
 import { getDesktopConfig } from '../config';
@@ -284,6 +313,7 @@ import {
   resolvePermission,
   isFilePermissionRequest,
   applyAllowAllForFileRequest,
+  listPendingPermissionRequests,
 } from '../permission-api';
 import type {
   Task,
@@ -306,6 +336,7 @@ import type {
   UsageProjectWorkItemInput,
   UsageProjectWorkItemUpdate,
   ChecklistListPromptGenerateRequest,
+  ChatPostcardDraftGenerateRequest,
   WorkItemNotePromptGenerateRequest,
   SelectedModel,
   ProviderConfig,
@@ -313,6 +344,7 @@ import type {
   OllamaConfig,
   ScheduleConfig,
   AutomationDraftRequest,
+  ChatToolCompatibilityCheckResult,
   DiscordConnectorConfig,
   TelegramConnectorConfig,
   VoiceWakeConfig,
@@ -336,7 +368,21 @@ import type {
   BuildQualityCheckRunRequest,
   BuildStartRequest,
   BuildWorkspaceBaselineDecision,
+  ExecutionProfileCreateInput,
+  ExecutionProfileUpdateInput,
+  AuditExportRequest,
+  AuditGetRequest,
+  AuditListRequest,
+  AuditEventCategory,
+  LocalSearchSource,
+  MemoryChangeStatus,
+  MemoryKind,
+  SearchIndexRebuildRequest,
+  SearchItemGetRequest,
+  SearchQueryRequest,
   PermissionPolicySettings,
+  ToolsetId,
+  AgentReactionMode,
 } from '@accomplish/shared';
 import {
   DEFAULT_PROVIDERS,
@@ -413,6 +459,15 @@ import {
   testGatewayConnectorRuntime,
 } from '../services/gateway-connector-runtimes';
 import {
+  getAlwaysOnStatusSnapshot,
+  restartAgentAlwaysOnRuntime,
+  restartAlwaysOnRuntimeManager,
+  setAgentAlwaysOnEnabled,
+  startAlwaysOnRuntimeManager,
+  stopAlwaysOnRuntimeManager,
+} from '../services/always-on-status';
+import { listConnectorDeliveries } from '../store/connectorDeliveries';
+import {
   executeAppConnectorAction,
   listAppConnectorRuntimeStatuses,
   testAppConnectorRuntime,
@@ -432,6 +487,18 @@ import {
   deleteCustomModelProvider,
 } from '../store/modelProviders';
 import { listModelProviders } from '../services/model-providers';
+import { proveChatDeferredToolCompatibility } from '../services/chat-deferred-tool-compatibility';
+import {
+  describeTool,
+  describeToolset,
+  enableTaskScopedTools,
+  listAvailableTools,
+  listAvailableToolsets,
+  listEnabledTaskTools,
+  sanitizeToolsetIds,
+  searchToolsetsAndTools,
+  setToolDiscoveryAuditHook,
+} from '../services/toolsets';
 import {
   approveNodePairing,
   listNodePairing,
@@ -462,6 +529,39 @@ const MAX_AVATAR_IMAGE_DATA_URL_LENGTH = 1_000_000;
 const AVATAR_IMAGE_DATA_URL_RE = /^data:image\/(?:png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=\r\n]+$/i;
 const ALLOWED_API_KEY_PROVIDERS = new Set(['anthropic', 'openai', 'google', 'xai', 'custom']);
 const ALLOWED_SELECTED_MODEL_PROVIDERS = new Set(['anthropic', 'openai', 'google', 'xai', 'ollama', 'custom']);
+const ALLOWED_SEARCH_SOURCES = new Set<LocalSearchSource>([
+  'chat_task',
+  'build_task',
+  'build_runtime',
+  'tool_call',
+  'project',
+  'workboard_item',
+  'workboard_note',
+  'linked_document',
+  'memory_file',
+  'memory_change',
+  'skill',
+  'git_summary',
+  'connector_message',
+  'audit_event',
+]);
+const ALLOWED_AUDIT_CATEGORIES = new Set<AuditEventCategory>([
+  'task',
+  'tool_use',
+  'discovery',
+  'memory',
+  'skill',
+  'tool_discovery',
+  'connector',
+  'scheduled',
+  'always_on',
+  'execution_profile',
+  'git',
+  'build_runtime',
+  'search',
+  'settings',
+  'system',
+]);
 const PROVIDER_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const API_KEY_VALIDATION_TIMEOUT_MS = 15000;
 app.once('before-quit', () => {
@@ -1093,6 +1193,30 @@ function sanitizeWorkItemDocuments(input: unknown): UsageProjectWorkItemInput['d
   });
 }
 
+function sanitizeWorkItemSources(input: unknown): UsageProjectWorkItemInput['sources'] {
+  if (!Array.isArray(input)) return [];
+  return input.slice(0, 100).flatMap((entry, index) => {
+    if (!entry || typeof entry !== 'object') return [];
+    const source = entry as Record<string, unknown>;
+    const url = sanitizeOptionalText(source.url, `sources.${index}.url`, 2048).trim();
+    if (!/^https?:\/\//i.test(url)) return [];
+    let fallbackTitle = 'Source';
+    try {
+      fallbackTitle = new URL(url).hostname.replace(/^www\./i, '') || fallbackTitle;
+    } catch {
+      fallbackTitle = url.replace(/^https?:\/\//i, '').split(/[/?#]/)[0] || fallbackTitle;
+    }
+    return [{
+      id: sanitizeOptionalText(source.id, `sources.${index}.id`, 80).trim() || randomUUID(),
+      title: sanitizeOptionalText(source.title, `sources.${index}.title`, 180).trim() || fallbackTitle,
+      url,
+      description: sanitizeOptionalText(source.description, `sources.${index}.description`, 1000).trim() || undefined,
+      createdAt: sanitizeOptionalText(source.createdAt, `sources.${index}.createdAt`, 64).trim() || new Date().toISOString(),
+      updatedAt: source.updatedAt ? sanitizeOptionalText(source.updatedAt, `sources.${index}.updatedAt`, 64).trim() : undefined,
+    }];
+  });
+}
+
 function sanitizeWorkItemPayload(input: Partial<UsageProjectWorkItemInput | UsageProjectWorkItemUpdate>, includeMissing = false): Partial<UsageProjectWorkItemInput> {
   const output: Partial<UsageProjectWorkItemInput> = {};
   if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'title')) {
@@ -1151,6 +1275,9 @@ function sanitizeWorkItemPayload(input: Partial<UsageProjectWorkItemInput | Usag
   }
   if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'documents')) {
     output.documents = sanitizeWorkItemDocuments(input.documents);
+  }
+  if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'sources')) {
+    output.sources = sanitizeWorkItemSources(input.sources);
   }
   if (includeMissing || Object.prototype.hasOwnProperty.call(input, 'archived')) {
     output.archived = input.archived === true;
@@ -1825,6 +1952,42 @@ export function registerIPCHandlers(): void {
     resolveDesktopTaskWorkspaceRoot(taskId, (agentId?: string) =>
       agentId ? (getAgentContext(agentId).workspaceRoot || '') : ''
     );
+  setToolDiscoveryAuditHook((event) => {
+    recordSystemAuditEvent({
+      category: 'tool_discovery',
+      action: event.action,
+      title: `Tool discovery ${event.status}`,
+      summary: [
+        event.reason,
+        event.newlyEnabledToolsetIds.length ? `Enabled: ${event.newlyEnabledToolsetIds.join(', ')}` : '',
+        event.missingToolsetIds.length ? `Missing toolsets: ${event.missingToolsetIds.join(', ')}` : '',
+        event.missingCapabilities.length ? `Missing capabilities: ${event.missingCapabilities.join(', ')}` : '',
+        event.missingToolNames.length ? `Missing tools: ${event.missingToolNames.join(', ')}` : '',
+      ].filter(Boolean).join(' | '),
+      status: event.status === 'enabled' || event.status === 'already_enabled'
+        ? 'success'
+        : event.status === 'partial'
+          ? 'warning'
+          : 'error',
+      timestamp: event.timestamp,
+      agentId: event.agentId,
+      taskId: event.taskId,
+      targetType: 'toolset',
+      targetId: event.newlyEnabledToolsetIds[0] || event.alreadyEnabledToolsetIds[0] || event.missingToolsetIds[0],
+      source: 'tool-discovery',
+      metadata: {
+        requested: event.requested,
+        enabledToolsetIds: event.enabledToolsetIds,
+        newlyEnabledToolsetIds: event.newlyEnabledToolsetIds,
+        alreadyEnabledToolsetIds: event.alreadyEnabledToolsetIds,
+        missingToolsetIds: event.missingToolsetIds,
+        missingCapabilities: event.missingCapabilities,
+        missingToolNames: event.missingToolNames,
+        unavailableToolsetIds: event.unavailableToolsetIds,
+        mcpConfigRegeneration: event.mcpConfigRegeneration,
+      },
+    });
+  });
 
   // Desktop runtime services initialize lazily when the first desktop task starts or resumes.
   // Task: Start a new task
@@ -1861,6 +2024,22 @@ export function registerIPCHandlers(): void {
     const agentId = req.agentId ? sanitizeString(req.agentId, 'agentId', 128) : undefined;
     return await generateUserSkillFromTask({ taskId, agentId });
   });
+
+  handle(
+    'user-skills:automation:post-task',
+    async (_event: IpcMainInvokeEvent, req: { taskId: string; agentId?: string; modeOverride?: 'automatic' | 'approval' | 'off' }) => {
+      if (!req || typeof req.taskId !== 'string') {
+        throw new Error('taskId is required');
+      }
+      const taskId = sanitizeString(req.taskId, 'taskId', 128);
+      const agentId = req.agentId ? sanitizeString(req.agentId, 'agentId', 128) : undefined;
+      const rawMode = req.modeOverride ? sanitizeString(req.modeOverride, 'modeOverride', 24).toLowerCase() : '';
+      const modeOverride = rawMode === 'automatic' || rawMode === 'approval' || rawMode === 'off'
+        ? rawMode
+        : undefined;
+      return await runPostTaskSkillAutomation({ taskId, agentId, modeOverride });
+    }
+  );
 
   // Context: Estimate prompt tokens for the EXACT payload we will send (same prep logic as send path).
   handle(
@@ -2008,6 +2187,11 @@ export function registerIPCHandlers(): void {
   // Task: Clear all history
   handle('task:clear-history', async (_event: IpcMainInvokeEvent, agentId?: string) => {
     clearHistory(agentId || resolveActiveAgentId());
+  });
+
+  handle('permission:pending', async (_event: IpcMainInvokeEvent, payload?: { taskId?: unknown }) => {
+    const taskId = payload?.taskId == null ? undefined : sanitizeOptionalText(payload.taskId, 'taskId', 128);
+    return listPendingPermissionRequests(taskId);
   });
 
   // Permission: Respond to permission request
@@ -2376,6 +2560,107 @@ export function registerIPCHandlers(): void {
     return listModelProviders();
   });
 
+  // Toolsets/tools: formal registry discovery metadata.
+  handle('toolsets:list', async () => {
+    return listAvailableToolsets();
+  });
+
+  handle('toolsets:search', async (_event: IpcMainInvokeEvent, query?: unknown) => {
+    const sanitizedQuery = query == null ? '' : sanitizeOptionalText(query, 'query', 256);
+    return searchToolsetsAndTools(sanitizedQuery);
+  });
+
+  handle('toolsets:describe', async (_event: IpcMainInvokeEvent, toolsetId: unknown) => {
+    const id = sanitizeString(toolsetId, 'toolsetId', 64);
+    return describeToolset(id);
+  });
+
+  handle('tools:list', async (_event: IpcMainInvokeEvent, payload?: { toolsetIds?: unknown }) => {
+    const toolsetIds = payload && Object.prototype.hasOwnProperty.call(payload, 'toolsetIds')
+      ? sanitizeToolsetIds(payload.toolsetIds, 'toolsetIds')
+      : undefined;
+    return listAvailableTools(toolsetIds);
+  });
+
+  handle('tools:search', async (_event: IpcMainInvokeEvent, query?: unknown) => {
+    const sanitizedQuery = query == null ? '' : sanitizeOptionalText(query, 'query', 256);
+    return searchToolsetsAndTools(sanitizedQuery);
+  });
+
+  handle('tools:describe', async (_event: IpcMainInvokeEvent, toolName: unknown) => {
+    const name = sanitizeString(toolName, 'toolName', 128);
+    return describeTool(name);
+  });
+
+  handle('tools:enabled:list', async (_event: IpcMainInvokeEvent, payload?: {
+    agentId?: unknown;
+    taskId?: unknown;
+    deferredToolDiscoveryEnabled?: unknown;
+    requestedToolsetIds?: unknown;
+    initialToolsetIds?: unknown;
+  }) => {
+    const requestedToolsetIds = payload && Object.prototype.hasOwnProperty.call(payload, 'requestedToolsetIds')
+      ? sanitizeToolsetIds(payload.requestedToolsetIds, 'requestedToolsetIds')
+      : undefined;
+    const initialToolsetIds = payload && Object.prototype.hasOwnProperty.call(payload, 'initialToolsetIds')
+      ? sanitizeToolsetIds(payload.initialToolsetIds, 'initialToolsetIds')
+      : undefined;
+    return listEnabledTaskTools({
+      agentId: typeof payload?.agentId === 'string' && payload.agentId.trim() ? sanitizeString(payload.agentId, 'agentId', 64) : undefined,
+      taskId: typeof payload?.taskId === 'string' && payload.taskId.trim() ? sanitizeString(payload.taskId, 'taskId', 128) : undefined,
+      deferredToolDiscoveryEnabled: payload?.deferredToolDiscoveryEnabled === true,
+      requestedToolsetIds,
+      initialToolsetIds,
+    });
+  });
+
+  handle('tools:enable', async (_event: IpcMainInvokeEvent, payload?: {
+    request?: {
+      agentId?: unknown;
+      taskId?: unknown;
+      toolsetIds?: unknown;
+      capabilityNames?: unknown;
+      toolNames?: unknown;
+      reason?: unknown;
+    };
+    agentId?: unknown;
+    taskId?: unknown;
+    deferredToolDiscoveryEnabled?: unknown;
+    requestedToolsetIds?: unknown;
+    initialToolsetIds?: unknown;
+  }) => {
+    const request = payload?.request || {};
+    const requestedToolsetIds = payload && Object.prototype.hasOwnProperty.call(payload, 'requestedToolsetIds')
+      ? sanitizeToolsetIds(payload.requestedToolsetIds, 'requestedToolsetIds')
+      : undefined;
+    const initialToolsetIds = payload && Object.prototype.hasOwnProperty.call(payload, 'initialToolsetIds')
+      ? sanitizeToolsetIds(payload.initialToolsetIds, 'initialToolsetIds')
+      : undefined;
+    return enableTaskScopedTools({
+      request: {
+        agentId: typeof request.agentId === 'string' && request.agentId.trim() ? sanitizeString(request.agentId, 'request.agentId', 64) : undefined,
+        taskId: typeof request.taskId === 'string' && request.taskId.trim() ? sanitizeString(request.taskId, 'request.taskId', 128) : undefined,
+        toolsetIds: Array.isArray(request.toolsetIds)
+          ? request.toolsetIds.map((entry) => sanitizeString(entry, 'request.toolsetIds', 64))
+          : undefined,
+        capabilityNames: Array.isArray(request.capabilityNames)
+          ? request.capabilityNames.map((entry) => sanitizeString(entry, 'request.capabilityNames', 128))
+          : undefined,
+        toolNames: Array.isArray(request.toolNames)
+          ? request.toolNames.map((entry) => sanitizeString(entry, 'request.toolNames', 128))
+          : undefined,
+        reason: typeof request.reason === 'string' && request.reason.trim()
+          ? sanitizeOptionalText(request.reason, 'request.reason', 500)
+          : undefined,
+      },
+      agentId: typeof payload?.agentId === 'string' && payload.agentId.trim() ? sanitizeString(payload.agentId, 'agentId', 64) : undefined,
+      taskId: typeof payload?.taskId === 'string' && payload.taskId.trim() ? sanitizeString(payload.taskId, 'taskId', 128) : undefined,
+      deferredToolDiscoveryEnabled: payload?.deferredToolDiscoveryEnabled === true,
+      requestedToolsetIds,
+      initialToolsetIds,
+    });
+  });
+
   // Model providers: custom providers only
   handle('model-providers:custom:list', async () => {
     return listCustomModelProviders();
@@ -2403,6 +2688,9 @@ export function registerIPCHandlers(): void {
     const maxOutputTokens = typeof model.maxOutputTokens === 'number' && Number.isFinite(model.maxOutputTokens)
       ? Math.max(1, Math.floor(model.maxOutputTokens))
       : undefined;
+    const toolsetIds = model.toolsetIds !== undefined
+      ? sanitizeToolsetIds(model.toolsetIds, 'model.toolsetIds')
+      : undefined;
     return upsertBuiltinProviderModel(providerId, {
       id: modelId,
       displayName,
@@ -2411,6 +2699,7 @@ export function registerIPCHandlers(): void {
       contextWindow,
       maxOutputTokens,
       supportsVision: model.supportsVision === true ? true : undefined,
+      toolsetIds,
     });
   });
 
@@ -2452,6 +2741,9 @@ export function registerIPCHandlers(): void {
       const maxOutputTokens = typeof model?.maxOutputTokens === 'number' && Number.isFinite(model.maxOutputTokens)
         ? Math.max(1, Math.floor(model.maxOutputTokens))
         : undefined;
+      const toolsetIds = model?.toolsetIds !== undefined
+        ? sanitizeToolsetIds(model.toolsetIds, `models[${index}].toolsetIds`)
+        : undefined;
       return {
         id: modelId,
         displayName,
@@ -2460,6 +2752,7 @@ export function registerIPCHandlers(): void {
         contextWindow,
         maxOutputTokens,
         supportsVision: model?.supportsVision === true ? true : undefined,
+        toolsetIds,
       };
     });
 
@@ -2592,14 +2885,20 @@ export function registerIPCHandlers(): void {
         }
         config.toolMode = normalizedToolMode as OllamaConfig['toolMode'];
       }
+      if (config.toolsetIds !== undefined) {
+        config.toolsetIds = sanitizeToolsetIds(config.toolsetIds, 'toolsetIds');
+      }
       // Validate optional models array if present
       if (config.models !== undefined) {
         if (!Array.isArray(config.models)) {
           throw new Error('Invalid Ollama configuration: models must be an array');
         }
-        for (const model of config.models) {
+        for (const [index, model] of config.models.entries()) {
           if (typeof model.id !== 'string' || typeof model.displayName !== 'string' || typeof model.size !== 'number') {
             throw new Error('Invalid Ollama configuration: invalid model format');
+          }
+          if (model.toolsetIds !== undefined) {
+            model.toolsetIds = sanitizeToolsetIds(model.toolsetIds, `models[${index}].toolsetIds`);
           }
         }
       }
@@ -2750,6 +3049,38 @@ export function registerIPCHandlers(): void {
     return getAppSettings();
   });
 
+  handle('settings:execution-profiles:list', async (_event: IpcMainInvokeEvent, payload?: { includeArchived?: unknown }) => {
+    return listExecutionProfiles({ includeArchived: payload?.includeArchived === true });
+  });
+
+  handle('settings:execution-profiles:create', async (_event: IpcMainInvokeEvent, payload: ExecutionProfileCreateInput) => {
+    return createExecutionProfile(payload);
+  });
+
+  handle('settings:execution-profiles:update', async (
+    _event: IpcMainInvokeEvent,
+    payload: { profileId?: unknown; update?: ExecutionProfileUpdateInput }
+  ) => {
+    const profileId = sanitizeString(payload?.profileId, 'profileId', 64);
+    return updateExecutionProfile(profileId, payload?.update || {});
+  });
+
+  handle('settings:execution-profiles:archive', async (
+    _event: IpcMainInvokeEvent,
+    payload: { profileId?: unknown; archived?: unknown }
+  ) => {
+    const profileId = sanitizeString(payload?.profileId, 'profileId', 64);
+    return archiveExecutionProfile(profileId, payload?.archived !== false);
+  });
+
+  handle('settings:execution-profiles:health-check', async (
+    _event: IpcMainInvokeEvent,
+    payload: { profileId?: unknown }
+  ) => {
+    const profileId = sanitizeString(payload?.profileId, 'profileId', 64);
+    return checkExecutionProfileHealth(profileId);
+  });
+
   handle('settings:runtime-hooks:get', async () => {
     return readRuntimeHooksRegistryRaw();
   });
@@ -2855,6 +3186,138 @@ export function registerIPCHandlers(): void {
     return { ok: true, path: pluginRoot };
   });
 
+  handle('search:index:rebuild', async (_event: IpcMainInvokeEvent, payload?: SearchIndexRebuildRequest) => {
+    const agentId = typeof payload?.agentId === 'string' && payload.agentId.trim()
+      ? sanitizeString(payload.agentId, 'agentId', 64)
+      : undefined;
+    return rebuildLocalSearchIndex({
+      agentId,
+      includeGit: payload?.includeGit !== false,
+    });
+  });
+
+  handle('search:query', async (_event: IpcMainInvokeEvent, payload: SearchQueryRequest) => {
+    const query = sanitizeOptionalText(payload?.query, 'query', 1000);
+    const sources = Array.isArray(payload?.sources)
+      ? payload.sources.filter((source): source is LocalSearchSource => ALLOWED_SEARCH_SOURCES.has(source as LocalSearchSource))
+      : undefined;
+    const agentId = typeof payload?.agentId === 'string' && payload.agentId.trim()
+      ? sanitizeString(payload.agentId, 'agentId', 64)
+      : undefined;
+    const taskId = typeof payload?.taskId === 'string' && payload.taskId.trim()
+      ? sanitizeString(payload.taskId, 'taskId', 128)
+      : undefined;
+    const projectId = typeof payload?.projectId === 'string' && payload.projectId.trim()
+      ? sanitizeString(payload.projectId, 'projectId', 128)
+      : undefined;
+    const connectorId = typeof payload?.connectorId === 'string' && payload.connectorId.trim()
+      ? sanitizeString(payload.connectorId, 'connectorId', 128)
+      : undefined;
+    const connectorInstanceId = typeof payload?.connectorInstanceId === 'string' && payload.connectorInstanceId.trim()
+      ? sanitizeString(payload.connectorInstanceId, 'connectorInstanceId', 128)
+      : undefined;
+    const skillId = typeof payload?.skillId === 'string' && payload.skillId.trim()
+      ? sanitizeString(payload.skillId, 'skillId', 128)
+      : undefined;
+    const memoryKind = typeof payload?.memoryKind === 'string' && payload.memoryKind.trim()
+      ? sanitizeString(payload.memoryKind, 'memoryKind', 64)
+      : undefined;
+    const category = typeof payload?.category === 'string' && ALLOWED_AUDIT_CATEGORIES.has(payload.category as AuditEventCategory)
+      ? payload.category as AuditEventCategory
+      : undefined;
+    const status = typeof payload?.status === 'string'
+      && ['info', 'success', 'warning', 'error'].includes(payload.status)
+      ? payload.status as AuditListRequest['status']
+      : undefined;
+    const limit = typeof payload?.limit === 'number' && Number.isFinite(payload.limit)
+      ? Math.max(1, Math.min(200, Math.floor(payload.limit)))
+      : undefined;
+    return queryLocalSearch({
+      query,
+      sources,
+      agentId,
+      taskId,
+      projectId,
+      connectorId,
+      connectorInstanceId,
+      skillId,
+      memoryKind,
+      category,
+      status,
+      since: sanitizeOptionalText(payload?.since, 'since', 80) || undefined,
+      until: sanitizeOptionalText(payload?.until, 'until', 80) || undefined,
+      limit,
+    });
+  });
+
+  handle('search:item:get', async (_event: IpcMainInvokeEvent, payload: SearchItemGetRequest) => {
+    const id = sanitizeString(payload?.id, 'id', 128);
+    return getLocalSearchItem({ id });
+  });
+
+  handle('audit:list', async (_event: IpcMainInvokeEvent, payload?: AuditListRequest) => {
+    const category = typeof payload?.category === 'string' && ALLOWED_AUDIT_CATEGORIES.has(payload.category as AuditEventCategory)
+      ? payload.category as AuditEventCategory
+      : undefined;
+    const query = sanitizeOptionalText(payload?.query, 'query', 1000) || undefined;
+    const limit = typeof payload?.limit === 'number' && Number.isFinite(payload.limit)
+      ? Math.max(1, Math.min(1000, Math.floor(payload.limit)))
+      : undefined;
+    return listAuditEvents({
+      category,
+      query,
+      status: typeof payload?.status === 'string' && ['info', 'success', 'warning', 'error'].includes(payload.status)
+        ? payload.status as AuditListRequest['status']
+        : undefined,
+      agentId: typeof payload?.agentId === 'string' && payload.agentId.trim() ? sanitizeString(payload.agentId, 'agentId', 64) : undefined,
+      taskId: typeof payload?.taskId === 'string' && payload.taskId.trim() ? sanitizeString(payload.taskId, 'taskId', 128) : undefined,
+      projectId: typeof payload?.projectId === 'string' && payload.projectId.trim() ? sanitizeString(payload.projectId, 'projectId', 128) : undefined,
+      connectorId: typeof payload?.connectorId === 'string' && payload.connectorId.trim() ? sanitizeString(payload.connectorId, 'connectorId', 128) : undefined,
+      connectorInstanceId: typeof payload?.connectorInstanceId === 'string' && payload.connectorInstanceId.trim() ? sanitizeString(payload.connectorInstanceId, 'connectorInstanceId', 128) : undefined,
+      skillId: typeof payload?.skillId === 'string' && payload.skillId.trim() ? sanitizeString(payload.skillId, 'skillId', 128) : undefined,
+      memoryKind: typeof payload?.memoryKind === 'string' && payload.memoryKind.trim() ? sanitizeString(payload.memoryKind, 'memoryKind', 64) : undefined,
+      targetType: typeof payload?.targetType === 'string' && payload.targetType.trim() ? sanitizeString(payload.targetType, 'targetType', 80) : undefined,
+      targetId: typeof payload?.targetId === 'string' && payload.targetId.trim() ? sanitizeString(payload.targetId, 'targetId', 128) : undefined,
+      since: sanitizeOptionalText(payload?.since, 'since', 80) || undefined,
+      until: sanitizeOptionalText(payload?.until, 'until', 80) || undefined,
+      limit,
+      includeDerived: payload?.includeDerived !== false,
+    });
+  });
+
+  handle('audit:get', async (_event: IpcMainInvokeEvent, payload: AuditGetRequest) => {
+    const id = sanitizeString(payload?.id, 'id', 128);
+    return getAuditEvent({ id });
+  });
+
+  handle('audit:export', async (_event: IpcMainInvokeEvent, payload?: AuditExportRequest) => {
+    const category = typeof payload?.category === 'string' && ALLOWED_AUDIT_CATEGORIES.has(payload.category as AuditEventCategory)
+      ? payload.category as AuditEventCategory
+      : undefined;
+    const format = payload?.format === 'jsonl' || payload?.format === 'csv' ? payload.format : 'json';
+    const query = sanitizeOptionalText(payload?.query, 'query', 1000) || undefined;
+    return exportAuditEvents({
+      category,
+      query,
+      status: typeof payload?.status === 'string' && ['info', 'success', 'warning', 'error'].includes(payload.status)
+        ? payload.status as AuditExportRequest['status']
+        : undefined,
+      agentId: typeof payload?.agentId === 'string' && payload.agentId.trim() ? sanitizeString(payload.agentId, 'agentId', 64) : undefined,
+      taskId: typeof payload?.taskId === 'string' && payload.taskId.trim() ? sanitizeString(payload.taskId, 'taskId', 128) : undefined,
+      projectId: typeof payload?.projectId === 'string' && payload.projectId.trim() ? sanitizeString(payload.projectId, 'projectId', 128) : undefined,
+      connectorId: typeof payload?.connectorId === 'string' && payload.connectorId.trim() ? sanitizeString(payload.connectorId, 'connectorId', 128) : undefined,
+      connectorInstanceId: typeof payload?.connectorInstanceId === 'string' && payload.connectorInstanceId.trim() ? sanitizeString(payload.connectorInstanceId, 'connectorInstanceId', 128) : undefined,
+      skillId: typeof payload?.skillId === 'string' && payload.skillId.trim() ? sanitizeString(payload.skillId, 'skillId', 128) : undefined,
+      memoryKind: typeof payload?.memoryKind === 'string' && payload.memoryKind.trim() ? sanitizeString(payload.memoryKind, 'memoryKind', 64) : undefined,
+      targetType: typeof payload?.targetType === 'string' && payload.targetType.trim() ? sanitizeString(payload.targetType, 'targetType', 80) : undefined,
+      targetId: typeof payload?.targetId === 'string' && payload.targetId.trim() ? sanitizeString(payload.targetId, 'targetId', 128) : undefined,
+      since: sanitizeOptionalText(payload?.since, 'since', 80) || undefined,
+      until: sanitizeOptionalText(payload?.until, 'until', 80) || undefined,
+      includeDerived: payload?.includeDerived !== false,
+      format,
+    });
+  });
+
   // Saved prompts (shared between desktop renderer and webchat)
   handle('saved-prompts:list', async () => {
     return listSavedPrompts();
@@ -2901,7 +3364,7 @@ export function registerIPCHandlers(): void {
     'saved-prompts:upsert',
     async (
       _event: IpcMainInvokeEvent,
-      payload: { id?: string; title: string; content: string; category?: string; createdAt?: string; updatedAt?: string }
+      payload: { id?: string; title: string; content: string; category?: string; description?: string; icon?: string; color?: string; createdAt?: string; updatedAt?: string }
     ) => {
       if (!payload || typeof payload !== 'object') {
         throw new Error('Invalid saved prompt payload');
@@ -2910,9 +3373,12 @@ export function registerIPCHandlers(): void {
       const title = sanitizeString(payload.title, 'title', 256);
       const content = sanitizeString(payload.content, 'content', 50_000);
       const category = payload.category ? sanitizeString(payload.category, 'category', 80) : undefined;
+      const description = payload.description ? sanitizeString(payload.description, 'description', 240) : undefined;
+      const icon = payload.icon ? sanitizeString(payload.icon, 'icon', 12) : undefined;
+      const color = payload.color ? sanitizeString(payload.color, 'color', 32) : undefined;
       const createdAt = payload.createdAt ? sanitizeString(payload.createdAt, 'createdAt', 64) : undefined;
       const updatedAt = payload.updatedAt ? sanitizeString(payload.updatedAt, 'updatedAt', 64) : undefined;
-      return upsertSavedPrompt({ id, title, content, category, createdAt, updatedAt });
+      return upsertSavedPrompt({ id, title, content, category, description, icon, color, createdAt, updatedAt });
     }
   );
 
@@ -3222,19 +3688,104 @@ export function registerIPCHandlers(): void {
     return getMemoryState(payload?.agentId, payload?.date);
   });
 
-  handle('settings:memory:read', async (_event: IpcMainInvokeEvent, payload: { kind: 'long-term' | 'daily'; date?: string; agentId?: string }) => {
-    if (!payload || (payload.kind !== 'long-term' && payload.kind !== 'daily')) {
+  handle('settings:memory:read', async (_event: IpcMainInvokeEvent, payload: { kind: 'user' | 'long-term' | 'daily' | 'snapshot'; date?: string; fileName?: string; agentId?: string }) => {
+    if (!payload || (payload.kind !== 'user' && payload.kind !== 'long-term' && payload.kind !== 'daily' && payload.kind !== 'snapshot')) {
       throw new Error('Invalid memory read request');
     }
-    return readMemoryFile(payload.kind, payload.date, payload.agentId);
+    return readMemoryFile(payload.kind, payload.date, payload.agentId, payload.fileName);
   });
 
-  handle('settings:memory:save', async (_event: IpcMainInvokeEvent, payload: { kind: 'long-term' | 'daily'; date?: string; agentId?: string; content?: string }) => {
-    if (!payload || (payload.kind !== 'long-term' && payload.kind !== 'daily')) {
+  handle('settings:memory:save', async (_event: IpcMainInvokeEvent, payload: { kind: 'user' | 'long-term' | 'daily' | 'snapshot'; date?: string; fileName?: string; agentId?: string; content?: string }) => {
+    if (!payload || (payload.kind !== 'user' && payload.kind !== 'long-term' && payload.kind !== 'daily' && payload.kind !== 'snapshot')) {
       throw new Error('Invalid memory save request');
     }
     const content = sanitizeOptionalText(payload.content, 'content', 200000);
-    return saveMemoryFile(payload.kind, content, payload.date, payload.agentId);
+    return saveMemoryFile(payload.kind, content, payload.date, payload.agentId, payload.fileName);
+  });
+
+  handle('settings:memory:delete', async (_event: IpcMainInvokeEvent, payload: { kind?: unknown; date?: string; fileName?: string; agentId?: string }) => {
+    const kind = sanitizeString(payload?.kind, 'kind', 24) as 'user' | 'long-term' | 'daily' | 'snapshot';
+    if (kind !== 'user' && kind !== 'long-term' && kind !== 'daily' && kind !== 'snapshot') {
+      throw new Error('Invalid memory delete request');
+    }
+    return deleteMemoryFile({
+      kind,
+      date: payload?.date,
+      fileName: payload?.fileName,
+      agentId: payload?.agentId,
+    });
+  });
+
+  handle('settings:memory:search', async (_event: IpcMainInvokeEvent, payload?: { query?: unknown; agentId?: string; limit?: unknown }) => {
+    const query = sanitizeOptionalText(payload?.query, 'query', 400) || '';
+    const limit = payload?.limit == null
+      ? 50
+      : sanitizeIntegerRange(payload.limit, 'limit', 1, 100, 50);
+    return searchMemory({ query, agentId: payload?.agentId, limit });
+  });
+
+  handle('memory:changes:list', async (_event: IpcMainInvokeEvent, payload?: {
+    limit?: unknown;
+    kind?: unknown;
+    status?: unknown;
+    agentId?: unknown;
+    taskId?: unknown;
+    source?: unknown;
+    includeReverted?: unknown;
+    since?: unknown;
+    until?: unknown;
+  }) => {
+    const limit = payload?.limit == null
+      ? 50
+      : sanitizeIntegerRange(payload.limit, 'limit', 1, 200, 50);
+    const allowedKinds = new Set(['user', 'long-term', 'daily', 'snapshot']);
+    const allowedStatuses = new Set(['automatic', 'staged', 'applied', 'reverted']);
+    const sanitizeStringArray = (value: unknown, field: string, maxLength: number): string[] | undefined => {
+      if (value == null) return undefined;
+      const raw = Array.isArray(value) ? value : [value];
+      const sanitized = raw
+        .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+        .map((entry) => sanitizeString(entry, field, maxLength));
+      return sanitized.length > 0 ? Array.from(new Set(sanitized)) : undefined;
+    };
+    const kinds = sanitizeStringArray(payload?.kind, 'kind', 24)?.filter((entry): entry is MemoryKind =>
+      allowedKinds.has(entry)
+    );
+    const statuses = sanitizeStringArray(payload?.status, 'status', 24)?.filter((entry): entry is MemoryChangeStatus =>
+      allowedStatuses.has(entry)
+    );
+    const sources = sanitizeStringArray(payload?.source, 'source', 80);
+    return {
+      changes: listMemoryChangeHistory({
+        limit,
+        kind: kinds,
+        status: statuses,
+        agentId: typeof payload?.agentId === 'string' && payload.agentId.trim()
+          ? sanitizeString(payload.agentId, 'agentId', 64)
+          : undefined,
+        taskId: typeof payload?.taskId === 'string' && payload.taskId.trim()
+          ? sanitizeString(payload.taskId, 'taskId', 128)
+          : undefined,
+        source: sources,
+        includeReverted: typeof payload?.includeReverted === 'boolean' ? payload.includeReverted : undefined,
+        since: typeof payload?.since === 'string' && payload.since.trim()
+          ? sanitizeString(payload.since, 'since', 40)
+          : undefined,
+        until: typeof payload?.until === 'string' && payload.until.trim()
+          ? sanitizeString(payload.until, 'until', 40)
+          : undefined,
+      }),
+    };
+  });
+
+  handle('memory:changes:apply', async (_event: IpcMainInvokeEvent, payload: { changeId?: unknown }) => {
+    const changeId = sanitizeString(payload?.changeId, 'changeId', 128);
+    return applyStagedMemoryFileWrite(changeId);
+  });
+
+  handle('memory:changes:rollback', async (_event: IpcMainInvokeEvent, payload: { changeId?: unknown }) => {
+    const changeId = sanitizeString(payload?.changeId, 'changeId', 128);
+    return rollbackMemoryFileChange(changeId);
   });
 
   // Files: Save data URL to temp file
@@ -3303,6 +3854,63 @@ export function registerIPCHandlers(): void {
     return captureRuntimePreviewFullPage(url);
   });
 
+  handle('chat-tool-compatibility:check', async (
+    _event: IpcMainInvokeEvent,
+    payload?: {
+      agentId?: unknown;
+      model?: SelectedModel | null;
+      deferredToolDiscoveryEnabled?: unknown;
+    }
+  ): Promise<ChatToolCompatibilityCheckResult> => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    const model = payload?.model == null
+      ? undefined
+      : sanitizeSelectedModel(payload.model, 'model');
+    const deferredToolDiscoveryEnabled = payload?.deferredToolDiscoveryEnabled === true;
+    const proof = proveChatDeferredToolCompatibility();
+    const unique = (values: string[]): string[] => Array.from(new Set(values.filter(Boolean)));
+    const missingCapabilities = unique(proof.cases.flatMap((regressionCase) => [
+      ...regressionCase.baselineAvailability.missingCapabilities,
+      ...regressionCase.deferredAvailability.expanded.missingCapabilities,
+    ]));
+    const missingTools = unique(proof.cases.flatMap((regressionCase) => [
+      ...regressionCase.baselineAvailability.missingTools,
+      ...regressionCase.deferredAvailability.expanded.missingTools,
+    ]));
+
+    return {
+      agentId,
+      model,
+      checkedAt: new Date().toISOString(),
+      backendAvailable: true,
+      safeToEnable: proof.passed,
+      missingCapabilities,
+      missingTools,
+      recommendation: proof.passed
+        ? (
+          deferredToolDiscoveryEnabled
+            ? 'On-demand tool discovery is enabled for this agent and the v1 compatibility pack passes.'
+            : 'The v1 compatibility pack passes. It is safe to enable on-demand tool discovery for this agent/local model.'
+        )
+        : proof.recommendations.join(' '),
+      cases: proof.cases.map((regressionCase) => ({
+        id: regressionCase.id,
+        label: regressionCase.name,
+        passed: regressionCase.passed,
+        missingCapabilities: unique([
+          ...regressionCase.baselineAvailability.missingCapabilities,
+          ...regressionCase.deferredAvailability.expanded.missingCapabilities,
+        ]),
+        missingTools: unique([
+          ...regressionCase.baselineAvailability.missingTools,
+          ...regressionCase.deferredAvailability.expanded.missingTools,
+        ]),
+        detail: `${regressionCase.description} Baseline coverage: ${regressionCase.baselineAvailability.coverage}; on-demand coverage: ${regressionCase.deferredAvailability.coverage} (${regressionCase.deferredAvailability.phase}).`,
+        recommendation: regressionCase.recommendations.join(' '),
+      })),
+    };
+  });
+
   // Agents: List agents with default/active info
   handle('agents:list', async () => {
     return {
@@ -3323,9 +3931,20 @@ export function registerIPCHandlers(): void {
       avatar?: string;
       avatarColor?: string;
       avatarImageDataUrl?: string;
+      appearance?: {
+        avatarFrame?: string;
+        accentColor?: string;
+        answerStyle?: string;
+        chatBackgroundId?: string;
+        showAvatarOnAnswers?: boolean;
+        presenceAnimation?: string;
+        reactionMode?: AgentReactionMode;
+      } | null;
       workspaceRoot?: string;
       systemPromptAppend?: string;
       selectedModel?: SelectedModel | null;
+      toolsetIds?: ToolsetId[];
+      deferredToolDiscoveryEnabled?: boolean;
       agenticLoopEnabled?: boolean;
       agenticLoopMaxIterations?: number;
       agenticLoopTimeoutMs?: number;
@@ -3339,8 +3958,14 @@ export function registerIPCHandlers(): void {
       heartbeatWindowStartTime?: string;
       heartbeatWindowEndTime?: string;
       heartbeatPrompt?: string;
+      alwaysOnEnabled?: boolean;
+      alwaysOnWorkboardDispatchEnabled?: boolean;
+      alwaysOnWorkboardProjectIds?: string[];
       autoSkillEnabled?: boolean;
       autoSkillAutoPromoteLowRisk?: boolean;
+      skillAutomationMode?: 'automatic' | 'approval' | 'off';
+      memoryWriteMode?: 'automatic' | 'approval' | 'off';
+      memoryNotificationsEnabled?: boolean;
       subagentsEnabled?: boolean;
       subagentMaxChildren?: number;
       subagentMaxDepth?: number;
@@ -3371,7 +3996,17 @@ export function registerIPCHandlers(): void {
     if (!config || typeof config.name !== 'string') {
       throw new Error('Agent name is required');
     }
+    const hasRoleName = Object.prototype.hasOwnProperty.call(config, 'roleName');
+    const hasDescription = Object.prototype.hasOwnProperty.call(config, 'description');
+    const hasAvatar = Object.prototype.hasOwnProperty.call(config, 'avatar');
+    const hasAvatarColor = Object.prototype.hasOwnProperty.call(config, 'avatarColor');
+    const hasAvatarImageDataUrl = Object.prototype.hasOwnProperty.call(config, 'avatarImageDataUrl');
+    const hasWorkspaceRoot = Object.prototype.hasOwnProperty.call(config, 'workspaceRoot');
+    const hasSystemPromptAppend = Object.prototype.hasOwnProperty.call(config, 'systemPromptAppend');
     const hasSelectedModel = Object.prototype.hasOwnProperty.call(config, 'selectedModel');
+    const hasAppearance = Object.prototype.hasOwnProperty.call(config, 'appearance');
+    const hasToolsetIds = Object.prototype.hasOwnProperty.call(config, 'toolsetIds');
+    const hasDeferredToolDiscoveryEnabled = Object.prototype.hasOwnProperty.call(config, 'deferredToolDiscoveryEnabled');
     const hasSubagentDefaultModel = Object.prototype.hasOwnProperty.call(config, 'subagentDefaultModel');
     const hasPermissionProfile = Object.prototype.hasOwnProperty.call(config, 'permissionProfile');
     const sanitizedConfig: {
@@ -3382,9 +4017,20 @@ export function registerIPCHandlers(): void {
       avatar?: string;
       avatarColor?: string;
       avatarImageDataUrl?: string;
+      appearance?: {
+        avatarFrame?: string;
+        accentColor?: string;
+        answerStyle?: string;
+        chatBackgroundId?: string;
+        showAvatarOnAnswers?: boolean;
+        presenceAnimation?: string;
+        reactionMode?: AgentReactionMode;
+      } | null;
       workspaceRoot?: string;
       systemPromptAppend?: string;
       selectedModel?: SelectedModel | null;
+      toolsetIds?: ToolsetId[];
+      deferredToolDiscoveryEnabled?: boolean;
       agenticLoopEnabled?: boolean;
       agenticLoopMaxIterations?: number;
       agenticLoopTimeoutMs?: number;
@@ -3398,8 +4044,14 @@ export function registerIPCHandlers(): void {
       heartbeatWindowStartTime?: string;
       heartbeatWindowEndTime?: string;
       heartbeatPrompt?: string;
+      alwaysOnEnabled?: boolean;
+      alwaysOnWorkboardDispatchEnabled?: boolean;
+      alwaysOnWorkboardProjectIds?: string[];
       autoSkillEnabled?: boolean;
       autoSkillAutoPromoteLowRisk?: boolean;
+      skillAutomationMode?: 'automatic' | 'approval' | 'off';
+      memoryWriteMode?: 'automatic' | 'approval' | 'off';
+      memoryNotificationsEnabled?: boolean;
       subagentsEnabled?: boolean;
       subagentMaxChildren?: number;
       subagentMaxDepth?: number;
@@ -3428,18 +4080,79 @@ export function registerIPCHandlers(): void {
     } = {
       id: config.id ? sanitizeString(config.id, 'agentId', 64) : undefined,
       name: sanitizeString(config.name, 'name', 128),
-      roleName: config.roleName ? sanitizeString(config.roleName, 'roleName', 128) : undefined,
-      description: config.description ? sanitizeString(config.description, 'description', 256) : undefined,
-      avatar: config.avatar ? sanitizeString(config.avatar, 'avatar', 64) : undefined,
-      avatarColor: config.avatarColor ? sanitizeString(config.avatarColor, 'avatarColor', 16) : undefined,
-      avatarImageDataUrl: sanitizeOptionalAvatarImageDataUrl(config.avatarImageDataUrl),
-      workspaceRoot: config.workspaceRoot ? sanitizeString(config.workspaceRoot, 'workspaceRoot', 1024) : undefined,
-      systemPromptAppend: config.systemPromptAppend ? sanitizeString(config.systemPromptAppend, 'systemPromptAppend', MAX_TEXT_LENGTH) : undefined,
     };
+    if (hasRoleName) {
+      sanitizedConfig.roleName = config.roleName ? sanitizeString(config.roleName, 'roleName', 128) : undefined;
+    }
+    if (hasDescription) {
+      sanitizedConfig.description = config.description ? sanitizeString(config.description, 'description', 256) : undefined;
+    }
+    if (hasAvatar) {
+      sanitizedConfig.avatar = config.avatar ? sanitizeString(config.avatar, 'avatar', 64) : undefined;
+    }
+    if (hasAvatarColor) {
+      sanitizedConfig.avatarColor = config.avatarColor ? sanitizeString(config.avatarColor, 'avatarColor', 16) : undefined;
+    }
+    if (hasAvatarImageDataUrl) {
+      sanitizedConfig.avatarImageDataUrl = sanitizeOptionalAvatarImageDataUrl(config.avatarImageDataUrl);
+    }
+    if (hasWorkspaceRoot) {
+      sanitizedConfig.workspaceRoot = config.workspaceRoot ? sanitizeString(config.workspaceRoot, 'workspaceRoot', 1024) : undefined;
+    }
+    if (hasSystemPromptAppend) {
+      sanitizedConfig.systemPromptAppend = config.systemPromptAppend ? sanitizeString(config.systemPromptAppend, 'systemPromptAppend', MAX_TEXT_LENGTH) : undefined;
+    }
+    if (hasAppearance) {
+      if (config.appearance == null) {
+        sanitizedConfig.appearance = null;
+      } else if (typeof config.appearance !== 'object') {
+        throw new Error('appearance must be an object or null');
+      } else {
+        const source = config.appearance as Record<string, unknown>;
+        const sanitizeAppearanceText = (field: string, maxLength = 80): string | undefined => {
+          const value = source[field];
+          if (value == null || value === '') return undefined;
+          if (typeof value !== 'string') {
+            throw new Error(`appearance.${field} must be a string`);
+          }
+          const trimmed = sanitizeString(value, `appearance.${field}`, maxLength).trim();
+          return trimmed || undefined;
+        };
+        const sanitizeReactionMode = (): AgentReactionMode | undefined => {
+          const value = source.reactionMode;
+          if (value == null || value === '') return undefined;
+          if (value === 'off' || value === 'minimal' || value === 'standard' || value === 'playful') {
+            return value;
+          }
+          throw new Error('appearance.reactionMode must be off, minimal, standard, or playful');
+        };
+        const appearance = {
+          avatarFrame: sanitizeAppearanceText('avatarFrame'),
+          accentColor: sanitizeAppearanceText('accentColor', 32),
+          answerStyle: sanitizeAppearanceText('answerStyle'),
+          chatBackgroundId: sanitizeAppearanceText('chatBackgroundId'),
+          showAvatarOnAnswers: typeof source.showAvatarOnAnswers === 'boolean' ? source.showAvatarOnAnswers : undefined,
+          presenceAnimation: sanitizeAppearanceText('presenceAnimation'),
+          reactionMode: sanitizeReactionMode(),
+        };
+        sanitizedConfig.appearance = Object.values(appearance).some((value) => value !== undefined)
+          ? appearance
+          : null;
+      }
+    }
     if (hasSelectedModel) {
       sanitizedConfig.selectedModel = config.selectedModel == null
         ? null
         : sanitizeSelectedModel(config.selectedModel, 'selectedModel');
+    }
+    if (hasToolsetIds) {
+      sanitizedConfig.toolsetIds = sanitizeToolsetIds(config.toolsetIds, 'toolsetIds');
+    }
+    if (hasDeferredToolDiscoveryEnabled) {
+      if (typeof config.deferredToolDiscoveryEnabled !== 'boolean') {
+        throw new Error('deferredToolDiscoveryEnabled must be a boolean');
+      }
+      sanitizedConfig.deferredToolDiscoveryEnabled = config.deferredToolDiscoveryEnabled;
     }
     if (Object.prototype.hasOwnProperty.call(config, 'subagentsEnabled')) {
       if (typeof config.subagentsEnabled !== 'boolean') {
@@ -3671,6 +4384,44 @@ export function registerIPCHandlers(): void {
       }
       sanitizedConfig.autoSkillAutoPromoteLowRisk = config.autoSkillAutoPromoteLowRisk;
     }
+    if (Object.prototype.hasOwnProperty.call(config, 'skillAutomationMode')) {
+      const mode = sanitizeString(config.skillAutomationMode, 'skillAutomationMode', 24).toLowerCase();
+      if (mode !== 'automatic' && mode !== 'approval' && mode !== 'off') {
+        throw new Error('skillAutomationMode must be automatic, approval, or off');
+      }
+      sanitizedConfig.skillAutomationMode = mode;
+    }
+    if (Object.prototype.hasOwnProperty.call(config, 'memoryWriteMode')) {
+      const mode = sanitizeString(config.memoryWriteMode, 'memoryWriteMode', 24).toLowerCase();
+      if (mode !== 'automatic' && mode !== 'approval' && mode !== 'off') {
+        throw new Error('memoryWriteMode must be automatic, approval, or off');
+      }
+      sanitizedConfig.memoryWriteMode = mode;
+    }
+    if (Object.prototype.hasOwnProperty.call(config, 'memoryNotificationsEnabled')) {
+      if (typeof config.memoryNotificationsEnabled !== 'boolean') {
+        throw new Error('memoryNotificationsEnabled must be a boolean');
+      }
+      sanitizedConfig.memoryNotificationsEnabled = config.memoryNotificationsEnabled;
+    }
+    if (Object.prototype.hasOwnProperty.call(config, 'alwaysOnEnabled')) {
+      if (typeof config.alwaysOnEnabled !== 'boolean') {
+        throw new Error('alwaysOnEnabled must be a boolean');
+      }
+      sanitizedConfig.alwaysOnEnabled = config.alwaysOnEnabled;
+    }
+    if (Object.prototype.hasOwnProperty.call(config, 'alwaysOnWorkboardDispatchEnabled')) {
+      if (typeof config.alwaysOnWorkboardDispatchEnabled !== 'boolean') {
+        throw new Error('alwaysOnWorkboardDispatchEnabled must be a boolean');
+      }
+      sanitizedConfig.alwaysOnWorkboardDispatchEnabled = config.alwaysOnWorkboardDispatchEnabled;
+    }
+    if (Object.prototype.hasOwnProperty.call(config, 'alwaysOnWorkboardProjectIds')) {
+      sanitizedConfig.alwaysOnWorkboardProjectIds = sanitizeIdList(
+        config.alwaysOnWorkboardProjectIds,
+        'alwaysOnWorkboardProjectIds'
+      );
+    }
     return upsertAgent(sanitizedConfig);
   });
 
@@ -3705,6 +4456,42 @@ export function registerIPCHandlers(): void {
   // Agents: Get active agent id
   handle('agents:get-active', async () => {
     return resolveActiveAgentId();
+  });
+
+  handle('always-on:status:get', async () => {
+    return getAlwaysOnStatusSnapshot();
+  });
+
+  handle('always-on:manager:start', async () => {
+    return startAlwaysOnRuntimeManager();
+  });
+
+  handle('always-on:manager:stop', async () => {
+    return stopAlwaysOnRuntimeManager();
+  });
+
+  handle('always-on:manager:restart', async () => {
+    return restartAlwaysOnRuntimeManager();
+  });
+
+  handle('always-on:agent:set', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; enabled?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    if (typeof payload?.enabled !== 'boolean') {
+      throw new Error('enabled must be a boolean');
+    }
+    return setAgentAlwaysOnEnabled(agentId, payload.enabled);
+  });
+
+  handle('always-on:agent:restart', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown }) => {
+    const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
+    return restartAgentAlwaysOnRuntime(agentId);
+  });
+
+  handle('connector-deliveries:list', async (_event: IpcMainInvokeEvent, payload?: { limit?: unknown }) => {
+    const limit = payload?.limit == null
+      ? 100
+      : sanitizeIntegerRange(payload.limit, 'limit', 1, 500, 100);
+    return { deliveries: listConnectorDeliveries(limit) };
   });
 
   // Discord: Get config + status
@@ -4859,6 +5646,17 @@ export function registerIPCHandlers(): void {
     return installUserSkillDependency(req as any);
   });
 
+  handle('user-skills:curator:run', async (_event: IpcMainInvokeEvent, req?: { agentId?: string; dryRun?: boolean }) => {
+    return runUserSkillCurator({
+      agentId: req?.agentId ? sanitizeOptionalText(req.agentId, 'agentId', 128) || undefined : undefined,
+      dryRun: req?.dryRun === true,
+    });
+  });
+
+  handle('user-skills:curator:history', async () => {
+    return listUserSkillCuratorHistory();
+  });
+
   handle('user-skills:config:get', async (_event: IpcMainInvokeEvent, req: { skillKey: string }) => {
     const skillKey = sanitizeString(req?.skillKey, 'skillKey', 256);
     return { skillKey, config: getUserSkillConfig(skillKey) };
@@ -4948,6 +5746,25 @@ export function registerIPCHandlers(): void {
         extraInstruction: sanitizeOptionalText(req?.extraInstruction, 'extraInstruction', 2000) || undefined,
         includeWorkItemName: req?.includeWorkItemName === true,
         includeNoteTitle: req?.includeNoteTitle !== false,
+      });
+    }
+  );
+
+  handle(
+    'settings-assistant:postcard:generate',
+    async (_event: IpcMainInvokeEvent, req: ChatPostcardDraftGenerateRequest) => {
+      return generateChatPostcardDraft({
+        agentId: sanitizeOptionalText(req?.agentId, 'agentId', 128) || undefined,
+        source: req?.source === 'conversation' ? 'conversation' : 'answer',
+        templateId: sanitizeOptionalText(req?.templateId, 'templateId', 80) || undefined,
+        titleHint: sanitizeOptionalText(req?.titleHint, 'titleHint', 240) || undefined,
+        content: sanitizeString(req?.content, 'content', 20000),
+        sources: Array.isArray(req?.sources)
+          ? req.sources.map((source) => sanitizeOptionalText(source, 'source', 1000)).filter(Boolean).slice(0, 12)
+          : [],
+        agentName: sanitizeOptionalText(req?.agentName, 'agentName', 160) || undefined,
+        agentRole: sanitizeOptionalText(req?.agentRole, 'agentRole', 160) || undefined,
+        projectName: sanitizeOptionalText(req?.projectName, 'projectName', 160) || undefined,
       });
     }
   );
@@ -5139,6 +5956,8 @@ export function registerIPCHandlers(): void {
   handle('build-mode:runtime:start', async (_event: IpcMainInvokeEvent, payload: BuildStartRequest) => {
     const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
     const workspaceRelativePath = sanitizeOptionalText(payload?.workspaceRelativePath, 'workspaceRelativePath', 300) || '.';
+    const executionProfileId = sanitizeOptionalText(payload?.executionProfileId, 'executionProfileId', 64) || null;
+    assertExecutionProfileRunnable(executionProfileId);
     const mode = payload?.mode === 'run' ? 'run' : 'dev';
     const commandOverride = sanitizeOptionalText(payload?.commandOverride, 'commandOverride', 500);
     const startEntries = Array.isArray(payload?.startEntries)
@@ -5187,6 +6006,8 @@ export function registerIPCHandlers(): void {
   handle('build-mode:runtime:run-build', async (_event: IpcMainInvokeEvent, payload: BuildBuildRequest) => {
     const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
     const workspaceRelativePath = sanitizeOptionalText(payload?.workspaceRelativePath, 'workspaceRelativePath', 300) || '.';
+    const executionProfileId = sanitizeOptionalText(payload?.executionProfileId, 'executionProfileId', 64) || null;
+    assertExecutionProfileRunnable(executionProfileId);
     const commandOverride = sanitizeOptionalText(payload?.commandOverride, 'commandOverride', 500);
     const envOverrides = normalizeEnvOverrides(payload?.envOverrides);
     return buildDevProcessManager.runBuildCommand({
@@ -5231,9 +6052,11 @@ export function registerIPCHandlers(): void {
     return getLatestBuildQualityCheckRun(agentId, workspaceRelativePath);
   });
 
-  handle('build-mode:runtime:run-once', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; workspaceRelativePath?: unknown; envOverrides?: unknown; commandOverride?: unknown }) => {
+  handle('build-mode:runtime:run-once', async (_event: IpcMainInvokeEvent, payload: { agentId?: unknown; workspaceRelativePath?: unknown; executionProfileId?: unknown; envOverrides?: unknown; commandOverride?: unknown }) => {
     const agentId = sanitizeString(payload?.agentId, 'agentId', 64);
     const workspaceRelativePath = sanitizeOptionalText(payload?.workspaceRelativePath, 'workspaceRelativePath', 300) || '.';
+    const executionProfileId = sanitizeOptionalText(payload?.executionProfileId, 'executionProfileId', 64) || null;
+    assertExecutionProfileRunnable(executionProfileId);
     const envOverrides = normalizeEnvOverrides(payload?.envOverrides);
     const commandOverride = sanitizeOptionalText(payload?.commandOverride, 'commandOverride', 500) || undefined;
     return buildDevProcessManager.runStartCommandOnce(agentId, workspaceRelativePath, envOverrides, commandOverride);
@@ -5732,6 +6555,12 @@ export function registerIPCHandlers(): void {
     const workspaceRelativePath = sanitizeString(payload?.workspaceRelativePath, 'workspaceRelativePath', 300);
     const id = sanitizeOptionalText(payload?.id, 'id', 64) || undefined;
     const usageProjectId = sanitizeOptionalText(payload?.usageProjectId, 'usageProjectId', 128) || null;
+    const executionProfileId = Object.prototype.hasOwnProperty.call(payload || {}, 'executionProfileId')
+      ? (sanitizeOptionalText(payload?.executionProfileId, 'executionProfileId', 64) || null)
+      : undefined;
+    const toolsetIds = payload?.toolsetIds !== undefined
+      ? sanitizeToolsetIds(payload.toolsetIds, 'toolsetIds')
+      : undefined;
     const assigneeIds = sanitizeOptionalIdOverride(payload?.assigneeIds, 'assigneeIds');
     const activeEnvProfileId = sanitizeOptionalText(payload?.activeEnvProfileId, 'activeEnvProfileId', 64) || undefined;
 
@@ -5741,6 +6570,8 @@ export function registerIPCHandlers(): void {
       name,
       workspaceRelativePath,
       usageProjectId,
+      ...(executionProfileId !== undefined ? { executionProfileId } : {}),
+      ...(toolsetIds !== undefined ? { toolsetIds } : {}),
       ...(assigneeIds !== undefined ? { assigneeIds } : {}),
       commands: payload?.commands,
       envProfiles: payload?.envProfiles,
@@ -5860,10 +6691,47 @@ export function registerIPCHandlers(): void {
     };
   });
 
-  handle('subagents:list-all', async (_event: IpcMainInvokeEvent, payload: { includeArchived?: unknown }) => {
+  handle('subagents:list-all', async (_event: IpcMainInvokeEvent, payload: { includeArchived?: unknown; query?: unknown; limit?: unknown }) => {
     const includeArchived = payload?.includeArchived === true;
-    const runs = listSubagentRuns(undefined, { includeArchived }).map((run) => getSubagentRunForUi(run.runId)).filter(Boolean);
-    return { runs };
+    const query = sanitizeOptionalText(payload?.query, 'query', 256).trim().toLowerCase();
+    const requestedLimit = typeof payload?.limit === 'number' && Number.isFinite(payload.limit)
+      ? Math.floor(payload.limit)
+      : 250;
+    const limit = Math.min(500, Math.max(1, requestedLimit));
+    const allRuns = listSubagentRuns(undefined, { includeArchived });
+    const matchingRuns = query
+      ? allRuns.filter((run) => {
+        const haystack = [
+          run.runId,
+          run.label,
+          run.task,
+          run.childAgentId,
+          run.parentAgentId,
+          run.childTaskId,
+          run.parentTaskId,
+          run.sessionId,
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        return haystack.includes(query);
+      })
+      : allRuns;
+    const orderedRuns = [...matchingRuns].sort((a, b) => {
+      const aActive = a.status === 'running' || a.status === 'accepted' ? 1 : 0;
+      const bActive = b.status === 'running' || b.status === 'accepted' ? 1 : 0;
+      if (aActive !== bActive) return bActive - aActive;
+      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+    });
+    const runs = orderedRuns
+      .slice(0, limit)
+      .map((run) => getSubagentRunForUi(run.runId))
+      .filter(Boolean);
+    return {
+      runs,
+      total: orderedRuns.length,
+      truncated: orderedRuns.length > runs.length,
+    };
   });
 
   handle('subagents:get', async (_event: IpcMainInvokeEvent, payload: { runId?: unknown }) => {

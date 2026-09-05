@@ -14,12 +14,14 @@ import { cn } from '@/lib/utils';
 import type { ProviderConfig, SelectedModel, Task } from '@accomplish/shared';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import ConversationListItem, { getTaskDisplayTitle, getTaskHoverTitle } from './ConversationListItem';
 import FolderItem from './FolderItem';
 import CreateFolderDialog from './CreateFolderDialog';
 import SettingsDialog from './SettingsDialog';
+import SearchAuditDialog from './SearchAuditDialog';
 import ProjectManagementDialog from '@/components/usage/ProjectManagementDialog';
-import { Settings, MessageSquarePlus, Search, FolderPlus, MoreHorizontal, GripVertical, ChevronRight, ChevronDown, User, Check, CircleHelp, Sun, Moon, Monitor, GitBranch, Briefcase } from 'lucide-react';
+import { Settings, MessageSquarePlus, Search, FolderPlus, MoreHorizontal, GripVertical, ChevronRight, ChevronDown, User, Check, CircleHelp, Sun, Moon, Monitor, GitBranch, Briefcase, FileSearch } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -52,6 +54,7 @@ import {
   normalizeSelectedModel,
   SELECTED_MODEL_CHANGED_EVENT,
 } from '@/lib/selected-model-events';
+import { APP_COMMAND_EVENTS } from '@/lib/app-commands';
 import logoImage from '/assets/open-deskmate-logo.png';
 import appFavicon from '../../../../resources/icon.png';
 
@@ -106,6 +109,7 @@ export default function Sidebar() {
   const navigate = useNavigate();
   const location = useLocation();
   const [showSettings, setShowSettings] = useState(false);
+  const [showSearchAudit, setShowSearchAudit] = useState(false);
   const [showProjectManagement, setShowProjectManagement] = useState(false);
   const [projectManagementInitialProjectId, setProjectManagementInitialProjectId] = useState<string | null>(null);
   const [pendingSettingsSectionQuery, setPendingSettingsSectionQuery] = useState('');
@@ -122,6 +126,7 @@ export default function Sidebar() {
   const [agentModelUpdating, setAgentModelUpdating] = useState(false);
   const [chatSidebarWidth, setChatSidebarWidth] = useState(readChatSidebarWidth);
   const [sidebarResizing, setSidebarResizing] = useState(false);
+  const [appVersion, setAppVersion] = useState('');
 
   const MAX_VISIBLE_PROJECTS = 5;
   const { tasks, loadTasks, updateTaskStatus, addTaskUpdate, insertTask, openLauncher, setTaskFolder, clearCurrentTask } = useTaskStore();
@@ -207,6 +212,20 @@ export default function Sidebar() {
   }, [loadUsageProjects]);
 
   useEffect(() => {
+    let cancelled = false;
+    void accomplish.getVersion()
+      .then((version) => {
+        if (!cancelled) setAppVersion(version);
+      })
+      .catch(() => {
+        if (!cancelled) setAppVersion('');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [accomplish]);
+
+  useEffect(() => {
     const handleOpenSettings = (event: Event) => {
       const detail = event instanceof CustomEvent ? event.detail as { query?: unknown } | undefined : undefined;
       setPendingSettingsSectionQuery(typeof detail?.query === 'string' ? detail.query : '');
@@ -216,6 +235,12 @@ export default function Sidebar() {
     return () => {
       window.removeEventListener('opendeskmate:open-settings', handleOpenSettings as EventListener);
     };
+  }, []);
+
+  useEffect(() => {
+    const handleSearchOpen = () => setShowSearchAudit(true);
+    window.addEventListener(APP_COMMAND_EVENTS.searchOpen, handleSearchOpen);
+    return () => window.removeEventListener(APP_COMMAND_EVENTS.searchOpen, handleSearchOpen);
   }, []);
 
   // Get tasks organized by folder
@@ -602,6 +627,15 @@ export default function Sidebar() {
               >
                 <GitBranch className="h-4 w-4" />
               </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setShowSearchAudit(true)}
+                title="Search & Audit"
+                className="h-9 w-9 rounded-xl hover:bg-accent/80 transition-smooth"
+              >
+                <FileSearch className="h-4 w-4" />
+              </Button>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button
@@ -669,14 +703,29 @@ export default function Sidebar() {
               >
                 <Briefcase className="h-4 w-4" />
               </Button>
-              <div className="mt-3 flex items-center justify-center overflow-hidden">
-                <img
-                  src={appFavicon}
-                  alt="Open Deskmate"
-                  className="hover-lift transition-smooth select-none"
-                  style={{ width: '28px', height: '28px', objectFit: 'contain' }}
-                />
-              </div>
+              <TooltipProvider delayDuration={180}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div
+                      className="mt-3 flex items-center justify-center overflow-hidden"
+                      aria-label={`Open Deskmate${appVersion ? ` version ${appVersion}` : ''}`}
+                    >
+                      <img
+                        src={appFavicon}
+                        alt="Open Deskmate"
+                        className="hover-lift transition-smooth select-none"
+                        style={{ width: '28px', height: '28px', objectFit: 'contain' }}
+                      />
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" align="center" sideOffset={10} className="min-w-40">
+                    <div className="text-sm font-semibold leading-tight">Open Deskmate</div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {appVersion ? `Version ${appVersion}` : 'Version unavailable'}
+                    </div>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
             </div>
           </>
         ) : (
@@ -1056,14 +1105,26 @@ export default function Sidebar() {
         {/* Bottom Section - Logo and Settings */}
         <div className="px-4 py-4 border-t border-border/50 flex items-center justify-between bg-gradient-to-t from-muted/30 to-transparent">
           {/* Logo - Bottom Left */}
-          <div className="flex items-center">
-            <img
-              src={logoImage}
-              alt="Open Deskmate"
-              className="hover-lift transition-smooth"
-              style={{ height: '60px', objectFit: 'contain' }}
-            />
-          </div>
+          <TooltipProvider delayDuration={180}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className="flex items-center" aria-label={`Open Deskmate${appVersion ? ` version ${appVersion}` : ''}`}>
+                  <img
+                    src={logoImage}
+                    alt="Open Deskmate"
+                    className="hover-lift transition-smooth"
+                    style={{ height: '60px', objectFit: 'contain' }}
+                  />
+                </div>
+              </TooltipTrigger>
+              <TooltipContent side="top" align="start" sideOffset={10} className="min-w-40">
+                <div className="text-sm font-semibold leading-tight">Open Deskmate</div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  {appVersion ? `Version ${appVersion}` : 'Version unavailable'}
+                </div>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
 
           {/* Help + Theme + Settings Buttons - Bottom Right */}
           <div className="flex items-center gap-1">
@@ -1087,6 +1148,15 @@ export default function Sidebar() {
               className="rounded-xl hover:bg-accent/80 transition-smooth"
             >
               <CircleHelp className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setShowSearchAudit(true)}
+              title="Search & Audit"
+              className="rounded-xl hover:bg-accent/80 transition-smooth"
+            >
+              <FileSearch className="h-4 w-4" />
             </Button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -1165,6 +1235,10 @@ export default function Sidebar() {
         open={showSettings}
         onOpenChange={setShowSettings}
         initialSectionQuery={pendingSettingsSectionQuery}
+      />
+      <SearchAuditDialog
+        open={showSearchAudit}
+        onOpenChange={setShowSearchAudit}
       />
       <ProjectManagementDialog
         open={showProjectManagement}

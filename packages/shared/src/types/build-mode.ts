@@ -1,3 +1,5 @@
+import type { ToolsetId } from './toolsets';
+
 export type BuildStudioMode = 'chat' | 'build';
 
 export type BuildProjectCategory = 'web' | 'backend' | 'desktop' | 'node' | 'generic';
@@ -85,6 +87,7 @@ export interface BuildSessionSnapshot {
 export interface BuildStartRequest {
   agentId: string;
   workspaceRelativePath?: string;
+  executionProfileId?: string | null;
   mode?: BuildExecutionMode;
   commandOverride?: string;
   startEntries?: BuildStartEntry[];
@@ -97,6 +100,7 @@ export interface BuildStartRequest {
 export interface BuildBuildRequest {
   agentId: string;
   workspaceRelativePath?: string;
+  executionProfileId?: string | null;
   commandOverride?: string;
   envOverrides?: Record<string, string>;
 }
@@ -521,6 +525,8 @@ export interface BuildProjectPreset {
   name: string;
   workspaceRelativePath: string;
   usageProjectId?: string | null;
+  executionProfileId?: string | null;
+  toolsetIds?: ToolsetId[];
   /**
    * People assigned to this Build preset.
    * null/undefined inherits from the assigned budget; [] explicitly means no assignees.
@@ -547,6 +553,8 @@ export interface BuildProjectPresetInput {
   name: string;
   workspaceRelativePath: string;
   usageProjectId?: string | null;
+  executionProfileId?: string | null;
+  toolsetIds?: ToolsetId[];
   assigneeIds?: string[] | null;
   commands?: {
     startCommand?: string;

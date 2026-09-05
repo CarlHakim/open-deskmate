@@ -105,6 +105,15 @@ export interface GatewayConnectorRuntimeStatus {
   accountId?: string;
   botUserId?: string;
   detail?: string;
+  deliveryHealth?: {
+    status: 'healthy' | 'backlog' | 'degraded';
+    pendingCount: number;
+    sendingCount: number;
+    retryingCount: number;
+    failedCount: number;
+    lastFailureReason?: string;
+    lastFailedAt?: string;
+  };
 }
 
 export interface GatewayConnectorRuntimeTestResult {

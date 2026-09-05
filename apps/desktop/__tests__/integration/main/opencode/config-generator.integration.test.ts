@@ -158,7 +158,7 @@ describe('OpenCode Config Generator Integration', () => {
 
       expect(config.$schema).toBe('https://opencode.ai/config.json');
       expect(config.default_agent).toBe('accomplish');
-      expect(config.permission).toBe('allow');
+      expect(config.permission).toMatchObject({ '*': 'allow' });
       // We intentionally do not set enabled_providers. Some OpenCode builds ship
       // with only a subset of providers; forcing a list can produce "no providers found"
       // and the CLI exits without emitting NDJSON, leaving the UI stuck on "Thinking...".
@@ -297,6 +297,38 @@ describe('OpenCode Config Generator Integration', () => {
 
       expect(prompt).toContain('FILE PERMISSION WORKFLOW');
       expect(prompt).toContain('request_file_permission');
+      expect(prompt).toContain('Workspace-local file operations are allowed directly.');
+      expect(prompt).toContain('Do NOT call file-permission_request_file_permission first.');
+    });
+
+    it('should make file permission prompt wording respect disabled workspace auto-allow', async () => {
+      // Act
+      const { buildOpenCodeSystemPrompt } = await import('@main/opencode/config-generator');
+      const prompt = buildOpenCodeSystemPrompt({
+        skillsPath: path.join(tempAppDir, 'skills'),
+        customMcpRegistryPath: path.join(tempUserDataDir, 'opencode', 'custom-mcp-servers.json'),
+        permissionSettings: {
+          file: {
+            allowWorkspaceWritesWithoutPrompt: false,
+            allowTaskScopedAllowAll: true,
+            defaultDecision: 'prompt',
+          },
+          runtime: {
+            defaultToolDecision: 'prompt',
+            defaultQuestionDecision: 'prompt',
+            allowedToolNames: [],
+            blockedToolNames: [],
+          },
+          audit: {
+            maxEntries: 200,
+          },
+        },
+      });
+
+      // Assert
+      expect(prompt).toContain('Workspace-local file operations are NOT auto-allowed');
+      expect(prompt).toContain('Before creating, modifying, renaming, moving, overwriting, or deleting a file in the workspace');
+      expect(prompt).not.toContain('Workspace-local file operations are allowed directly.');
     });
 
     it('should include user confirmation guidance', async () => {

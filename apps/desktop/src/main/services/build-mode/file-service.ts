@@ -31,6 +31,23 @@ const SKIP_BASELINE_DIRS = new Set([
   'build',
 ]);
 
+const SKIP_TREE_DIRS = new Set([
+  '.git',
+  'node_modules',
+  '.next',
+  '.turbo',
+  '.cache',
+  '.pnpm-store',
+  'dist',
+  'build',
+  'coverage',
+]);
+
+const SKIP_TREE_FILES = new Set([
+  '.DS_Store',
+  'Thumbs.db',
+]);
+
 const MAX_FILE_READ_BYTES = 2 * 1024 * 1024;
 const MAX_BASELINE_FILES = 1200;
 const MAX_BASELINE_FILE_BYTES = 512 * 1024;
@@ -817,9 +834,23 @@ async function walkDirectory(
     return directoryNode;
   }
 
-  const entries = await fs.promises.readdir(absoluteDir, { withFileTypes: true });
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.promises.readdir(absoluteDir, { withFileTypes: true });
+  } catch (error) {
+    if (isTransientTreeReadError(error)) {
+      return directoryNode;
+    }
+    throw error;
+  }
   const filtered = entries
     .filter((entry) => {
+      if (entry.isDirectory() && SKIP_TREE_DIRS.has(entry.name)) {
+        return false;
+      }
+      if (entry.isFile() && SKIP_TREE_FILES.has(entry.name)) {
+        return false;
+      }
       if (!includeHidden && entry.name.startsWith('.')) {
         return entry.name === '.env.example';
       }
@@ -851,7 +882,15 @@ async function walkDirectory(
       continue;
     }
 
-    const stat = await fs.promises.stat(absoluteEntry);
+    let stat: fs.Stats;
+    try {
+      stat = await fs.promises.stat(absoluteEntry);
+    } catch (error) {
+      if (isTransientTreeReadError(error)) {
+        continue;
+      }
+      throw error;
+    }
     limiter.count += 1;
     directoryNode.children?.push({
       name: entry.name,
@@ -877,6 +916,13 @@ async function walkDirectory(
   }
 
   return directoryNode;
+}
+
+function isTransientTreeReadError(error: unknown): boolean {
+  const code = typeof error === 'object' && error !== null && 'code' in error
+    ? String((error as { code?: unknown }).code || '')
+    : '';
+  return code === 'ENOENT' || code === 'ENOTDIR';
 }
 
 function normalizeAgentId(agentId: string): string {

@@ -18,6 +18,8 @@ import type {
   TaskMessage,
   AutomationDraftRequest,
   AutomationDraftResult,
+  ChatToolCompatibilityCheckRequest,
+  ChatToolCompatibilityCheckResult,
   ContextWindowEstimateResponse,
   UsagePricingAutofillResult,
   UsagePricingAutofillRequest,
@@ -44,6 +46,8 @@ import type {
   UsageProjectWorkItemUpdate,
   ChecklistListPromptGenerateRequest,
   ChecklistListPromptGenerateResponse,
+  ChatPostcardDraftGenerateRequest,
+  ChatPostcardDraftGenerateResponse,
   WorkItemNotePromptGenerateRequest,
   WorkItemNotePromptGenerateResponse,
   UsagePeriod,
@@ -61,6 +65,15 @@ import type {
   PluginDiagnosticsRecord,
   PluginRecord,
   PluginRegistryState,
+  ResolvedToolsetDefinition,
+  ToolCapability,
+  ToolCapabilityListResult,
+  ToolDiscoveryEnableRequest,
+  ToolDiscoveryEnableResult,
+  ToolDiscoveryEnabledListResult,
+  ToolDiscoverySearchResult,
+  ToolsetId,
+  ToolsetListResult,
   AppConnectorExtensionConfig,
   AppConnectorExtensionConfigInput,
   AppConnectorExtensionState,
@@ -150,6 +163,10 @@ import type {
   UserSkillInstallResult,
   UserSkillGenerateFromTaskRequest,
   UserSkillGenerateFromTaskResponse,
+  UserSkillCuratorHistoryResponse,
+  UserSkillCuratorRunRecord,
+  UserSkillPostTaskAutomationRequest,
+  UserSkillPostTaskAutomationResult,
   UserSkillReadFileRequest,
   UserSkillReadFileResponse,
   UserSkillStatusReport,
@@ -168,7 +185,50 @@ import type {
   HelpDocsListResponse,
   HelpDocsSearchResponse,
   HelpDocsUpdatedEvent,
+  ExecutionProfile,
+  ExecutionProfileCreateInput,
+  ExecutionProfileListResult,
+  ExecutionProfileUpdateInput,
+  AgentAlwaysOnStatus,
+  AlwaysOnStatusSnapshot,
+  ConnectorDeliveryListResponse,
+  MemoryEntrySummary,
+  MemoryChangeHistoryFilter,
+  MemoryChangeRecord,
+  MemorySearchResponse,
+  AuditEventRecord,
+  AuditExportRequest,
+  AuditExportResult,
+  AuditGetRequest,
+  AuditListRequest,
+  AuditListResult,
+  SearchIndexRebuildRequest,
+  SearchIndexRebuildResult,
+  SearchItemDetail,
+  SearchItemGetRequest,
+  SearchQueryRequest,
+  SearchQueryResult,
 } from '@accomplish/shared';
+
+export type TaskWindowKind = 'chat-task' | 'build-task' | 'subagent-run' | 'workboard-item';
+
+export type TaskWindowOpenRequest =
+  | { kind: 'chat-task'; taskId: string; agentId?: string; title?: string }
+  | { kind: 'build-task'; sessionId: string; agentId?: string; taskId?: string; title?: string }
+  | { kind: 'subagent-run'; runId: string; title?: string }
+  | { kind: 'workboard-item'; projectId: string; itemId: string; title?: string };
+
+export type TaskWindowFocusRequest = ({ key: string } | { windowId: number } | TaskWindowOpenRequest);
+
+export type TaskWindowInfo = {
+  key: string;
+  windowId: number;
+  kind: TaskWindowKind;
+  title: string;
+  route: string;
+  target: TaskWindowOpenRequest;
+  focused: boolean;
+};
 
 // Define the API interface
 interface AccomplishAPI {
@@ -180,6 +240,11 @@ interface AccomplishAPI {
   openExternal(url: string): Promise<void>;
   openPath(filePath: string): Promise<{ ok: boolean; path: string; error?: string }>;
 
+  // Task windows
+  openTaskWindow(target: TaskWindowOpenRequest): Promise<TaskWindowInfo>;
+  listTaskWindows(): Promise<TaskWindowInfo[]>;
+  focusTaskWindow(target: TaskWindowFocusRequest): Promise<TaskWindowInfo | null>;
+
   // Help docs
   listHelpDocs(): Promise<HelpDocsListResponse>;
   readHelpDoc(docId: string): Promise<HelpDocPageResponse>;
@@ -188,6 +253,14 @@ interface AccomplishAPI {
   openHelpDocInEditor(docId: string): Promise<{ ok: boolean; path: string }>;
   openHelpDocsFolder(): Promise<{ ok: boolean; path: string }>;
   openHelpAsset(docId: string, assetPath: string): Promise<{ ok: boolean; path: string }>;
+
+  // Local search and audit history
+  rebuildSearchIndex(payload?: SearchIndexRebuildRequest): Promise<SearchIndexRebuildResult>;
+  querySearch(payload: SearchQueryRequest): Promise<SearchQueryResult>;
+  getSearchItem(payload: SearchItemGetRequest): Promise<SearchItemDetail | null>;
+  listAuditEvents(payload?: AuditListRequest): Promise<AuditListResult>;
+  getAuditEvent(payload: AuditGetRequest): Promise<AuditEventRecord | null>;
+  exportAuditEvents(payload?: AuditExportRequest): Promise<AuditExportResult>;
 
   // Dialog
   selectFolder(defaultPath?: string): Promise<string | null>;
@@ -201,28 +274,32 @@ interface AccomplishAPI {
   listTasks(agentId?: string): Promise<Task[]>;
   deleteTask(taskId: string): Promise<void>;
   clearTaskHistory(agentId?: string): Promise<void>;
-  listSavedPrompts(): Promise<Array<{ id: string; title: string; content: string; category: string; createdAt: string; updatedAt: string }>>;
+  listSavedPrompts(): Promise<Array<{ id: string; title: string; content: string; category: string; description?: string; icon?: string; color?: string; createdAt: string; updatedAt: string }>>;
   listSavedPromptCategories(): Promise<string[]>;
   createSavedPromptCategory(name: string): Promise<string[]>;
   renameSavedPromptCategory(payload: { from: string; to: string }): Promise<{
     categories: string[];
-    prompts: Array<{ id: string; title: string; content: string; category: string; createdAt: string; updatedAt: string }>;
+    prompts: Array<{ id: string; title: string; content: string; category: string; description?: string; icon?: string; color?: string; createdAt: string; updatedAt: string }>;
   }>;
   deleteSavedPromptCategory(payload: { name: string; replacement?: string }): Promise<{
     categories: string[];
-    prompts: Array<{ id: string; title: string; content: string; category: string; createdAt: string; updatedAt: string }>;
+    prompts: Array<{ id: string; title: string; content: string; category: string; description?: string; icon?: string; color?: string; createdAt: string; updatedAt: string }>;
   }>;
-  upsertSavedPrompt(payload: { id?: string; title: string; content: string; category?: string; createdAt?: string; updatedAt?: string }): Promise<{
+  upsertSavedPrompt(payload: { id?: string; title: string; content: string; category?: string; description?: string; icon?: string; color?: string; createdAt?: string; updatedAt?: string }): Promise<{
     id: string;
     title: string;
     content: string;
     category: string;
+    description?: string;
+    icon?: string;
+    color?: string;
     createdAt: string;
     updatedAt: string;
   }>;
   deleteSavedPrompt(id: string): Promise<{ ok: boolean }>;
 
   // Permission responses
+  getPendingPermissionRequests(payload?: { taskId?: string }): Promise<PermissionRequest[]>;
   respondToPermission(response: PermissionResponse): Promise<void>;
 
   // Session management
@@ -262,6 +339,7 @@ interface AccomplishAPI {
     maxOutputTokensOverride?: number;
     headroomSafetyTokens?: number;
   }): Promise<ContextWindowEstimateResponse>;
+  runChatToolCompatibilityCheck(payload: ChatToolCompatibilityCheckRequest): Promise<ChatToolCompatibilityCheckResult>;
 
   // Usage estimate (global)
   getUsageSummary(period: UsagePeriod): Promise<UsageSummary>;
@@ -312,6 +390,11 @@ interface AccomplishAPI {
   setWebhookBindMode(mode: 'localhost' | 'all'): Promise<'localhost' | 'all'>;
   setAgentSpeedMode(mode: 'fast' | 'balanced' | 'deep'): Promise<'fast' | 'balanced' | 'deep'>;
   setBuildDiffEnforcementMode(mode: BuildDiffEnforcementMode): Promise<BuildDiffEnforcementMode>;
+  listExecutionProfiles(payload?: { includeArchived?: boolean }): Promise<ExecutionProfileListResult>;
+  createExecutionProfile(payload: ExecutionProfileCreateInput): Promise<ExecutionProfile>;
+  updateExecutionProfile(profileId: string, update: ExecutionProfileUpdateInput): Promise<ExecutionProfile>;
+  archiveExecutionProfile(profileId: string, archived?: boolean): Promise<ExecutionProfile>;
+  checkExecutionProfileHealth(profileId: string): Promise<ExecutionProfile>;
   saveDataUrlToFile(dataUrl: string, baseName?: string): Promise<{ filePath: string }>;
   saveDataUrlToFileAs(dataUrl: string, baseName?: string): Promise<{ filePath?: string; cancelled?: boolean }>;
   saveTextToFileAs(content: string, options?: { baseName?: string; extension?: string; title?: string }): Promise<{ filePath?: string; cancelled?: boolean }>;
@@ -321,19 +404,35 @@ interface AccomplishAPI {
   setWorkspaceRoot(root: string | null): Promise<string | null>;
   getMemoryState(payload?: { agentId?: string; date?: string }): Promise<{
     workspaceRoot: string;
+    user: { path: string; content: string };
     longTerm: { path: string; content: string };
     daily: { date: string; path: string; content: string };
     dailyFiles: string[];
+    snapshots: MemoryEntrySummary[];
+    entries: MemoryEntrySummary[];
   }>;
-  readMemoryFile(payload: { kind: 'long-term' | 'daily'; date?: string; agentId?: string }): Promise<{
+  readMemoryFile(payload: { kind: 'user' | 'long-term' | 'daily' | 'snapshot'; date?: string; fileName?: string; agentId?: string }): Promise<{
     path: string;
     date?: string;
+    fileName?: string;
     content: string;
   }>;
-  saveMemoryFile(payload: { kind: 'long-term' | 'daily'; date?: string; agentId?: string; content?: string }): Promise<{
+  saveMemoryFile(payload: { kind: 'user' | 'long-term' | 'daily' | 'snapshot'; date?: string; fileName?: string; agentId?: string; content?: string }): Promise<{
     path: string;
     date?: string;
+    fileName?: string;
+    changeId?: string;
   }>;
+  deleteMemoryFile(payload: { kind: 'user' | 'long-term' | 'daily' | 'snapshot'; date?: string; fileName?: string; agentId?: string }): Promise<{
+    path: string;
+    date?: string;
+    fileName?: string;
+    changeId?: string;
+  }>;
+  searchMemory(payload: { query: string; agentId?: string; limit?: number }): Promise<MemorySearchResponse>;
+  listMemoryChanges(payload?: MemoryChangeHistoryFilter): Promise<{ changes: MemoryChangeRecord[] }>;
+  applyMemoryChange(changeId: string): Promise<MemoryChangeRecord>;
+  rollbackMemoryChange(changeId: string): Promise<MemoryChangeRecord>;
   getRuntimeHooks(): Promise<RuntimeHooksSettingsState>;
   saveRuntimeHooks(raw: string): Promise<{ path: string; hookCount: number }>;
   getRuntimeHookDiagnostics(): Promise<RuntimeHooksDiagnosticsState>;
@@ -359,6 +458,13 @@ interface AccomplishAPI {
   setDefaultAgent(agentId: string): Promise<string>;
   setActiveAgent(agentId: string): Promise<string>;
   getActiveAgent(): Promise<string>;
+  getAlwaysOnStatus(): Promise<AlwaysOnStatusSnapshot>;
+  startAlwaysOnManager(): Promise<AlwaysOnStatusSnapshot>;
+  stopAlwaysOnManager(): Promise<AlwaysOnStatusSnapshot>;
+  restartAlwaysOnManager(): Promise<AlwaysOnStatusSnapshot>;
+  setAgentAlwaysOn(agentId: string, enabled: boolean): Promise<AgentAlwaysOnStatus>;
+  restartAgentAlwaysOn(agentId: string): Promise<AlwaysOnStatusSnapshot['agents'][number]>;
+  listConnectorDeliveries(payload?: { limit?: number }): Promise<ConnectorDeliveryListResponse>;
 
   // Discord connector
   getDiscordConfig(): Promise<{ config: DiscordConnectorConfig; status: DiscordConnectorStatus; tokenSet: boolean }>;
@@ -532,7 +638,7 @@ interface AccomplishAPI {
   runBuildCommand(payload: BuildBuildRequest): Promise<{ snapshot: BuildSessionSnapshot; result: BuildRuntimeCommandResult }>;
   runBuildQualityChecks(payload: BuildQualityCheckRunRequest): Promise<BuildQualityCheckRun>;
   getBuildQualityChecks(payload: { agentId: string; workspaceRelativePath?: string }): Promise<BuildQualityCheckRun | null>;
-  runStartCommandOnce(payload: { agentId: string; workspaceRelativePath?: string; envOverrides?: Record<string, string>; commandOverride?: string }): Promise<{ snapshot: BuildSessionSnapshot; result: BuildRuntimeCommandResult }>;
+  runStartCommandOnce(payload: { agentId: string; workspaceRelativePath?: string; executionProfileId?: string | null; envOverrides?: Record<string, string>; commandOverride?: string }): Promise<{ snapshot: BuildSessionSnapshot; result: BuildRuntimeCommandResult }>;
   getBuildRuntimeLogs(payload: { agentId: string; cursor?: number; limit?: number }): Promise<BuildLogsResponse>;
   clearBuildRuntimeLogs(payload: { agentId: string }): Promise<{ ok: boolean }>;
   getBuildTerminalSnapshot(payload: { agentId: string }): Promise<BuildTerminalSnapshot>;
@@ -609,7 +715,7 @@ interface AccomplishAPI {
   setBuildTaskHistorySessionPinned(payload: BuildTaskSessionPinInput): Promise<BuildTaskSession>;
   deleteBuildTaskHistorySession(payload: BuildTaskSessionDeleteInput): Promise<{ ok: boolean }>;
   listSubagents(payload: { parentTaskId: string }): Promise<{ runs: SubagentRunDetail[]; tree: SubagentRunTreeNode[]; activeCount: number }>;
-  listAllSubagents(payload?: { includeArchived?: boolean }): Promise<{ runs: SubagentRunDetail[] }>;
+  listAllSubagents(payload?: { includeArchived?: boolean; query?: string; limit?: number }): Promise<{ runs: SubagentRunDetail[]; total?: number; truncated?: boolean }>;
   getSubagent(payload: { runId: string }): Promise<SubagentRunDetail | null>;
   waitSubagent(payload: { runId: string; timeoutMs?: number; pollIntervalMs?: number }): Promise<{ completed: boolean; waitedMs: number; run: SubagentRunDetail | null }>;
   sendSubagent(payload: { runId: string; prompt: string; modelProvider?: string; modelId?: string; modelBaseUrl?: string }): Promise<{ ok: boolean; runId: string; childTaskId: string }>;
@@ -654,9 +760,13 @@ interface AccomplishAPI {
   installUserSkillFromZip(payload: UserSkillZipInstallRequest): Promise<UserSkillZipInstallResult>;
   cleanupUserSkillZipSession(payload: UserSkillZipCleanupRequest): Promise<{ ok: boolean }>;
   generateUserSkillFromTask(payload: UserSkillGenerateFromTaskRequest): Promise<UserSkillGenerateFromTaskResponse>;
+  runPostTaskSkillAutomation(payload: UserSkillPostTaskAutomationRequest): Promise<UserSkillPostTaskAutomationResult>;
+  runUserSkillCurator(payload?: { agentId?: string; dryRun?: boolean }): Promise<UserSkillCuratorRunRecord>;
+  listUserSkillCuratorHistory(): Promise<UserSkillCuratorHistoryResponse>;
   askUserSkillAssistant(payload: UserSkillAssistantAskRequest): Promise<UserSkillAssistantAskResponse>;
   generateChecklistListPrompt(payload: ChecklistListPromptGenerateRequest): Promise<ChecklistListPromptGenerateResponse>;
   generateWorkItemNotePrompt(payload: WorkItemNotePromptGenerateRequest): Promise<WorkItemNotePromptGenerateResponse>;
+  generateChatPostcardDraft(payload: ChatPostcardDraftGenerateRequest): Promise<ChatPostcardDraftGenerateResponse>;
 
   // Automations
   listSchedules(): Promise<Array<import('@accomplish/shared').ScheduledTask>>;
@@ -681,6 +791,14 @@ interface AccomplishAPI {
   getUserSkillAssistantModel(): Promise<{ provider: string; model: string; baseUrl?: string } | null>;
   setUserSkillAssistantModel(model: { provider: string; model: string; baseUrl?: string } | null): Promise<void>;
   listModelProviders(): Promise<ProviderConfig[]>;
+  listToolsets(): Promise<ToolsetListResult>;
+  searchToolsets(query: string): Promise<ToolDiscoverySearchResult>;
+  describeToolset(toolsetId: string): Promise<ResolvedToolsetDefinition | null>;
+  listTools(payload?: { toolsetIds?: ToolsetId[] }): Promise<ToolCapabilityListResult>;
+  searchTools(query: string): Promise<ToolDiscoverySearchResult>;
+  describeTool(toolName: string): Promise<ToolCapability | null>;
+  listEnabledTaskTools(payload?: { agentId?: string; taskId?: string; deferredToolDiscoveryEnabled?: boolean; requestedToolsetIds?: ToolsetId[]; initialToolsetIds?: ToolsetId[] }): Promise<ToolDiscoveryEnabledListResult>;
+  enableTaskTools(payload: { request: ToolDiscoveryEnableRequest; agentId?: string; taskId?: string; deferredToolDiscoveryEnabled?: boolean; requestedToolsetIds?: ToolsetId[]; initialToolsetIds?: ToolsetId[] }): Promise<ToolDiscoveryEnableResult>;
   listCustomModelProviders(): Promise<ProviderConfig[]>;
   listBuiltinProviderModelOverrides(): Promise<Record<string, ModelConfig[]>>;
   upsertBuiltinProviderModel(payload: { providerId: string; model: ModelConfig }): Promise<ModelConfig>;
@@ -696,8 +814,8 @@ interface AccomplishAPI {
     models?: Array<{ id: string; displayName: string; size: number }>;
     error?: string;
   }>;
-  getOllamaConfig(): Promise<{ baseUrl: string; enabled: boolean; lastValidated?: number; models?: Array<{ id: string; displayName: string; size: number }>; toolMode?: 'off' | 'internet' | 'workspace-read' | 'workspace-edit' | 'desktop' | 'full' } | null>;
-  setOllamaConfig(config: { baseUrl: string; enabled: boolean; lastValidated?: number; models?: Array<{ id: string; displayName: string; size: number }>; toolMode?: 'off' | 'internet' | 'workspace-read' | 'workspace-edit' | 'desktop' | 'full' } | null): Promise<void>;
+  getOllamaConfig(): Promise<{ baseUrl: string; enabled: boolean; lastValidated?: number; models?: Array<{ id: string; displayName: string; size: number; toolsetIds?: ToolsetId[] }>; toolMode?: 'off' | 'internet' | 'workspace-read' | 'workspace-edit' | 'desktop' | 'full'; toolsetIds?: ToolsetId[] } | null>;
+  setOllamaConfig(config: { baseUrl: string; enabled: boolean; lastValidated?: number; models?: Array<{ id: string; displayName: string; size: number; toolsetIds?: ToolsetId[] }>; toolMode?: 'off' | 'internet' | 'workspace-read' | 'workspace-edit' | 'desktop' | 'full'; toolsetIds?: ToolsetId[] } | null): Promise<void>;
 
   // Event subscriptions
   onTaskUpdate(callback: (event: TaskUpdateEvent) => void): () => void;

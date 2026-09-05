@@ -1,6 +1,7 @@
 import { DEFAULT_PROVIDERS, type ProviderConfig } from '@accomplish/shared';
 import { getOllamaConfig } from '../store/appSettings';
 import { listBuiltinProviderModelOverrides, listCustomModelProviders } from '../store/modelProviders';
+import { getDefaultToolsetIdsForOllamaToolMode } from './toolsets';
 
 function mergeBuiltinProviderModelOverrides(provider: ProviderConfig): ProviderConfig {
   const overrides = listBuiltinProviderModelOverrides()[provider.id] ?? [];
@@ -20,6 +21,7 @@ function mergeBuiltinProviderModelOverrides(provider: ProviderConfig): ProviderC
 export function listModelProviders(): ProviderConfig[] {
   const builtinProviders = DEFAULT_PROVIDERS.map(mergeBuiltinProviderModelOverrides);
   const ollamaConfig = getOllamaConfig();
+  const ollamaToolsetIds = ollamaConfig?.toolsetIds ?? getDefaultToolsetIdsForOllamaToolMode(ollamaConfig?.toolMode);
   const ollamaProvider: ProviderConfig[] = ollamaConfig?.enabled
     ? [{
         id: 'ollama',
@@ -33,6 +35,7 @@ export function listModelProviders(): ProviderConfig[] {
           fullId: model.id.startsWith('ollama/') ? model.id : `ollama/${model.id}`,
           contextWindow: 8192,
           maxOutputTokens: 2048,
+          toolsetIds: model.toolsetIds ?? ollamaToolsetIds,
         })),
       }]
     : [];

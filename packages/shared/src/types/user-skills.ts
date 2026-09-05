@@ -4,6 +4,10 @@ export type UserSkillSource = 'managed' | 'workspace' | 'bundled' | 'extra';
 
 export type UserSkillLifecycleState = 'active' | 'deprecated' | 'disabled';
 
+export type UserSkillAutomationMode = 'automatic' | 'approval' | 'off';
+
+export type UserSkillAutomationConfidenceLabel = 'low' | 'medium' | 'high';
+
 export type UserSkillManifestValidation = {
   ok: boolean;
   issues: string[];
@@ -25,6 +29,10 @@ export type UserSkillManifestVersionEntry = {
   archivedAt: string;
   checksum: string;
   relPath: string;
+  changeReason?: string;
+  sourceTaskId?: string;
+  confidence?: number;
+  changeSource?: string;
 };
 
 export type UserSkillManifestPerformance = {
@@ -58,6 +66,13 @@ export type UserSkillManifest = {
   lastValidation?: UserSkillManifestValidation;
   lastTest?: UserSkillManifestTestResult;
   performance?: UserSkillManifestPerformance;
+  lastChange?: {
+    changedAt: string;
+    reason?: string;
+    sourceTaskId?: string;
+    confidence?: number;
+    changeSource?: string;
+  };
 };
 
 export type UserSkillInstallSpec =
@@ -117,6 +132,24 @@ export type UserSkillMetadata = {
     generatedByAgentId?: string;
     createdBy?: string;
     origin?: string;
+    requiresReview?: boolean;
+    observedTools?: string[];
+    automation?: {
+      mode?: UserSkillAutomationMode;
+      confidence?: number;
+      confidenceLabel?: UserSkillAutomationConfidenceLabel;
+      sourceTaskId?: string;
+      draftId?: string;
+      stagedAt?: string;
+      appliedAt?: string;
+      reason?: string;
+      reasons?: string[];
+    };
+    curator?: {
+      lastRunId?: string;
+      lastReviewedAt?: string;
+      findingTypes?: string[];
+    };
     visibility?: {
       scope?: 'private' | 'selected' | 'all';
       ownerAgentId?: string;
@@ -229,6 +262,10 @@ export type UserSkillWriteFileRequest = {
   relPath: string;
   content: string;
   source?: UserSkillSource;
+  changeReason?: string;
+  sourceTaskId?: string;
+  confidence?: number;
+  changeSource?: string;
 };
 
 export type UserSkillDeleteRequest = { skillId: string; source?: UserSkillSource; agentId?: string };
@@ -303,6 +340,104 @@ export type UserSkillGenerateFromTaskResponse = {
   error?: string;
 };
 
+export type UserSkillTaskReusabilityEvaluation = {
+  reusable: boolean;
+  confidence: number;
+  confidenceLabel: UserSkillAutomationConfidenceLabel;
+  reasons: string[];
+  blockers: string[];
+};
+
+export type UserSkillAutomationDraftRecord = {
+  id: string;
+  taskId: string;
+  agentId?: string;
+  mode: UserSkillAutomationMode;
+  status: 'staged' | 'applied' | 'dismissed';
+  createdAt: string;
+  appliedAt?: string;
+  skillId?: string;
+  source?: UserSkillSource;
+  reason?: string;
+  draft: UserSkillWorkflowDraft;
+  evaluation: UserSkillTaskReusabilityEvaluation;
+};
+
+export type UserSkillPostTaskAutomationRequest = {
+  taskId: string;
+  agentId?: string;
+  modeOverride?: UserSkillAutomationMode;
+};
+
+export type UserSkillPostTaskAutomationResult = {
+  ok: boolean;
+  mode: UserSkillAutomationMode;
+  disposition: 'noop' | 'skipped' | 'staged' | 'saved' | 'updated' | 'error';
+  message: string;
+  taskId: string;
+  agentId?: string;
+  skillId?: string;
+  draftRecord?: UserSkillAutomationDraftRecord;
+  evaluation?: UserSkillTaskReusabilityEvaluation;
+  manifest?: UserSkillManifest;
+  error?: string;
+};
+
+export type UserSkillCuratorFindingType = 'duplicate' | 'stale' | 'unused' | 'broken' | 'weak' | 'metadata';
+export type UserSkillCuratorSeverity = 'info' | 'warning' | 'error';
+
+export type UserSkillCuratorFinding = {
+  id: string;
+  type: UserSkillCuratorFindingType;
+  severity: UserSkillCuratorSeverity;
+  skillId: string;
+  source: UserSkillSource;
+  message: string;
+  evidence: string[];
+  duplicateOfSkillId?: string;
+};
+
+export type UserSkillCuratorActionType = 'metadata-updated' | 'archived-stale' | 'archived-duplicate' | 'reported';
+
+export type UserSkillCuratorAction = {
+  id: string;
+  type: UserSkillCuratorActionType;
+  skillId: string;
+  source: UserSkillSource;
+  applied: boolean;
+  message: string;
+  findingIds: string[];
+  reason?: string;
+  sourceTaskId?: string;
+  confidence?: number;
+  historyRunId?: string;
+  changeSource?: string;
+  currentVersion?: string;
+  rollbackVersion?: string;
+  rollbackRelPath?: string;
+  duplicateOfSkillId?: string;
+};
+
+export type UserSkillCuratorRunRequest = {
+  agentId?: string;
+  dryRun?: boolean;
+};
+
+export type UserSkillCuratorRunRecord = {
+  id: string;
+  startedAt: string;
+  finishedAt: string;
+  agentId?: string;
+  dryRun: boolean;
+  scanned: number;
+  findings: UserSkillCuratorFinding[];
+  actions: UserSkillCuratorAction[];
+};
+
+export type UserSkillCuratorHistoryResponse = {
+  runs: UserSkillCuratorRunRecord[];
+};
+
 export type UserSkillAssistantMode = 'general' | 'configure' | 'edit';
 
 export type UserSkillAssistantAskRequest = {
@@ -330,6 +465,9 @@ export type UserSkillLifecycleUpdateRequest = {
   reason?: string;
   source?: UserSkillSource;
   agentId?: string;
+  sourceTaskId?: string;
+  confidence?: number;
+  changeSource?: string;
 };
 
 export type UserSkillSharingScope = 'private' | 'selected' | 'all';

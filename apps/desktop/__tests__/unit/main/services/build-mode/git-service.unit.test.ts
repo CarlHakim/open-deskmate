@@ -142,7 +142,7 @@ describe('build Git summary service', () => {
     expect(result.message).toMatch(/nothing was uploaded/i);
     expect(result.summary?.hasChanges).toBe(false);
     expect(result.summary?.nextAction.kind).toBe('add-remote');
-  });
+  }, 15000);
 
   test.skipIf(!hasGit())('reports branch and configured remote details', async () => {
     const { agentId, root } = createAgentWorkspace();

@@ -13,6 +13,10 @@ export type ChatBackground = {
   id: string;
   label: string;
   src: string;
+  thinkingIndicator: {
+    color: string;
+    textShadow: string;
+  };
 };
 
 const ACRONYM_WORDS = new Set(['ai']);
@@ -29,11 +33,42 @@ function toLabel(slug: string): string {
     .join(' ');
 }
 
+const THINKING_INDICATOR_BY_BACKGROUND: Record<string, ChatBackground['thinkingIndicator']> = {
+  'cloud-automation-sky': {
+    color: '#062f3f',
+    textShadow: '0 1px 8px rgba(255,255,255,0.82)',
+  },
+  'cozy-desk-plus-ai-assistant': {
+    color: '#132335',
+    textShadow: '0 1px 9px rgba(255,255,255,0.78)',
+  },
+  'floating-prompt-bubbles': {
+    color: '#f4fbff',
+    textShadow: '0 1px 10px rgba(3,7,18,0.86)',
+  },
+  'graphite-workspace': {
+    color: '#dffbff',
+    textShadow: '0 1px 10px rgba(0,0,0,0.88)',
+  },
+  'knowledge-library': {
+    color: '#eefcff',
+    textShadow: '0 1px 10px rgba(1,6,18,0.86)',
+  },
+  'robot-workshop': {
+    color: '#eefcff',
+    textShadow: '0 1px 10px rgba(8,13,30,0.88)',
+  },
+};
+
 function background(id: string, src: string): ChatBackground {
   return {
     id,
     label: toLabel(id),
     src,
+    thinkingIndicator: THINKING_INDICATOR_BY_BACKGROUND[id] ?? {
+      color: '#f4fbff',
+      textShadow: '0 1px 10px rgba(3,7,18,0.82)',
+    },
   };
 }
 

@@ -1,9 +1,16 @@
 import type { OpenCodeMessage, TaskResult } from '@accomplish/shared';
 import { resolveAgenticLoopConfig } from './task-execution-preparation';
+import { resolveToolDiscoveryRuntimeMetadata } from '../services/toolsets';
 
 const AGENTIC_LOOP_CONTINUE_PROMPT = [
   'Continue the same task using your latest plan and observations.',
   'Do the next concrete step and continue progressing toward completion.',
+].join('\n');
+
+const TOOL_DISCOVERY_CONFIG_RELOAD_PROMPT = [
+  'The additional tools requested in the previous turn have now been enabled and the tool configuration has been reloaded.',
+  'Continue the user\'s last request using the newly visible tools.',
+  'Do not ask the user to click Resume task, and do not repeat the tool-loading explanation.',
 ].join('\n');
 
 type AgenticLoopStatus = 'continue' | 'complete' | 'unknown';
@@ -139,6 +146,8 @@ export async function runAgenticLoop(params: {
   sessionIdHint?: string;
   completion: Promise<TaskResult>;
   agent: {
+    toolsetIds?: unknown;
+    deferredToolDiscoveryEnabled?: boolean;
     agenticLoopEnabled?: boolean;
     agenticLoopMaxIterations?: number;
     agenticLoopTimeoutMs?: number;
@@ -168,6 +177,40 @@ export async function runAgenticLoop(params: {
   const loopConfig = resolveAgenticLoopConfig(params.agent, params.options);
   let result = await params.completion;
   try {
+    if (!params.options?.internal?.suppressAgenticLoop && result.status === 'success') {
+      const runtime = resolveToolDiscoveryRuntimeMetadata({
+        taskId: params.taskId,
+        agentId: params.agentId,
+        deferredToolDiscoveryEnabled: params.agent.deferredToolDiscoveryEnabled,
+        requestedToolsetIds: params.agent.toolsetIds,
+      });
+      const pendingReload = runtime.mode === 'deferred'
+        && runtime.mcpConfigRegeneration.required
+        && runtime.mcpConfigRegeneration.resumable;
+      const sessionId = result.sessionId || params.resolveSessionId() || params.sessionIdHint;
+      if (pendingReload && sessionId) {
+        const resumed = await params.resumeSession({
+          sessionId,
+          prompt: TOOL_DISCOVERY_CONFIG_RELOAD_PROMPT,
+          taskId: params.taskId,
+          agentId: params.agentId,
+          options: {
+            ...params.options,
+            internal: {
+              ...(params.options?.internal ?? {}),
+              suppressAgenticLoop: true,
+              hiddenPrompt: true,
+            },
+          },
+        });
+        result = await withTimeout(
+          resumed.completion,
+          loopConfig.timeoutMs,
+          'Timed out while continuing after tool configuration reload'
+        );
+      }
+    }
+
     if (!loopConfig.enabled) {
       return result;
     }

@@ -19,6 +19,7 @@ import {
   listGatewayConnectorExtensionConfigs,
   resolveGatewayConnectorExtensionConfig,
 } from '../store/gatewayConnectorExtensions';
+import { summarizeConnectorDeliveryHealth } from '../store/connectorDeliveries';
 import { recordGatewayConnectorObservation } from '../store/gatewayConnectorDiscovery';
 import { getGatewayConfig } from '../store/gatewayConfig';
 import {
@@ -36,6 +37,12 @@ import {
 import { getConnectorBridgeRuntimeBaseUrl } from './connector-bridge-runtime';
 import { resolveQuickPermissionReply } from './webhook-permissions';
 import { stripReasoningForExternalReply } from '../runtime/task-message-reasoning';
+import {
+  createConnectorDelivery,
+  filterConnectorDeliveryText,
+  sendConnectorDeliveryChunks,
+  splitConnectorMessage,
+} from './connector-delivery';
 
 type NativeManagedConnectorId =
   | 'discord'
@@ -179,17 +186,19 @@ function normalizeLower(value: string | undefined | null): string {
 }
 
 function splitChunks(text: string, limit = 1900): string[] {
-  const chunks: string[] = [];
-  let remaining = text.trim();
-  while (remaining.length > limit) {
-    let idx = remaining.lastIndexOf('\n', limit);
-    if (idx < limit * 0.6) idx = remaining.lastIndexOf(' ', limit);
-    if (idx <= 0) idx = limit;
-    chunks.push(remaining.slice(0, idx).trim());
-    remaining = remaining.slice(idx).trim();
-  }
-  if (remaining) chunks.push(remaining);
-  return chunks.length > 0 ? chunks : [''];
+  return splitConnectorMessage(text, limit);
+}
+
+function getManagedConnectorSplitLimit(connectorId: ManagedConnectorId): number {
+  if (connectorId === 'discord') return 1900;
+  if (connectorId === 'slack') return 38000;
+  if (connectorId === 'msteams') return 3500;
+  return 3900;
+}
+
+function filterPublicReplyText(text: string): string {
+  const filtered = filterConnectorDeliveryText(stripReasoningForExternalReply(text));
+  return filtered.silenced ? '' : filtered.text;
 }
 
 function parseCsvList(value: string | undefined): string[] {
@@ -369,11 +378,11 @@ function pickTaskResponseText(resultStatus: string, taskId: string, agentId: str
     .reverse()
     .find((msg) => msg.type === 'assistant');
   if (lastAssistant?.content) {
-    const publicContent = stripReasoningForExternalReply(lastAssistant.content);
+    const publicContent = filterPublicReplyText(lastAssistant.content);
     if (publicContent) return publicContent;
   }
   if (stored?.summary) {
-    const publicSummary = stripReasoningForExternalReply(stored.summary);
+    const publicSummary = filterPublicReplyText(stored.summary);
     if (publicSummary) return publicSummary;
   }
   if (resultStatus === 'error') return 'I hit an error while running that task. Check Open Deskmate for details.';
@@ -445,6 +454,10 @@ function setRuntimeStatus(
     mode: resolveRuntimeMode(connectorId),
     ...patch,
   };
+  next.deliveryHealth = summarizeConnectorDeliveryHealth({
+    connectorId,
+    connectorInstanceId: context.instanceId,
+  });
   runtimeStatuses.set(context.runtimeKey, next);
   return next;
 }
@@ -503,12 +516,31 @@ async function runConnectorTask(params: {
   });
   const runtimeContext = getRuntimeContext(params.connectorId);
   const session = getGatewaySession(route.sessionKey);
+  const deliverReply = async (text: string, taskId?: string) => {
+    const delivery = createConnectorDelivery({
+      connectorId: params.connectorId,
+      connectorInstanceId: runtimeContext.instanceId,
+      accountId: params.accountId,
+      targetId: params.peerId,
+      targetKind: params.peerKind,
+      direction: 'reply',
+      text,
+      splitLimit: getManagedConnectorSplitLimit(params.connectorId),
+      taskId,
+      threadId: route.sessionKey,
+      metadata: {
+        routeChannel: params.routeChannel,
+      },
+    });
+    if (delivery.silenced) return;
+    await sendConnectorDeliveryChunks(delivery.record.id, delivery.chunks, params.reply);
+  };
   const quickPermission = await resolveQuickPermissionReply({
     text: extractPromptBody(params.prompt),
     taskIdHint: session?.taskId,
   });
   if (quickPermission.handled) {
-    await params.reply(quickPermission.message);
+    await deliverReply(quickPermission.message);
     return;
   }
   const taskId = sanitizeTaskId(params.connectorId, params.taskSeed);
@@ -533,9 +565,7 @@ async function runConnectorTask(params: {
   );
   const result = await completion;
   const response = pickTaskResponseText(result.status, taskId, route.agentId);
-  for (const chunk of splitChunks(response)) {
-    await params.reply(chunk || 'Task completed.');
-  }
+  await deliverReply(response || 'Task completed.', taskId);
 }
 
 async function slackApi(
@@ -1724,6 +1754,10 @@ export function listGatewayConnectorRuntimeStatuses(): GatewayConnectorRuntimeSt
         configured: false,
         running: false,
         mode: resolveRuntimeMode(connectorId),
+        deliveryHealth: summarizeConnectorDeliveryHealth({
+          connectorId,
+          connectorInstanceId: config.instanceId,
+        }),
       };
     });
   statuses.sort((a, b) => {

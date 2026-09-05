@@ -396,6 +396,14 @@ export interface UserSkillEntry {
       generatedByAgentName?: string;
       createdBy?: string;
       origin?: string;
+      automation?: {
+        mode?: 'automatic' | 'approval' | 'off';
+        confidence?: number;
+        confidenceLabel?: 'low' | 'medium' | 'high';
+        sourceTaskId?: string;
+        reason?: string;
+        reasons?: string[];
+      };
     };
     clawdbot?: {
       skillKey?: string;
@@ -403,6 +411,14 @@ export interface UserSkillEntry {
       generatedByAgentName?: string;
       createdBy?: string;
       origin?: string;
+      automation?: {
+        mode?: 'automatic' | 'approval' | 'off';
+        confidence?: number;
+        confidenceLabel?: 'low' | 'medium' | 'high';
+        sourceTaskId?: string;
+        reason?: string;
+        reasons?: string[];
+      };
     };
   };
   manifest?: {
@@ -410,6 +426,23 @@ export interface UserSkillEntry {
     createdAt: string;
     updatedAt: string;
     state?: 'active' | 'deprecated' | 'disabled';
+    versions?: Array<{
+      version: string;
+      archivedAt: string;
+      checksum: string;
+      relPath: string;
+      changeReason?: string;
+      sourceTaskId?: string;
+      confidence?: number;
+      changeSource?: string;
+    }>;
+    lastChange?: {
+      changedAt: string;
+      reason?: string;
+      sourceTaskId?: string;
+      confidence?: number;
+      changeSource?: string;
+    };
   };
   generatedByUserInstruction?: boolean;
   generatedByAgentName?: string;

@@ -1,5 +1,10 @@
 import { randomUUID } from 'crypto';
-import type { GatewayConnectorExtensionConfig, GatewayConnectorExtensionId, GatewayPeerKind } from '@accomplish/shared';
+import type {
+  ConnectorDeliveryAttachmentInput,
+  GatewayConnectorExtensionConfig,
+  GatewayConnectorExtensionId,
+  GatewayPeerKind,
+} from '@accomplish/shared';
 import {
   getGatewayConnectorRuntimeKey,
   resolveGatewayConnectorExtensionConfig,
@@ -10,6 +15,13 @@ import { sendDiscordOutboundMessage } from './discord-connector';
 import { sendTelegramOutboundMessage } from './telegram-connector';
 import { getUserPresenceState } from './user-presence';
 import { getConnectorBridgeRuntimeBaseUrl } from './connector-bridge-runtime';
+import {
+  createConnectorDelivery,
+  filterConnectorDeliveryText,
+  markConnectorDeliveryFailed,
+  markConnectorDeliverySilenced,
+  sendConnectorDeliveryChunks,
+} from './connector-delivery';
 
 type OutboundTargetKind = GatewayPeerKind | 'space' | 'chat' | 'room';
 
@@ -363,6 +375,7 @@ export interface SendConnectorOutboundMessageInput {
   accountId?: string;
   threadId?: string;
   metadata?: Record<string, string>;
+  attachments?: ConnectorDeliveryAttachmentInput[];
 }
 
 export interface SendConnectorOutboundMessageResult {
@@ -371,11 +384,58 @@ export interface SendConnectorOutboundMessageResult {
   accountId: string;
   targetId: string;
   targetKind: GatewayPeerKind;
+  deliveryId?: string;
+  deliveryStatus?: 'sent' | 'silenced' | 'filtered';
+  chunkCount?: number;
+}
+
+function getConnectorSplitLimit(connectorId: GatewayConnectorExtensionId): number {
+  if (connectorId === 'telegram') return 3900;
+  if (connectorId === 'discord') return 1900;
+  if (connectorId === 'slack') return 38000;
+  if (connectorId === 'msteams') return 3500;
+  if (connectorId === 'googlechat') return 3900;
+  return 3900;
+}
+
+function connectorSupportsNativeAttachments(connectorId: GatewayConnectorExtensionId): boolean {
+  return connectorId === 'telegram' || connectorId === 'discord';
 }
 
 export async function sendConnectorOutboundMessage(
   input: SendConnectorOutboundMessageInput
 ): Promise<SendConnectorOutboundMessageResult> {
+  const rawText = normalizeText(input.text, 20000);
+  if (!rawText) {
+    throw new Error('Message text is required.');
+  }
+  const earlyFilter = filterConnectorDeliveryText(rawText);
+  if (earlyFilter.silenced) {
+    const delivery = createConnectorDelivery({
+      connectorId: input.connectorId,
+      connectorInstanceId: input.connectorInstanceId,
+      accountId: input.accountId,
+      targetId: input.targetId,
+      targetKind: resolvePeerKind(input.targetKind),
+      text: rawText,
+      splitLimit: getConnectorSplitLimit(input.connectorId),
+      threadId: input.threadId,
+      metadata: input.metadata,
+      attachments: input.attachments,
+      attachmentMode: connectorSupportsNativeAttachments(input.connectorId) ? 'upload' : 'fallback',
+    });
+    return {
+      connectorId: input.connectorId,
+      connectorInstanceId: input.connectorInstanceId ?? 'default',
+      accountId: input.accountId ?? '',
+      targetId: input.targetId ?? '',
+      targetKind: resolvePeerKind(input.targetKind),
+      deliveryId: delivery.record.id,
+      deliveryStatus: earlyFilter.internalFiltered ? 'filtered' : 'silenced',
+      chunkCount: 0,
+    };
+  }
+
   const presence = getUserPresenceState();
   if (presence.active) {
     throw new Error('User is active in desktop/webchat. Reply in-app instead of using connectors.');
@@ -393,12 +453,32 @@ export async function sendConnectorOutboundMessage(
   }
   const runtimeKey = getGatewayConnectorRuntimeKey(config.id, config.instanceId);
 
-  const text = normalizeText(input.text, 6000);
-  if (!text) {
-    throw new Error('Message text is required.');
-  }
+  const text = earlyFilter.text;
   if (isRoutineHeartbeatStatusMessage(text)) {
-    throw new Error('Blocked connector send: routine heartbeat check-in status must stay in-app.');
+    const delivery = createConnectorDelivery({
+      connectorId: input.connectorId,
+      connectorInstanceId: config.instanceId,
+      accountId: input.accountId,
+      targetId: input.targetId,
+      targetKind: resolvePeerKind(input.targetKind),
+      text,
+      splitLimit: getConnectorSplitLimit(input.connectorId),
+      threadId: input.threadId,
+      metadata: { ...input.metadata, filterReason: 'routine-heartbeat' },
+      attachments: input.attachments,
+      attachmentMode: connectorSupportsNativeAttachments(input.connectorId) ? 'upload' : 'fallback',
+    });
+    markConnectorDeliverySilenced(delivery.record.id, 'routine-heartbeat');
+    return {
+      connectorId: input.connectorId,
+      connectorInstanceId: config.instanceId ?? 'default',
+      accountId: input.accountId ?? '',
+      targetId: input.targetId ?? '',
+      targetKind: resolvePeerKind(input.targetKind),
+      deliveryId: delivery.record.id,
+      deliveryStatus: 'silenced',
+      chunkCount: 0,
+    };
   }
 
   const defaultTarget = selectDefaultTarget(config);
@@ -428,84 +508,151 @@ export async function sendConnectorOutboundMessage(
     throw new Error(`Blocked by connector access policy: ${deniedReason}`);
   }
 
-  if (input.connectorId === 'telegram') {
-    const token = await getGatewayConnectorSecret(runtimeKey);
-    if (!token) throw new Error(`Connector "${input.connectorId}" secret/token is not set.`);
-    await sendTelegramOutboundMessage({ targetId, text, token });
-  } else if (input.connectorId === 'discord') {
-    const token = await getGatewayConnectorSecret(runtimeKey);
-    if (!token) throw new Error(`Connector "${input.connectorId}" secret/token is not set.`);
-    await sendDiscordOutboundMessage({ targetId, targetKind, text, token });
-  } else {
-    const secret = await getGatewayConnectorSecret(runtimeKey);
-    if (!secret) {
-      throw new Error(`Connector "${input.connectorId}" secret/token is not set.`);
-    }
-    if (input.connectorId === 'slack') {
-      await slackApi(secret, 'chat.postMessage', {
-        body: {
-          channel: targetId,
-          text,
-          thread_ts: normalizeText(input.threadId, 128) || undefined,
-        },
+  const delivery = createConnectorDelivery({
+    connectorId: input.connectorId,
+    connectorInstanceId: config.instanceId,
+    accountId,
+    targetId,
+    targetKind,
+    text,
+    splitLimit: getConnectorSplitLimit(input.connectorId),
+    threadId: input.threadId,
+    metadata: input.metadata,
+    attachments: input.attachments,
+    attachmentMode: connectorSupportsNativeAttachments(input.connectorId) ? 'upload' : 'fallback',
+  });
+  if (delivery.silenced) {
+    return {
+      connectorId: input.connectorId,
+      connectorInstanceId: config.instanceId ?? 'default',
+      accountId,
+      targetId,
+      targetKind,
+      deliveryId: delivery.record.id,
+      deliveryStatus: delivery.record.internalFiltered ? 'filtered' : 'silenced',
+      chunkCount: 0,
+    };
+  }
+
+  try {
+    if (input.connectorId === 'telegram') {
+      const token = await getGatewayConnectorSecret(runtimeKey);
+      if (!token) throw new Error(`Connector "${input.connectorId}" secret/token is not set.`);
+      await sendTelegramOutboundMessage({
+        targetId,
+        text: delivery.text,
+        token,
+        chunks: delivery.chunks,
+        attachments: delivery.attachments,
+        deliveryId: delivery.record.id,
+        connectorInstanceId: config.instanceId,
+        accountId,
+        targetKind,
+        threadId: input.threadId,
+        metadata: input.metadata,
       });
-    } else if (input.connectorId === 'matrix') {
-      const baseUrl = normalizeText(config.bridgeUrl, 512) || 'https://matrix-client.matrix.org';
-      await matrixApi(baseUrl, secret, 'POST', `/_matrix/client/v3/rooms/${encodeURIComponent(targetId)}/send/m.room.message/${encodeURIComponent(randomUUID())}`, {
-        body: {
-          msgtype: 'm.text',
-          body: text,
-        },
-      });
-    } else if (input.connectorId === 'msteams') {
-      await teamsApi(secret, 'POST', `/chats/${encodeURIComponent(targetId)}/messages`, {
-        body: {
-          body: {
-            contentType: 'text',
-            content: text,
-          },
-        },
-      });
-    } else if (input.connectorId === 'mattermost') {
-      const baseUrl = normalizeText(config.bridgeUrl, 512);
-      if (!baseUrl) {
-        throw new Error('Bridge URL is required for Mattermost.');
-      }
-      await mattermostApi(baseUrl, secret, 'POST', '/api/v4/posts', {
-        body: {
-          channel_id: targetId,
-          message: text,
-          root_id: normalizeText(input.threadId, 128) || undefined,
-        },
-      });
-    } else if (input.connectorId === 'googlechat') {
-      const spaceId = targetId.startsWith('spaces/') ? targetId : `spaces/${targetId}`;
-      await googleChatApi(secret, 'POST', `/${spaceId}/messages`, {
-        body: {
-          text,
-        },
-      });
-    } else if (BRIDGE_CONNECTOR_IDS.has(input.connectorId)) {
-      const baseUrl = normalizeText(config.bridgeUrl, 512)
-        || (input.connectorId === 'line' || input.connectorId === 'whatsapp' || input.connectorId === 'signal' || input.connectorId === 'bluebubbles' || input.connectorId === 'imessage' || input.connectorId === 'nextcloud-talk' || input.connectorId === 'nostr' || input.connectorId === 'tlon' || input.connectorId === 'zalo' || input.connectorId === 'zalouser' ? getConnectorBridgeRuntimeBaseUrl() : '');
-      if (!baseUrl) {
-        throw new Error(`Bridge URL is required for connector "${input.connectorId}".`);
-      }
-      const sendEndpoint = getBridgeEndpoint(config, 'send_endpoint', '/connector/v1/send');
-      await bridgeRuntimeApi(baseUrl, secret, 'POST', sendEndpoint, {
-        body: {
-          connector: input.connectorId,
-          accountId,
-          peerKind: targetKind,
-          peerId: targetId,
-          text,
-          threadId: normalizeText(input.threadId, 128) || undefined,
-          metadata: input.metadata,
-        },
+    } else if (input.connectorId === 'discord') {
+      const token = await getGatewayConnectorSecret(runtimeKey);
+      if (!token) throw new Error(`Connector "${input.connectorId}" secret/token is not set.`);
+      await sendDiscordOutboundMessage({
+        targetId,
+        targetKind,
+        text: delivery.text,
+        token,
+        chunks: delivery.chunks,
+        attachments: delivery.attachments,
+        deliveryId: delivery.record.id,
+        connectorInstanceId: config.instanceId,
+        accountId,
+        threadId: input.threadId,
+        metadata: input.metadata,
       });
     } else {
-      throw new Error(`Connector "${input.connectorId}" is not supported for outbound send.`);
+      const secret = await getGatewayConnectorSecret(runtimeKey);
+      if (!secret) {
+        throw new Error(`Connector "${input.connectorId}" secret/token is not set.`);
+      }
+      if (input.connectorId === 'slack') {
+        await sendConnectorDeliveryChunks(delivery.record.id, delivery.chunks, async (chunk) => {
+          await slackApi(secret, 'chat.postMessage', {
+            body: {
+              channel: targetId,
+              text: chunk,
+              thread_ts: normalizeText(input.threadId, 128) || undefined,
+            },
+          });
+        });
+      } else if (input.connectorId === 'matrix') {
+        const baseUrl = normalizeText(config.bridgeUrl, 512) || 'https://matrix-client.matrix.org';
+        await sendConnectorDeliveryChunks(delivery.record.id, delivery.chunks, async (chunk) => {
+          await matrixApi(baseUrl, secret, 'POST', `/_matrix/client/v3/rooms/${encodeURIComponent(targetId)}/send/m.room.message/${encodeURIComponent(randomUUID())}`, {
+            body: {
+              msgtype: 'm.text',
+              body: chunk,
+            },
+          });
+        });
+      } else if (input.connectorId === 'msteams') {
+        await sendConnectorDeliveryChunks(delivery.record.id, delivery.chunks, async (chunk) => {
+          await teamsApi(secret, 'POST', `/chats/${encodeURIComponent(targetId)}/messages`, {
+            body: {
+              body: {
+                contentType: 'text',
+                content: chunk,
+              },
+            },
+          });
+        });
+      } else if (input.connectorId === 'mattermost') {
+        const baseUrl = normalizeText(config.bridgeUrl, 512);
+        if (!baseUrl) {
+          throw new Error('Bridge URL is required for Mattermost.');
+        }
+        await sendConnectorDeliveryChunks(delivery.record.id, delivery.chunks, async (chunk) => {
+          await mattermostApi(baseUrl, secret, 'POST', '/api/v4/posts', {
+            body: {
+              channel_id: targetId,
+              message: chunk,
+              root_id: normalizeText(input.threadId, 128) || undefined,
+            },
+          });
+        });
+      } else if (input.connectorId === 'googlechat') {
+        const spaceId = targetId.startsWith('spaces/') ? targetId : `spaces/${targetId}`;
+        await sendConnectorDeliveryChunks(delivery.record.id, delivery.chunks, async (chunk) => {
+          await googleChatApi(secret, 'POST', `/${spaceId}/messages`, {
+            body: {
+              text: chunk,
+            },
+          });
+        });
+      } else if (BRIDGE_CONNECTOR_IDS.has(input.connectorId)) {
+        const baseUrl = normalizeText(config.bridgeUrl, 512)
+          || (input.connectorId === 'line' || input.connectorId === 'whatsapp' || input.connectorId === 'signal' || input.connectorId === 'bluebubbles' || input.connectorId === 'imessage' || input.connectorId === 'nextcloud-talk' || input.connectorId === 'nostr' || input.connectorId === 'tlon' || input.connectorId === 'zalo' || input.connectorId === 'zalouser' ? getConnectorBridgeRuntimeBaseUrl() : '');
+        if (!baseUrl) {
+          throw new Error(`Bridge URL is required for connector "${input.connectorId}".`);
+        }
+        const sendEndpoint = getBridgeEndpoint(config, 'send_endpoint', '/connector/v1/send');
+        await sendConnectorDeliveryChunks(delivery.record.id, delivery.chunks, async (chunk) => {
+          await bridgeRuntimeApi(baseUrl, secret, 'POST', sendEndpoint, {
+            body: {
+              connector: input.connectorId,
+              accountId,
+              peerKind: targetKind,
+              peerId: targetId,
+              text: chunk,
+              threadId: normalizeText(input.threadId, 128) || undefined,
+              metadata: input.metadata,
+            },
+          });
+        });
+      } else {
+        throw new Error(`Connector "${input.connectorId}" is not supported for outbound send.`);
+      }
     }
+  } catch (error) {
+    markConnectorDeliveryFailed(delivery.record.id, error);
+    throw error;
   }
 
   return {
@@ -514,5 +661,8 @@ export async function sendConnectorOutboundMessage(
     accountId,
     targetId,
     targetKind,
+    deliveryId: delivery.record.id,
+    deliveryStatus: 'sent',
+    chunkCount: delivery.chunks.length,
   };
 }

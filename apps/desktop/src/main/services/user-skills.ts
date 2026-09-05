@@ -40,6 +40,7 @@ import type {
   UserSkillZipInstallRequest,
   UserSkillZipInstallResult,
   UserSkillTestRequest,
+  UserSkillAutomationMode,
 } from '@accomplish/shared';
 import { getAgentContext } from './agent-context';
 import { getAllApiKeys } from '../store/secureStorage';
@@ -376,6 +377,10 @@ function normalizeSkillManifest(input: unknown, fallback: UserSkillManifest): Us
         archivedAt: String(entry.archivedAt || fallback.updatedAt),
         checksum: String(entry.checksum || ''),
         relPath: String(entry.relPath || ''),
+        changeReason: entry.changeReason ? String(entry.changeReason).trim() : undefined,
+        sourceTaskId: entry.sourceTaskId ? String(entry.sourceTaskId).trim() : undefined,
+        confidence: Number.isFinite(Number(entry.confidence)) ? Math.max(0, Math.min(1, Number(entry.confidence))) : undefined,
+        changeSource: entry.changeSource ? String(entry.changeSource).trim() : undefined,
       }))
       .filter((entry) => Boolean(entry.relPath))
     : [];
@@ -448,6 +453,15 @@ function normalizeSkillManifest(input: unknown, fallback: UserSkillManifest): Us
       }
       : fallback.lastTest,
     performance,
+    lastChange: raw.lastChange && typeof raw.lastChange === 'object'
+      ? {
+        changedAt: String(raw.lastChange.changedAt || fallback.updatedAt),
+        reason: raw.lastChange.reason ? String(raw.lastChange.reason).trim() : undefined,
+        sourceTaskId: raw.lastChange.sourceTaskId ? String(raw.lastChange.sourceTaskId).trim() : undefined,
+        confidence: Number.isFinite(Number(raw.lastChange.confidence)) ? Math.max(0, Math.min(1, Number(raw.lastChange.confidence))) : undefined,
+        changeSource: raw.lastChange.changeSource ? String(raw.lastChange.changeSource).trim() : undefined,
+      }
+      : fallback.lastChange,
   };
 }
 
@@ -957,6 +971,20 @@ function isSkillVisibleToAgent(skill: SkillVisibility, agentId?: string): boolea
   if (skill.ownerAgentId === activeAgentId) return true;
   if (skill.scope === 'selected' && skill.sharedWithAgentIds.includes(activeAgentId)) return true;
   return false;
+}
+
+export function resolveUserSkillAutomationMode(agent?: {
+  skillAutomationMode?: unknown;
+  autoSkillEnabled?: unknown;
+  autoSkillAutoPromoteLowRisk?: unknown;
+}): UserSkillAutomationMode {
+  const explicit = String(agent?.skillAutomationMode || '').trim().toLowerCase();
+  if (explicit === 'automatic' || explicit === 'approval' || explicit === 'off') {
+    return explicit;
+  }
+
+  if (!agent?.autoSkillEnabled) return 'off';
+  return agent.autoSkillAutoPromoteLowRisk ? 'automatic' : 'approval';
 }
 
 function isTruthy(value: unknown): boolean {
@@ -1802,6 +1830,36 @@ function normalizeSkillMarkdownTextForSave(input: string): string {
   return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
 }
 
+function trimOptional(value: unknown, maxLength: number): string | undefined {
+  const text = String(value ?? '').trim();
+  if (!text) return undefined;
+  return text.slice(0, maxLength);
+}
+
+function clampOptionalConfidence(value: unknown): number | undefined {
+  const confidence = Number(value);
+  if (!Number.isFinite(confidence)) return undefined;
+  return Math.max(0, Math.min(1, Number(confidence.toFixed(2))));
+}
+
+function buildSkillChangeMetadata(
+  req: Pick<UserSkillWriteFileRequest, 'changeReason' | 'sourceTaskId' | 'confidence' | 'changeSource'>,
+  changedAt: string
+): NonNullable<UserSkillManifest['lastChange']> | undefined {
+  const reason = trimOptional(req.changeReason, 300);
+  const sourceTaskId = trimOptional(req.sourceTaskId, 128);
+  const confidence = clampOptionalConfidence(req.confidence);
+  const changeSource = trimOptional(req.changeSource, 80);
+  if (!reason && !sourceTaskId && confidence === undefined && !changeSource) return undefined;
+  return {
+    changedAt,
+    reason,
+    sourceTaskId,
+    confidence,
+    changeSource,
+  };
+}
+
 export async function writeUserSkillFile(req: UserSkillWriteFileRequest & { agentId?: string }): Promise<{ path: string; manifest?: UserSkillManifest }> {
   const rel = safeRelPath(req.relPath);
   const resolved = resolveSkillBaseDir(req.skillId, req.source, req.agentId);
@@ -1829,6 +1887,8 @@ export async function writeUserSkillFile(req: UserSkillWriteFileRequest & { agen
     });
     const currentManifest = loadSkillManifest(resolved.baseDir, fallbackManifest);
 
+    const updatedAt = new Date().toISOString();
+    const changeMetadata = buildSkillChangeMetadata(req, updatedAt);
     let nextManifest: UserSkillManifest = {
       ...currentManifest,
       skillId: req.skillId,
@@ -1836,9 +1896,10 @@ export async function writeUserSkillFile(req: UserSkillWriteFileRequest & { agen
       description: parsedNext.description && parsedNext.description.trim()
         ? parsedNext.description.trim()
         : currentManifest.description,
-      updatedAt: new Date().toISOString(),
+      updatedAt,
       checksum: nextChecksum,
       lastValidation: validation,
+      lastChange: changeMetadata ?? currentManifest.lastChange,
     };
 
     if (existingContent && existingChecksum !== nextChecksum) {
@@ -1850,6 +1911,10 @@ export async function writeUserSkillFile(req: UserSkillWriteFileRequest & { agen
           archivedAt: archived.archivedAt,
           checksum: existingChecksum,
           relPath: archived.relPath,
+          changeReason: changeMetadata?.reason,
+          sourceTaskId: changeMetadata?.sourceTaskId,
+          confidence: changeMetadata?.confidence,
+          changeSource: changeMetadata?.changeSource,
         },
       ].slice(-100);
       nextManifest.version = bumpPatchVersion(currentManifest.version);
@@ -2120,11 +2185,27 @@ export async function setUserSkillLifecycle(req: UserSkillLifecycleUpdateRequest
       checksum: checksumText(raw),
     })
   );
+  const updatedAt = new Date().toISOString();
+  const reason = String(req.reason || '').trim() || `Skill lifecycle set to ${req.state}.`;
+  const changeMetadata = buildSkillChangeMetadata(
+    {
+      changeReason: reason,
+      sourceTaskId: req.sourceTaskId,
+      confidence: req.confidence,
+      changeSource: req.changeSource || 'lifecycle',
+    },
+    updatedAt
+  );
   const saved: UserSkillManifest = {
     ...manifest,
     state: req.state,
-    deprecationReason: req.state === 'deprecated' ? String(req.reason || '').trim() || manifest.deprecationReason : undefined,
-    updatedAt: new Date().toISOString(),
+    deprecationReason: req.state === 'deprecated' ? reason || manifest.deprecationReason : undefined,
+    updatedAt,
+    lastChange: changeMetadata ?? {
+      changedAt: updatedAt,
+      reason,
+      changeSource: 'lifecycle',
+    },
   };
   saveSkillManifest(entry.baseDir, saved);
   bumpVersion();
@@ -2303,9 +2384,16 @@ export async function rollbackUserSkill(req: UserSkillRollbackRequest): Promise<
         archivedAt: archivedCurrent.archivedAt,
         checksum: currentChecksum,
         relPath: archivedCurrent.relPath,
+        changeReason: `Rolled back to version ${target.version}.`,
+        changeSource: 'rollback',
       },
     ].slice(-100),
     lastValidation: validation,
+  };
+  nextManifest.lastChange = {
+    changedAt: nextManifest.updatedAt,
+    reason: `Rolled back to version ${target.version}.`,
+    changeSource: 'rollback',
   };
   const lastTest = await runSkillTests({
     baseDir: entry.baseDir,
@@ -2383,14 +2471,16 @@ export function buildUserSkillsPromptBundle(params?: { agentId?: string; userMes
     agent?: {
       id?: string;
       name?: string;
+      skillAutomationMode?: UserSkillAutomationMode;
       autoSkillEnabled?: boolean;
       autoSkillAutoPromoteLowRisk?: boolean;
     };
   } | undefined;
   const creatorAgentId = String(ctx?.agent?.id || params?.agentId || '').trim() || 'main';
   const creatorAgentName = String(ctx?.agent?.name || '').trim() || 'Agent';
-  const autoSkillEnabled = Boolean(ctx?.agent?.autoSkillEnabled);
-  const autoSkillAutoPromoteLowRisk = Boolean(ctx?.agent?.autoSkillAutoPromoteLowRisk);
+  const skillAutomationMode = resolveUserSkillAutomationMode(ctx?.agent);
+  const autoSkillEnabled = skillAutomationMode !== 'off';
+  const autoSkillAutoPromoteLowRisk = skillAutomationMode === 'automatic';
   const maxSkills = Number.isFinite(params?.maxSkills as number) ? Math.max(1, Math.floor(params?.maxSkills as number)) : 2;
   const skills = selectRelevantSkills(report.skills, params?.userMessage, maxSkills);
 
@@ -2406,14 +2496,14 @@ export function buildUserSkillsPromptBundle(params?: { agentId?: string; userMes
   blocks.push('Do not save raw chat logs, tool transcripts, retries, status messages, one-off target names, or private data into a skill.');
   blocks.push('When a skill comes from a completed task, generalize the target into placeholders and include a concise tool call overview, workflow, verification checks, and fallback paths.');
   if (autoSkillEnabled) {
-    blocks.push('Auto skill creation is ENABLED for this agent. You may proactively create a skill when a workflow is clearly reusable.');
+    blocks.push(`Skill automation mode is ${skillAutomationMode.toUpperCase()} for this agent.`);
     if (autoSkillAutoPromoteLowRisk) {
-      blocks.push('Low-risk auto-promotion is ENABLED: when a drafted skill is validated and low risk, you may promote it automatically.');
+      blocks.push('High-confidence reusable workflows may be saved automatically after validation.');
     } else {
-      blocks.push('Low-risk auto-promotion is DISABLED: draft skills but require explicit user confirmation before promotion.');
+      blocks.push('Reusable workflows may be drafted, but applying them requires explicit approval.');
     }
   } else {
-    blocks.push('Auto skill creation is DISABLED for this agent. Do not create new skills unless the user explicitly asks.');
+    blocks.push('Skill automation is OFF for this agent. Do not create new skills unless the user explicitly asks.');
   }
   blocks.push('When no skill ID is provided, generate one automatically in kebab-case, ensure it is unique, and tell the user the final ID you created.');
   blocks.push(`If a skill is created by this agent, set front matter metadata.opendeskmate.generatedByAgentName to ${JSON.stringify(creatorAgentName)} and metadata.opendeskmate.generatedByAgentId to ${JSON.stringify(creatorAgentId)}.`);

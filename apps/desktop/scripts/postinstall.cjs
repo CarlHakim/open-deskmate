@@ -156,6 +156,7 @@ let filePermissionResult = { status: 0, error: null };
 let canvasResult = { status: 0, error: null };
 let memoryToolsResult = { status: 0, error: null };
 let buildRuntimeToolsResult = { status: 0, error: null };
+let toolDiscoveryResult = { status: 0, error: null };
 
 if (!shouldSkipSkills) {
   console.log('[postinstall] Installing skills dependencies...');
@@ -184,6 +185,11 @@ if (!shouldSkipSkills) {
     timeout: installTimeoutMs,
   });
 
+  toolDiscoveryResult = runOrHandle('npm', ['--prefix', 'skills/tool-discovery', 'install', '--no-fund', '--no-audit'], {
+    shell: isWin,
+    timeout: installTimeoutMs,
+  });
+
   if (memoryToolsResult.status === 0) {
     const verifyResult = runOrHandle('node', ['skills/memory-tools/scripts/verify-fts5.cjs'], {
       shell: isWin,
@@ -206,7 +212,8 @@ if (!isWin) {
     filePermissionResult.status !== 0 ||
     canvasResult.status !== 0 ||
     memoryToolsResult.status !== 0 ||
-    buildRuntimeToolsResult.status !== 0
+    buildRuntimeToolsResult.status !== 0 ||
+    toolDiscoveryResult.status !== 0
   ) {
     process.exit(1);
   }
@@ -240,6 +247,12 @@ if (!isWin) {
       console.warn('[postinstall] build-runtime-tools install timed out; continuing.');
     }
     console.warn('[postinstall] build-runtime-tools install failed on Windows; continuing.');
+  }
+  if (toolDiscoveryResult.status !== 0) {
+    if (toolDiscoveryResult.error?.code === 'ETIMEDOUT') {
+      console.warn('[postinstall] tool-discovery install timed out; continuing.');
+    }
+    console.warn('[postinstall] tool-discovery install failed on Windows; continuing.');
   }
   process.exit(0);
 }

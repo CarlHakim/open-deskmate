@@ -94,6 +94,11 @@ export function buildToolCallSignature(toolName: string, input: unknown): string
   return `${normalizedToolName}:${normalizedInput}`.slice(0, TOOL_LOOP_SIGNATURE_MAX_LENGTH);
 }
 
+function isPollingWaitTool(toolName: string): boolean {
+  const normalized = (toolName || '').trim().toLowerCase();
+  return normalized === 'subagent_wait' || normalized.endsWith('_subagent_wait');
+}
+
 type ToolLoopGuardDecision = {
   shouldStop: boolean;
   reason?: string;
@@ -278,7 +283,10 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
     console.log('[OpenCode CLI] Generating OpenCode config with MCP settings and agent...');
     const configPath = await generateOpenCodeConfig({
       agentId: config.agentId,
+      taskId,
       systemPromptAppend: config.systemPromptAppend,
+      toolsetOverrideIds: config.toolsetOverrideIds,
+      deferredToolDiscoveryOverride: config.deferredToolDiscoveryOverride,
       includeBrowserSkill: config.requiresBrowser === true,
       buildMode: config.buildMode === true,
       buildWorkspaceRelativePath: config.buildWorkspaceRelativePath,
@@ -1494,6 +1502,7 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
 
   private recordToolLoopGuard(toolName: string, input: unknown, isError = false, invocationId?: string): void {
     if (this.toolLoopGuardTriggered || this.hasCompleted || this.pendingComplete) return;
+    if (isPollingWaitTool(toolName)) return;
     if (invocationId) {
       const scopedInvocationId = `${toolName || 'unknown'}:${invocationId}`;
       if (this.seenToolLoopInvocationIds.has(scopedInvocationId)) return;
