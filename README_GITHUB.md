@@ -26,7 +26,7 @@ An open-source local-first AI agent platform for Windows forked from the Openwor
 
 #### Prerequisites
 
-- **Node.js 20+** - [Download](https://nodejs.org/)
+- **Node.js 22.12+** - [Download](https://nodejs.org/)
 - **pnpm 9+** - Install with `npm install -g pnpm`
 - **Visual Studio Build Tools 2022** with:
   - Desktop development with C++

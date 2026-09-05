@@ -11,7 +11,7 @@ const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-const NODE_VERSION = '20.18.1';
+const NODE_VERSION = '22.23.2';
 
 function resolveBundledNodeBin() {
   const platform = process.platform;
@@ -61,4 +61,3 @@ if (result.error) {
 }
 
 process.exit(result.status ?? 1);
-

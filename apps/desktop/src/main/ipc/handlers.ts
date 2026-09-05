@@ -2973,7 +2973,6 @@ export function registerIPCHandlers(): void {
     setLaunchAtLogin(enabled);
     app.setLoginItemSettings({
       openAtLogin: enabled,
-      openAsHidden: true,
     });
   });
 

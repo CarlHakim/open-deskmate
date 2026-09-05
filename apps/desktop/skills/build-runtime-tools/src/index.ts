@@ -5,13 +5,13 @@
  * Exposes Build mode runtime inspection tools to the active OpenCode task.
  */
 
-import { Server } from '../../file-permission/node_modules/@modelcontextprotocol/sdk/dist/esm/server/index.js';
-import { StdioServerTransport } from '../../file-permission/node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
   type CallToolResult,
-} from '../../file-permission/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js';
+} from '@modelcontextprotocol/sdk/types.js';
 
 const API_PORT = process.env.BUILD_RUNTIME_TOOLS_API_PORT || '9231';
 const API_URL = `http://127.0.0.1:${API_PORT}/build-runtime`;
