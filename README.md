@@ -204,7 +204,7 @@ This is the main difference from a normal agent harness: useful AI output can be
 
 #### Prerequisites
 
-- **Node.js 20+** - [Download](https://nodejs.org/)
+- **Node.js 22.12+** - [Download](https://nodejs.org/)
 - **pnpm 9+** - Install with `npm install -g pnpm`
 - **Visual Studio Build Tools 2022** with:
   - Desktop development with C++

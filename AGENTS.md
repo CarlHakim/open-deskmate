@@ -108,7 +108,7 @@ Static assets go in `apps/desktop/public/assets/`.
 
 ## Bundled Node.js
 
-The packaged app bundles standalone Node.js v20.18.1 binaries to ensure MCP servers work on machines without Node.js installed.
+The packaged app bundles standalone Node.js v22.23.2 binaries to ensure MCP servers work on machines without Node.js installed.
 
 ### Key Files
 - `src/main/utils/bundled-node.ts` - Utility to get bundled node/npm/npx paths

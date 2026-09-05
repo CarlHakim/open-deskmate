@@ -13,7 +13,7 @@ const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-const NODE_VERSION = '20.18.1';
+const NODE_VERSION = '22.23.2';
 
 function resolveBundledNodeRoot() {
   const platform = process.platform;

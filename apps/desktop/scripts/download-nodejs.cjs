@@ -1,7 +1,7 @@
 /**
  * Download Node.js standalone binaries for bundling with the Electron app.
  *
- * Downloads Node.js v20.18.1 for:
+ * Downloads Node.js v22.23.2 for:
  * - macOS x64
  * - macOS arm64
  * - Windows x64
@@ -15,7 +15,7 @@ const path = require('path');
 const { execSync } = require('child_process');
 const crypto = require('crypto');
 
-const NODE_VERSION = '20.18.1';
+const NODE_VERSION = '22.23.2';
 const BASE_URL = `https://nodejs.org/dist/v${NODE_VERSION}`;
 
 const PLATFORMS = [

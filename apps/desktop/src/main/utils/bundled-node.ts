@@ -1,7 +1,7 @@
 /**
  * Utility module for accessing bundled Node.js binaries.
  *
- * The app bundles standalone Node.js v20.18.1 binaries to ensure
+ * The app bundles standalone Node.js v22.23.2 binaries to ensure
  * MCP servers and CLI tools work regardless of the user's system configuration.
  */
 
@@ -9,7 +9,7 @@ import { app } from 'electron';
 import path from 'path';
 import fs from 'fs';
 
-const NODE_VERSION = '20.18.1';
+const NODE_VERSION = '22.23.2';
 
 export interface BundledNodePaths {
   /** Path to the node executable */
