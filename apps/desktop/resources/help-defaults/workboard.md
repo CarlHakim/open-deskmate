@@ -137,6 +137,10 @@ The popup is best for quick edits while staying in a task. Project Management is
 - If note formatting looks wrong, use the rich text toolbar and the copy action built into the note popout.
 - If a drawing export is hard to find, check the chosen export folder and timestamped filename.
 
+## Scrapbook View Of Project Material
+
+**Project Management → Scrapbook** presents Workboard notes, documents, images, and source links as cards. **Save to scrapbook** beneath an answer creates a normal Workboard item with a source-task link when available. **Edit in Workboard** returns to that item for editing or archiving. You do not need to duplicate existing material. See [Project Scrapbook](./project-scrapbook.md).
+
 ## Related Pages
 
 - [Project Management](./project-management.md)

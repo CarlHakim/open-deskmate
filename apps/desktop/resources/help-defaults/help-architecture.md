@@ -61,3 +61,11 @@ If you set `embeddedSiteUrl` in `index.json` to an `http(s)` URL, the Help viewe
 - If the Help menu is stale, check live reload or restart the app.
 - If an asset is blocked, confirm it is under the help root and not using path traversal.
 - If an embedded docs site does not load, confirm `embeddedSiteUrl` is an `http` or `https` URL and the site allows iframe embedding.
+
+## Stock Guide Synchronisation
+
+Startup synchronisation records installed stock content hashes in the user Help folder's **.stock-state.json**. A bundled **.stock-history.json** recognises earlier shipped content when a user upgrades from a version that did not record hashes. Historical entries are derived from stock files in Git, not from arbitrary user content. Markdown, JSON, and SVG hashes normalise CRLF to LF.
+
+The synchroniser copies missing files and replaces only recognised unchanged stock. Unknown or edited files stay untouched. A customised index retains its existing entries and order while new default entries are appended; stock indexes can refresh normally. Linked destination files/directories are not overwritten. Repeated startup with unchanged content avoids file rewrites.
+
+When changing bundled guides, retain historical stock hashes for migrations. The normal stock-state record handles future upgrades. Test both fresh installs and upgrades with edited pages and custom indexes, then verify internal links, asset loading, and Help search.

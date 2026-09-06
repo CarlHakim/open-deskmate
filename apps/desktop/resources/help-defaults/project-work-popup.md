@@ -8,8 +8,8 @@ Use it when you want to view or edit a project's lists, notes, drawings, and doc
 
 ## Opening The Popup
 
-- In Build Mode, click the project work button beside the save-current-prompt button under the AI Build Operator prompt.
-- In Chat Mode, click the project work button beside the saved prompt controls under the prompt.
+- In Build Mode, open **More options → Project work** under the AI Build Operator prompt.
+- In Chat Mode, open **More options** under the first or follow-up prompt, then choose the project work control.
 - If the current task or preset is linked to a project, that project opens automatically.
 - If nothing is linked, choose a project from the popup.
 
@@ -101,6 +101,12 @@ Local file links can break if the file is moved.
 - If a linked task is not selected automatically, confirm the Chat project, direct task, or Build preset is attached to the expected budget project.
 - If the popup opens partly off screen, use reset position.
 - If another Build popup opens behind it, close or move the Project Work popup, then reopen the other popup.
+
+## Scrapbook And Prompt Actions
+
+For a visual collection of notes, files, links, and saved answers, use **Project Management → Scrapbook**. It uses the same Workboard material; see [Project Scrapbook](./project-scrapbook.md).
+
+Text inserted from project work prepares the current draft and still requires Send/Run. Save reusable instructions to the prompt library and pin them through [All actions](./actions-and-pins.md).
 
 ## Related Pages
 

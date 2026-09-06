@@ -43,7 +43,7 @@ Use Chat Mode when you want an answer, report, analysis, research task, file-bas
 ## Useful Features
 
 - **Appearance**
-  - Use **Background** in the upper-right of the chat area to choose a chat background or return to the default theme background.
+  - Use the **Appearance** controls in the upper-right of the chat area to choose a chat background or return to the default theme background.
   - Background images only affect the chat area, not answer bubbles.
   - Answer bubbles can show the active agent avatar. Use the small avatar control to hide it, and use the restore control near the answer actions to turn it back on.
 - **Project budget selector**
@@ -85,6 +85,18 @@ Use Chat Mode when you want an answer, report, analysis, research task, file-bas
 - If image previews do not load, open the original image externally to confirm the URL is reachable.
 - If copying to Word loses formatting, use the answer copy button rather than manually selecting text.
 - If follow-up prompts feel unrelated, confirm you are in the intended task history item before sending the prompt.
+
+## Current Prompt And Answer Controls
+
+Secondary controls are in **More options**, which floats over the page. Use Close, Escape, or click outside; the draft and selections remain. Pinned actions sit to its right after a vertical separator. Their down-arrow popup contains hidden pins; **All actions** opens the full library and pinning limit. See [Prompt Controls](./prompt-controls.md) and [Actions And Pins](./actions-and-pins.md).
+
+The briefcase project selector groups usage and work; the working-folder button selects a filesystem location. These are separate choices.
+
+Above the history, [Task journey](./task-journey.md) opens recorded stage evidence, and [Live agent team](./live-agent-team.md) opens helper activity and character cards. The main agent may resume automatically to review helper results when automatic relays are enabled.
+
+Answers can include [interactive costs, checklists, comparisons, and guidance choices](./interactive-answers-and-choices.md). Guidance choices and answer follow-up actions add text to the draft; use Send to continue. [Useful, Explain more, Try another direction, and Save this approach](./answer-actions.md) appear under supported answers.
+
+Use [Focus](./focus-mode.md) for a temporary reading view, [Interaction appearance](./interaction-appearance.md) for effects and completion sound, and [Save to scrapbook](./project-scrapbook.md) for project references.
 
 ## Related Pages
 

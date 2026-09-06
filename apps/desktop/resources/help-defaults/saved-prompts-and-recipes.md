@@ -9,7 +9,7 @@ Use saved prompts and recipes when you repeatedly ask for the same kind of work,
 ## Quick Steps
 
 1. Open a Chat or Build prompt.
-2. Click the saved prompt/recipe button.
+2. Open **More options** and choose the saved prompt/recipe picker, or use **All actions** for saved actions.
 3. Search or choose a category.
 4. Select the prompt or recipe.
 5. Review the inserted text.
@@ -84,6 +84,14 @@ Use the compact Chat and Build prompt pickers for insertion. Use Settings for la
 - If you need to rename or delete a category, use Settings rather than the compact prompt picker.
 - If a Build prompt picker only shows Build prompts, check whether the picker is filtering by mode.
 - If a generated prompt ignores extra instructions, regenerate it and make the extra instruction explicit and concrete.
+
+## Actions, Pins, And Reusable Answers
+
+The [Actions And Pins](./actions-and-pins.md) guide covers **All actions**, starter prompts, double-brace fields, and the separate overflow menu. The default pinning limit is **10**; change it from **1 to 50** in All actions and click **Save limit**. Pins and limits are separate for each project and mode.
+
+Use **All actions → Save current prompt** to turn your draft into a reusable action. Use **Save this approach** under an answer to save an editable template with an example. Both use the existing library. A built-in recipe can still be inserted with the recipe picker, adapted, and saved as your own action.
+
+Selecting an action and clicking **Add to prompt** appends to your draft. Review it and use Send/Run to execute. See [Answer Actions](./answer-actions.md) for the difference between a template, a Useful marker, and a Scrapbook reference.
 
 ## Related Pages
 

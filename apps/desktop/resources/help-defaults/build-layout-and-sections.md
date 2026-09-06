@@ -53,7 +53,7 @@ Use **AI Build Operator Only** to hide all other sections and focus on the Build
 
 When this mode is active, the AI Build Operator expands. Its content stays centered and readable instead of stretching edge to edge.
 
-The working directory remains visible near the prompt controls, and Changes & Git can be opened from its popup button when that section is hidden.
+The working directory and Changes & Git popup control are available under **More options** when the layout needs them.
 
 ## Resizing
 
@@ -71,6 +71,14 @@ The Prompt Navigator stays attached to the AI Build Operator message area, so hi
 - If a section disappeared, reopen **Sections** and check it again.
 - If panels overlap, reset the affected section size or reopen Build Mode.
 - If Changes & Git is hidden but needed, use the review popup button when available or show the section again.
+
+## Temporary Focus And Compact Controls
+
+**Focus** at the top right temporarily hides secondary panels while retaining their state. **Exit Focus** restores them. This differs from saved Sections visibility and locks. Chat and Build use a centred readable content width in Focus; see [Focus Mode](./focus-mode.md).
+
+Build's prompt now grows from two lines, has an expand button, and keeps Run/Stop beside the input. More options floats over the page; actions and their separate overflow dropdown stay on one toolbar. See [Prompt Controls](./prompt-controls.md).
+
+On a fresh layout, terminal, log, and changes panels may start closed. Use **Show tools** or **Sections** to reveal them. Existing saved layouts are respected.
 
 ## Related Pages
 

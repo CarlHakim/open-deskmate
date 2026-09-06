@@ -67,6 +67,14 @@ Build runtime tools also include duplicate-call guidance. If the same tool reque
 - If a task stops early because of loop protection, continue with a prompt that says what to do next from the current findings.
 - If loop protection stops useful work too aggressively, include the task details and raw log in a bug report.
 
+## Blocked Helpers And Replacement Loops
+
+A blocked helper is different from a main agent repeatedly calling a tool. Open [Subagents](./subagents.md) or [Live agent team](./live-agent-team.md) and inspect its actual error, partial report, and replacement lineage.
+
+The main agent can diagnose and replace a helper when automatic supervision is enabled. Replacements receive a bounded handoff, including original work and recent failures. If a replacement fails, inspect the recorded successor run before retrying; repeated calls for the same original reuse its existing replacement. Do not keep appending the full history to every retry.
+
+If the blocker is missing input, permission, or unavailable access, supply the missing information or use a permitted fallback. A new agent alone cannot supply information that was never provided.
+
 ## Related Pages
 
 - [Activity Timeline And Recovery](./activity-timeline-and-recovery.md)

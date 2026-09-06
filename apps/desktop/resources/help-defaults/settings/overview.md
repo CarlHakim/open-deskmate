@@ -101,3 +101,11 @@ Use this page when you know you need to configure the app but are not sure which
 - If a setting does not seem to apply, check whether there is an agent, preset, or project-level override.
 - If a Settings button needs a second click, check whether focus was inside an input or dropdown.
 - If a configuration issue is unclear, run **Doctor** before changing more settings.
+
+## Interaction Appearance And Current Navigation
+
+Settings now supports one category at a time, **All sections**, Basic/Advanced modes, and search. Search can find advanced categories even in Basic mode.
+
+Open **Interaction appearance** for Calm, Balanced, Playful, completion animations, and the optional soft chime. The Task journey's sliders button opens the same preferences. See [Interaction Appearance](../interaction-appearance.md).
+
+For the latest prompt locations, use [Prompt Controls](../prompt-controls.md). For agent cards and supervision, see [Live Agent Team](../live-agent-team.md) and [Subagents](../subagents.md). Scrapbook is under **Project Management**, not Settings; see [Project Scrapbook](../project-scrapbook.md).

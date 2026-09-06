@@ -103,6 +103,14 @@ The same save-to-note and save-to-RTF flows are available from Chat Mode answers
 - If an RTF filename is rejected, use the default timestamped name or shorten the custom name.
 - If a saved note loses table formatting, reopen the work item note editor and confirm the note was saved as rich text, not plain text.
 
+## New Answer Actions And Scrapbook
+
+[Answer Actions](./answer-actions.md) explains **Useful**, **Explain more**, **Try another direction**, and **Save this approach**. Useful is a local marker; Save this approach creates a reusable prompt template. Follow-up actions prepare a draft and require Send/Run.
+
+Use **Save to scrapbook** for a project reference snapshot with an optional note and source-task link. Open it through **Project Management → Scrapbook** and edit it through Workboard. See [Project Scrapbook](./project-scrapbook.md).
+
+Interactive widget adjustments are local display state. Existing copy/export flows retain the recorded answer rather than incorporating changed quantities or checkbox selections. Record important adjusted values explicitly before exporting; see [Interactive Answers And Choices](./interactive-answers-and-choices.md).
+
 ## Related Pages
 
 - [Chat Mode](./chat-mode.md)

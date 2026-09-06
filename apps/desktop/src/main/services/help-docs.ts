@@ -16,6 +16,8 @@ import { listEnabledPluginHelpDocContributions } from '../plugins/plugin-registr
 const HELP_DIR_NAME = 'help';
 const HELP_DEFAULTS_DIR_NAME = 'help-defaults';
 const HELP_INDEX_FILE = 'index.json';
+const HELP_STOCK_STATE_FILE = '.stock-state.json';
+const HELP_STOCK_HISTORY_FILE = '.stock-history.json';
 const HELP_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const HELP_MAX_ASSET_BYTES = 8 * 1024 * 1024;
 const HELP_LEGACY_SYNCABLE_HASHES: Record<string, string[]> = {
@@ -141,6 +143,34 @@ function readFileSha256(filePath: string): string | null {
   }
 }
 
+// Text hashes ignore only platform line endings; even small user edits are preserved.
+function readStockHash(filePath: string): string {
+  const content = fs.readFileSync(filePath);
+  const normalized = /\.(md|json|svg)$/i.test(filePath)
+    ? Buffer.from(content.toString('utf-8').replace(/\r\n/g, '\n'))
+    : content;
+  return crypto.createHash('sha256').update(normalized).digest('hex').toUpperCase();
+}
+
+function readHashManifest(filePath: string): Record<string, unknown> {
+  const value = readJsonFile(filePath) as { version?: unknown; files?: unknown } | null;
+  if (value?.version !== 1 || !value.files || typeof value.files !== 'object' || Array.isArray(value.files)) return {};
+  return value.files as Record<string, unknown>;
+}
+
+function hasLinkedHelpPath(helpRoot: string, relative: string): boolean {
+  let current = helpRoot;
+  for (const segment of relative.split(path.sep)) {
+    current = path.join(current, segment);
+    try {
+      if (fs.lstatSync(current).isSymbolicLink()) return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+  return false;
+}
+
 function normalizeIndexDocs(value: unknown): HelpDocsIndexFile['docs'] {
   if (!value || typeof value !== 'object') return [];
   const docs = (value as HelpDocsIndexFile).docs;
@@ -206,35 +236,57 @@ function mergeDefaultIndexIntoUserIndex(helpRoot: string, defaultsDir: string): 
   }
 }
 
-function copyDefaultHelpFilesIfMissing(helpRoot: string): void {
+function syncDefaultHelpFiles(helpRoot: string): void {
   const defaultsDir = getDefaultsDir();
   if (!fs.existsSync(defaultsDir)) {
     return;
   }
 
   ensureDirectory(helpRoot);
+  const statePath = path.join(helpRoot, HELP_STOCK_STATE_FILE);
+  const previous = readHashManifest(statePath);
+  const history = readHashManifest(path.join(defaultsDir, HELP_STOCK_HISTORY_FILE));
+  const installed: Record<string, unknown> = { ...previous };
   const sourceFiles = listFilesRecursively(defaultsDir);
   for (const sourceFile of sourceFiles) {
     const relative = path.relative(defaultsDir, sourceFile);
     const relativePosix = toPosixPath(relative).toLowerCase();
+    if (relativePosix.startsWith('.') || hasLinkedHelpPath(helpRoot, relative)) continue;
     const destination = path.join(helpRoot, relative);
+    const sourceHash = readStockHash(sourceFile);
     if (fs.existsSync(destination)) {
-      const legacyHashes = HELP_LEGACY_SYNCABLE_HASHES[relativePosix];
-      if (legacyHashes?.length) {
-        const destinationHash = readFileSha256(destination);
-        if (destinationHash && legacyHashes.includes(destinationHash)) {
-          ensureDirectory(path.dirname(destination));
-          fs.copyFileSync(sourceFile, destination);
-        }
+      if (!fs.statSync(destination).isFile()) continue;
+      const destinationHash = readStockHash(destination);
+      if (destinationHash === sourceHash) {
+        installed[relativePosix] = sourceHash;
+        continue;
       }
-      continue;
+      const historicalHashes = history[relativePosix];
+      const legacyHashes = HELP_LEGACY_SYNCABLE_HASHES[relativePosix];
+      const isStock = destinationHash === previous[relativePosix]
+        || (Array.isArray(historicalHashes) && historicalHashes.includes(destinationHash))
+        || legacyHashes?.includes(readFileSha256(destination) ?? '');
+      if (!isStock) continue;
     }
     ensureDirectory(path.dirname(destination));
     fs.copyFileSync(sourceFile, destination);
+    installed[relativePosix] = sourceHash;
   }
 
   // Keep user-owned index edits, but append newly introduced default pages.
-  mergeDefaultIndexIntoUserIndex(helpRoot, defaultsDir);
+  if (!hasLinkedHelpPath(helpRoot, HELP_INDEX_FILE)) {
+    mergeDefaultIndexIntoUserIndex(helpRoot, defaultsDir);
+  }
+  if (!hasLinkedHelpPath(helpRoot, HELP_STOCK_STATE_FILE)) {
+    const content = `${JSON.stringify({ version: 1, files: installed }, null, 2)}\n`;
+    if (!fs.existsSync(statePath) || fs.readFileSync(statePath, 'utf-8') !== content) {
+      const temporary = `${statePath}.tmp`;
+      if (!hasLinkedHelpPath(helpRoot, path.basename(temporary))) {
+        fs.writeFileSync(temporary, content, 'utf-8');
+        fs.renameSync(temporary, statePath);
+      }
+    }
+  }
 }
 
 function scanMarkdownFiles(helpRoot: string): HelpDocSummary[] {
@@ -489,12 +541,12 @@ export function onHelpDocsChanged(listener: (event: HelpDocsUpdatedEvent) => voi
 
 /**
  * Ensure the writable help docs folder exists and has starter content.
- * Defaults are copied once and never overwrite user edits.
+ * Refresh unchanged stock content and add new guides without overwriting user edits.
  */
 export async function initializeHelpDocs(): Promise<HelpDocsListResponse> {
   const helpRoot = getHelpDocsRootDir();
   ensureDirectory(helpRoot);
-  copyDefaultHelpFilesIfMissing(helpRoot);
+  syncDefaultHelpFiles(helpRoot);
   return listHelpDocs();
 }
 

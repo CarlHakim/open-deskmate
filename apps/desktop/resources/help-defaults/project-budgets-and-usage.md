@@ -107,6 +107,18 @@ The Project Management Usage and Analytics tabs use these pricing rows.
 - If usage does not appear under a project, confirm the task, Chat project, Build preset, or Build session is attached to that budget.
 - If a task is not inside a Chat project, check whether it is directly assigned to the budget from the task project dropdown.
 
+## Three Different Meanings Of Budget
+
+| Budget | What it controls |
+| --- | --- |
+| Project Management budget | Recorded AI usage and project money/token windows, with configured warn/block behaviour. |
+| Child spending/runtime limit | Operational supervision of a helper using recorded costs and runtime. Late or partial pricing means it is not a guaranteed billing cap. |
+| Interactive answer cost table | Local calculations using figures in the answer, such as picnic or travel costs. It does not change either of the above limits. |
+
+Changing an interactive quantity, choosing a package, or filling an action's Budget field does not modify project budget settings. Choosing a guidance card prepares a draft; the next Send/Run can incur normal model usage. See [Interactive Answers And Choices](./interactive-answers-and-choices.md) and [Subagents](./subagents.md).
+
+The briefcase selector under a prompt chooses a usage project. It is separate from selecting a working folder or a Build preset.
+
 ## Related Pages
 
 - [Project Management](./project-management.md)

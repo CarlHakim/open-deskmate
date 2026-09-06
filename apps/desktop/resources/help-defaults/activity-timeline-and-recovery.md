@@ -57,7 +57,7 @@ Recovery actions can include:
 - Retry.
 - View raw log.
 
-Recovery should not run automatically. You choose when to continue.
+The missing-final-answer banner uses your explicit Continue/Retry choice. This is separate from automatic parent-agent supervision of helper runs, described below.
 
 The missing-answer recovery UI should not appear while the AI is still actively trying another approach. If the task produced a useful answer, you can leave the activity details hidden.
 
@@ -91,6 +91,16 @@ Open raw logs when:
 - If a reasoning tag such as `</think>` appears in the final text, report the model/provider output because it should be moved into the reasoning bubble when detected.
 - If recovery buttons do not appear after a true failure, open raw logs and include them in a bug report.
 - If the app stops a repeated tool loop, continue with a focused prompt instead of asking the model to repeat the same inspection.
+
+## Task Journey And Automatic Helper Supervision
+
+The [Task journey](./task-journey.md) above history opens stage evidence and **Show in history** links. An empty stage means no matching activity was recorded; Ready is not proof that tests passed.
+
+With automatic relays enabled, the runtime can wake an idle, completed parent when helper results arrive or a helper needs diagnosis. The parent decides whether to recover or replace the helper. It does not interrupt an active parent or automatically resume a parent you deliberately stopped. See [Subagents](./subagents.md).
+
+In Build, a parent review can make the Run button become Stop again. Keep the follow-up draft and wait for that review. Rejected submissions retain the draft. If a running/queued error persists after the task has truly finished, inspect its history and logs rather than repeatedly submitting the same prompt.
+
+Open [Live agent team](./live-agent-team.md) for a helper's transcript, partial findings, result-delivery state, and supervision controls.
 
 ## Related Pages
 

@@ -48,7 +48,7 @@ Use Build Mode when the task is tied to a workspace folder, source files, a runn
 1. Confirm the selected workspace and preset are correct.
 2. Attach the preset to a project budget if usage should be tracked.
 3. Start the runtime preview when the task affects a visible app.
-4. Enable **Ask AI to run tests** if code changes should include automated tests and checks.
+4. Open **More options** and enable **Ask AI to run tests** if code changes should include automated tests and checks.
 5. Enter the Build prompt and run the task.
 6. Watch the answer stream, edited-files card, runtime logs, and Changes & Git.
 7. Run checks or preview the app before committing.
@@ -69,7 +69,7 @@ For UI work, ask for a smoke test. Build Mode can expose runtime tools that let 
 
 ## Project Work
 
-The project work button under the Build prompt opens a floating project work popup.
+Open **More options → Project work** under the Build prompt to open the floating project work popup.
 
 - If the current preset is attached to a usage project, that project opens automatically.
 - If no project is attached, choose a project from the popup.
@@ -88,8 +88,20 @@ Use the **Sections** menu to show, hide, or lock Build Mode sections.
 - If the workspace tree starts in the wrong folder, refresh the Project & Workspace tree and confirm the selected preset path.
 - If Changes & Git says there is no repository, initialize Git or choose a workspace that already has a `.git` folder.
 - If a runtime screenshot button is disabled, start or refresh Runtime Preview first.
-- If the AI Build Operator is hard to read, use **Sections > AI Build Operator Only** or resize the side panels.
+- If the AI Build Operator is hard to read, use **Focus** temporarily, **Sections > AI Build Operator Only** for a saved layout, or resize the side panels.
 - If a Git action is disabled, hover the disabled action or open Resolve mismatch to see what is missing.
+
+## Compact Prompt And Interactive Work
+
+The prompt starts at two lines and grows to about six before scrolling. Expand it for longer writing. The attachment button and **Run** sit beside the input; Run becomes **Stop** while the AI task is active. Enter adds a line; Ctrl+Enter (Cmd+Enter on macOS) runs the task. The draft clears only after the runner accepts it. See [Prompt Controls](./prompt-controls.md).
+
+The project selector, **More options**, and [action shelf](./actions-and-pins.md) share one toolbar. More options contains testing instructions, saved prompts, Project work, and Context inspector. Extra attachments use **+N files**. Context details remain available from the compact percentage indicator.
+
+[Task journey](./task-journey.md), [Live agent team](./live-agent-team.md), [interactive answers and choices](./interactive-answers-and-choices.md), and [answer actions](./answer-actions.md) work in Build as well as Chat. If the parent resumes to review helper results, wait for it to finish before sending your next draft.
+
+Use **Before / after** beside Screenshot to compare real preview captures. See [Before And After](./before-and-after.md). Use [Save to scrapbook](./project-scrapbook.md) to keep project reference material.
+
+**Run/Stop** beside the prompt controls the agent. The top preview controls manage the app runtime, and **Build project** runs the configured build command.
 
 ## Related Settings
 

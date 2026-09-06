@@ -30,6 +30,9 @@ You can attach those items to a Project Management project so their usage, work 
 - **Workboard**
   - Table, Kanban, Timeline, and Calendar views for project work items.
   - Create lists, notes, drawings, documents, prompts, and CSV exports.
+- **Scrapbook**
+  - Visual cards for project notes, files, images, links, and saved answers, with search and favorites.
+  - Uses existing Workboard material; see [Project Scrapbook](./project-scrapbook.md).
 - **Work**
   - Budget contents and assignment tools for Chat projects, direct Chat tasks, Build presets, and Build sessions.
   - Move work between budgets or remove work from budget tracking.

@@ -1,16 +1,46 @@
 {
   "docs": [
     {
+      "id": "whats-new-050",
+      "title": "What's New In v0.5.0",
+      "file": "whats-new-050.md",
+      "description": "A tour of new controls, interactive answers, agent supervision, and project features."
+    },
+    {
       "id": "getting-started",
       "title": "Getting Started",
       "file": "getting-started.md",
       "description": "Overview of Chat Mode, Build Mode, settings, subagents, and help."
     },
     {
+      "id": "prompt-controls",
+      "title": "Prompt Controls",
+      "file": "prompt-controls.md",
+      "description": "First prompts, follow-ups, More options, compact Build input, attachments, context, and Run/Stop."
+    },
+    {
       "id": "chat-mode",
       "title": "Chat Mode",
       "file": "chat-mode.md",
       "description": "How to use the main task conversation workflow."
+    },
+    {
+      "id": "interactive-answers-and-choices",
+      "title": "Interactive Answers And Choices",
+      "file": "interactive-answers-and-choices.md",
+      "description": "Adjust costs, use checklists, compare text, and choose a next step without automatic submission."
+    },
+    {
+      "id": "task-journey",
+      "title": "Task Journey",
+      "file": "task-journey.md",
+      "description": "Open activity stages, inspect recorded evidence, and jump to the source history."
+    },
+    {
+      "id": "answer-actions",
+      "title": "Answer Actions",
+      "file": "answer-actions.md",
+      "description": "Useful markers, follow-up requests, reusable approaches, and scrapbook saving."
     },
     {
       "id": "prompt-navigator",
@@ -35,6 +65,12 @@
       "title": "Project Management",
       "file": "project-management.md",
       "description": "Usage projects, budget contents, work assignment, metadata, notes, and project organization."
+    },
+    {
+      "id": "project-scrapbook",
+      "title": "Project Scrapbook",
+      "file": "project-scrapbook.md",
+      "description": "Save and find project answers, notes, files, images, and links through Workboard."
     },
     {
       "id": "project-budgets-and-usage",
@@ -67,10 +103,22 @@
       "description": "Capture Runtime Preview areas or full pages, annotate screenshots, export, attach, or save to project documents."
     },
     {
+      "id": "before-and-after",
+      "title": "Before And After",
+      "file": "before-and-after.md",
+      "description": "Capture and compare real Build previews with a reveal slider or side-by-side view."
+    },
+    {
       "id": "saved-prompts-and-recipes",
       "title": "Saved Prompts And Recipes",
       "file": "saved-prompts-and-recipes.md",
       "description": "Prompt recipes, saved prompts, categories, insertion, and management."
+    },
+    {
+      "id": "actions-and-pins",
+      "title": "Actions And Pins",
+      "file": "actions-and-pins.md",
+      "description": "Create reusable actions, fill fields, pin up to a configurable limit, and find hidden shortcuts."
     },
     {
       "id": "saving-answers-and-exports",
@@ -109,6 +157,18 @@
       "description": "Resizable panels, section visibility, locks, and AI Build Operator Only mode."
     },
     {
+      "id": "focus-mode",
+      "title": "Focus Mode",
+      "file": "focus-mode.md",
+      "description": "Temporary Chat and Build focus, readable widths, panel restoration, and Escape behaviour."
+    },
+    {
+      "id": "interaction-appearance",
+      "title": "Interaction Appearance And Completion",
+      "file": "interaction-appearance.md",
+      "description": "Calm, Balanced, Playful, completion animations, chimes, and reduced motion."
+    },
+    {
       "id": "slash-commands",
       "title": "Slash Commands",
       "file": "slash-commands.md",
@@ -119,6 +179,12 @@
       "title": "Subagents",
       "file": "subagents.md",
       "description": "Tracked child agents across Chat Mode, Build Mode, and the global Subagents page."
+    },
+    {
+      "id": "live-agent-team",
+      "title": "Live Agent Team And Character Cards",
+      "file": "live-agent-team.md",
+      "description": "See helper assignments, inspect avatars and contributions, and open progress and guidance."
     },
     {
       "id": "plugins",

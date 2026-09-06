@@ -83,6 +83,14 @@ If **Allow subagents** is off, that agent cannot spawn child agents from Chat Mo
 - If an agent behaves unexpectedly, review its persona/system prompt and permission profile.
 - If an uploaded avatar is not visible in Chat Mode, confirm the agent was saved and selected after applying the image.
 
+## Live Cards And Helper Supervision
+
+Click an agent avatar in the task journey, current activity, or team to open its character card. It shows configured identity, current assignment, and recorded contributions; opening it does not start work. See [Live Agent Team](../live-agent-team.md).
+
+The automatic-relay setting also controls automatic parent review of helper results and recovery alerts. The runtime can wake an idle completed parent; the parent model decides whether to diagnose, recover, or replace the helper. Deliberately stopped parents are not automatically resumed. See [Subagents](../subagents.md) for limits, handoff contents, and manual controls.
+
+Per-run runtime and recorded spending limits are available in helper details. They are separate from global agent enablement and project budgets.
+
 ## Related Sections
 
 - [Model & API settings](./model-api-settings.md)

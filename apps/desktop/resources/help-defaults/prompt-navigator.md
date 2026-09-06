@@ -51,6 +51,10 @@ Each mode has its own saved preference:
 - If the preview popup closes too quickly, move through the rail and popup area without leaving the navigator surface.
 - If clicking a prompt does not move the chat, wait for the conversation to finish loading and try again.
 
+## Prompt Navigator Or Task Journey?
+
+The Prompt Navigator jumps between user prompts in a long conversation. The [Task journey](./task-journey.md) groups recorded activity for the current prompt into stages and links to their source history. Use the history's jump-to-latest control after reviewing earlier work.
+
 ## Related Pages
 
 - [Chat Mode](./chat-mode.md)

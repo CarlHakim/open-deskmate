@@ -67,6 +67,12 @@ The Help viewer itself is editable.
 - Page ordering and titles come from `index.json`.
 - Search runs across the loaded help pages inside the app.
 
+## New In v0.5.0
+
+Start with [What's New In v0.5.0](./whats-new-050.md) for the feature tour. [Prompt Controls](./prompt-controls.md) shows where controls moved, and [Actions And Pins](./actions-and-pins.md) explains reusable shortcuts.
+
+A typical flow is: prepare a draft, Send/Run, inspect the [Task journey](./task-journey.md), choose a follow-up if offered, then save useful material to [Scrapbook](./project-scrapbook.md). Choosing an action or guidance card prepares text; it does not automatically send it.
+
 ## Related Pages
 
 - [Editing Help Content](./editing-help.md)

@@ -76,6 +76,10 @@ When exporting or saving to project work, choose the location or project/work it
 - If drawing feels wrong, use select mode to move, resize, duplicate, or delete existing annotation items.
 - If export saves somewhere unexpected, use the save dialog to choose a folder and filename.
 
+## Compare Real Before And After Captures
+
+**Before / after** beside Screenshot lets you capture a baseline, make changes, then capture the result. Use its reveal slider or **Side by side** view. These comparison images remain only while the workspace view is mounted; use the screenshot export/save workflow for a permanent reference. See [Before And After](./before-and-after.md).
+
 ## Related Pages
 
 - [Build Mode](./build-mode.md)
