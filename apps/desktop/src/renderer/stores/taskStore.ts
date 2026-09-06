@@ -11,6 +11,7 @@ import type {
 } from '@accomplish/shared';
 import { getAccomplish } from '../lib/accomplish';
 import { useAgentStore } from './agentStore';
+import { mergeTaskMessages } from '../lib/task-messages';
 
 // Batch update event type for performance optimization
 interface TaskUpdateBatchEvent {
@@ -237,8 +238,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         ))
         : [];
       const mergedMessages = existingCurrent?.id === task.id
-        ? [...existingMessages, ...task.messages]
-        : task.messages;
+        ? mergeTaskMessages(existingMessages, task.messages)
+        : mergeTaskMessages([], task.messages);
       const nextTask = existingCurrent?.id === task.id
         ? { ...task, messages: mergedMessages }
         : task;
@@ -518,7 +519,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       if (event.type === 'message' && event.message && isCurrentTask && state.currentTask) {
         updatedCurrentTask = {
           ...state.currentTask,
-          messages: [...state.currentTask.messages, event.message],
+          messages: mergeTaskMessages(state.currentTask.messages, [event.message]),
         };
       }
 
@@ -660,7 +661,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       // Add all messages in a single state update
       const updatedTask = {
         ...state.currentTask,
-        messages: [...state.currentTask.messages, ...event.messages],
+        messages: mergeTaskMessages(state.currentTask.messages, event.messages),
       };
 
       return { currentTask: updatedTask, isLoading: false };
@@ -778,7 +779,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     const task = await accomplish.getTask(taskId, agentId);
     set((state) => {
       if (task) {
-        return { currentTask: task, error: null };
+        return { currentTask: { ...task, messages: mergeTaskMessages([], task.messages) }, error: null };
       }
       if (state.currentTask?.id === taskId) {
         return { currentTask: state.currentTask, error: null };

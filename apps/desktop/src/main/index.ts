@@ -9,6 +9,7 @@ import { flushPendingTasks, getTask } from './store/taskHistory';
 import { reconcileStaleTasksOnStartup } from './store/taskHistory';
 import { getBuildTaskSession } from './store/buildTaskHistory';
 import { getSubagentRun } from './store/subagentRegistry';
+import { startSubagentRuntime } from './services/subagents/subagent-runtime';
 import { getUsageProject, listUsageProjectWorkItems } from './store/usageProjects';
 import { disposeTaskManager } from './opencode/task-manager';
 import { checkAndCleanupFreshInstall } from './store/freshInstallCleanup';
@@ -922,6 +923,8 @@ if (!gotTheLock) {
   });
 
   app.whenReady().then(async () => {
+    const stopSubagentRuntime = startSubagentRuntime();
+    app.once('before-quit', stopSubagentRuntime);
     console.log('[Main] Electron app ready, version:', app.getVersion());
     startDevParentWatchdog();
 

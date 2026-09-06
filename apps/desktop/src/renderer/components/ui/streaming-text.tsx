@@ -33,6 +33,9 @@ export function StreamingText({
   const rafRef = useRef<number | null>(null);
   const lastTimeRef = useRef<number>(0);
   const textRef = useRef(text);
+  const displayedLengthRef = useRef(displayedLength);
+  const onCompleteRef = useRef(onComplete);
+  onCompleteRef.current = onComplete;
 
   // Update ref when text changes
   useEffect(() => {
@@ -47,6 +50,7 @@ export function StreamingText({
   useEffect(() => {
     if (isComplete) {
       setDisplayedLength(text.length);
+      displayedLengthRef.current = text.length;
       setIsStreaming(false);
     }
   }, [isComplete, text.length]);
@@ -56,33 +60,34 @@ export function StreamingText({
     if (!isStreaming || isComplete) return;
 
     const charsPerMs = speed / 1000;
+    let revealStartedAt: number | null = null;
+    let revealRate = charsPerMs;
+    lastTimeRef.current = 0;
 
     const animate = (timestamp: number) => {
-      if (!lastTimeRef.current) {
+      if (revealStartedAt === null) {
+        revealStartedAt = timestamp;
         lastTimeRef.current = timestamp;
+        // Keep the typing effect, but don't make users wait seconds for text
+        // that has already arrived from the provider.
+        revealRate = Math.max(charsPerMs, (textRef.current.length - displayedLengthRef.current) / 250);
       }
 
       const elapsed = timestamp - lastTimeRef.current;
-      const charsToAdd = Math.floor(elapsed * charsPerMs);
+      const charsToAdd = timestamp - revealStartedAt >= 250
+        ? textRef.current.length - displayedLengthRef.current
+        : Math.floor(elapsed * revealRate);
 
       if (charsToAdd > 0) {
-        let reachedEnd = false;
-        setDisplayedLength((prev) => {
-          const next = Math.min(prev + charsToAdd, textRef.current.length);
-          if (next >= textRef.current.length) {
-            reachedEnd = true;
-          }
-          return next;
-        });
+        const next = Math.min(displayedLengthRef.current + charsToAdd, textRef.current.length);
+        displayedLengthRef.current = next;
+        setDisplayedLength(next);
         lastTimeRef.current = timestamp;
-
-        // Side effects outside the state updater to avoid
-        // "Cannot update a component while rendering" warnings
-        if (reachedEnd) {
-          setIsStreaming(false);
-          onComplete?.();
-          return;
-        }
+      }
+      if (displayedLengthRef.current >= textRef.current.length) {
+        setIsStreaming(false);
+        onCompleteRef.current?.();
+        return;
       }
 
       rafRef.current = requestAnimationFrame(animate);
@@ -95,7 +100,7 @@ export function StreamingText({
         cancelAnimationFrame(rafRef.current);
       }
     };
-  }, [isStreaming, isComplete, speed, onComplete]);
+  }, [isStreaming, isComplete, speed]);
 
   const displayedText = text.slice(0, displayedLength);
 

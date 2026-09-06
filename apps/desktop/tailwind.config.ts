@@ -3,6 +3,8 @@ import tailwindcssAnimate from 'tailwindcss-animate';
 import tailwindcssTypography from '@tailwindcss/typography';
 
 const config: Config = {
+  // ThemeContext controls the app theme independently of the OS preference.
+  darkMode: 'class',
   content: [
     './index.html',
     './src/renderer/**/*.{js,ts,jsx,tsx}',

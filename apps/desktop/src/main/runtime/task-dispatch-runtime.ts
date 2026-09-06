@@ -1,3 +1,4 @@
+import { findSubagentRunByChildTaskId } from '../store/subagentRegistry';
 import { BrowserWindow } from 'electron';
 import type { GatewayPeerKind } from '../store/gatewayBindings';
 import { initPermissionApi, startPermissionApiServer } from '../permission-api';
@@ -47,6 +48,8 @@ export function ensureTaskDispatchPermissionApi(): void {
     },
     resolveTaskWorkspaceRoot: (taskId: string) => {
       const taskConfig = getAgentEngineTaskConfig(taskId);
+  const isolatedWorkspace = findSubagentRunByChildTaskId(taskId)?.worktree?.path;
+  if (isolatedWorkspace) return isolatedWorkspace;
       const agentWorkspace = taskConfig?.agentId
         ? (getAgentContext(taskConfig.agentId).workspaceRoot || '').trim()
         : '';

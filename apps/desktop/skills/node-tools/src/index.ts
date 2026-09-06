@@ -624,6 +624,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             type: 'string',
             description: 'Optional short label shown in the parent UI.',
           },
+          isolation: { type: 'string', enum: ['shared', 'worktree'], description: 'Optional isolated Git worktree for independent coding work. Requires a clean repository root; preserves a branch and worktree for parent review and integration. Shared is the default.' },
+          ownedPaths: { type: 'array', items: { type: 'string' }, description: 'Relative files or directories assigned to this child. Choose disjoint paths for concurrent Build workers; no wildcards. These are coordination assignments, not a filesystem sandbox.' },
+          maxCostUsd: { type: 'number', description: 'Optional recorded USD spending threshold for this child.' },
+          limitAction: { type: 'string', enum: ['notify', 'stop'], description: 'Action at runtime or spending limit; defaults to notify.' },
           runTimeoutMs: {
             type: 'number',
             description: 'Optional timeout override in milliseconds.',
@@ -1122,6 +1126,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
           task,
           label: args.label,
           runTimeoutMs: typeof args.runTimeoutMs === 'number' ? args.runTimeoutMs : undefined,
+          isolation: args.isolation === 'worktree' ? 'worktree' : 'shared',
+          ownedPaths: Array.isArray(args.ownedPaths) ? args.ownedPaths.map(String) : undefined,
+          maxCostUsd: typeof args.maxCostUsd === 'number' ? args.maxCostUsd : undefined,
+          limitAction: args.limitAction === 'stop' ? 'stop' : 'notify',
           mode: args.mode === 'session' ? 'session' : 'run',
           reuseExistingSession: typeof args.reuseExistingSession === 'boolean' ? args.reuseExistingSession : undefined,
           modelProvider: args.modelProvider,
@@ -1283,7 +1291,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
       const response = await fetchNodeToolsApi('/subagents/get', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ runId }),
+        body: JSON.stringify({ parentTaskId: process.env.ACCOMPLISH_TASK_ID, runId }),
       });
       const result = await response.json().catch(() => ({} as { ok?: boolean; error?: string; detail?: string; run?: unknown }));
       if (!response.ok || result.ok === false) {
@@ -1498,7 +1506,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
       const response = await fetchNodeToolsApi('/subagents/wait', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        body: JSON.stringify({ parentTaskId: process.env.ACCOMPLISH_TASK_ID,
           runId,
           timeoutMs: safeTimeoutMs,
           pollIntervalMs: typeof args.pollIntervalMs === 'number' ? args.pollIntervalMs : undefined,
@@ -1725,7 +1733,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
         return {
           content: [{
             type: 'text',
-            text: `Error: Subagent recover failed (${result.error || response.status}).${result.detail ? ` ${result.detail}` : ''}`,
+            text: `Subagent recovery was not accepted. Inspect any returned replacementRunId before retrying. Result: ${JSON.stringify(result)}`,
           }],
           isError: true,
         };
@@ -1773,7 +1781,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
         return {
           content: [{
             type: 'text',
-            text: `Error: Subagent replace failed (${result.error || response.status}).${result.detail ? ` ${result.detail}` : ''}`,
+            text: `Subagent replacement was not accepted. Inspect any returned replacementRunId before retrying. Result: ${JSON.stringify(result)}`,
           }],
           isError: true,
         };
@@ -1806,7 +1814,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
       const response = await fetchNodeToolsApi('/subagents/wait-many', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        body: JSON.stringify({ parentTaskId: process.env.ACCOMPLISH_TASK_ID,
           runIds,
           timeoutMs: safeTimeoutMs,
           pollIntervalMs: typeof args.pollIntervalMs === 'number' ? args.pollIntervalMs : undefined,

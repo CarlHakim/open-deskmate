@@ -1,3 +1,4 @@
+import { acknowledgeSubagentResults } from './store/subagentRegistry';
 /**
  * Node Tools API Server
  *
@@ -552,6 +553,10 @@ export function startNodeToolsApiServer(): http.Server {
             task,
             label,
             runTimeoutMs,
+            isolation: data.isolation === 'worktree' ? 'worktree' : 'shared',
+            ownedPaths: Array.isArray(data.ownedPaths) ? data.ownedPaths.map(String) : undefined,
+            maxCostUsd: typeof data.maxCostUsd === 'number' ? data.maxCostUsd : undefined,
+            limitAction: data.limitAction === 'stop' ? 'stop' : 'notify',
             mode,
             reuseExistingSession,
             model: modelProvider && modelId
@@ -611,6 +616,7 @@ export function startNodeToolsApiServer(): http.Server {
         return;
       }
       await emitAfterNodeToolHook({ toolName, data, output: { ok: true, parentTaskId: taskId } }).catch(() => {});
+      acknowledgeSubagentResults(taskId, listSubagentRunsForParentTask(taskId).map(run => run.runId));
       sendJson(res, 200, {
         ok: true,
         runs: listSubagentRunsForParentTask(taskId),
@@ -634,6 +640,7 @@ export function startNodeToolsApiServer(): http.Server {
         return;
       }
       await emitAfterNodeToolHook({ toolName, data, output: { ok: true, runId } }).catch(() => {});
+      acknowledgeSubagentResults(normalizeText(data.parentTaskId ?? data.taskId, 128), [runId]);
       sendJson(res, 200, { ok: true, run });
       return;
     }
@@ -650,6 +657,7 @@ export function startNodeToolsApiServer(): http.Server {
       try {
         const result = await waitForSubagentRun({ runId, timeoutMs, pollIntervalMs });
         await emitAfterNodeToolHook({ toolName, data, output: { ok: true, runId, completed: result.completed } }).catch(() => {});
+        if (req.url === '/subagents/wait') acknowledgeSubagentResults(normalizeText(data.parentTaskId ?? data.taskId, 128), [runId]);
         sendJson(res, 200, { ok: true, ...result });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'subagent_wait_failed';
@@ -674,6 +682,7 @@ export function startNodeToolsApiServer(): http.Server {
       try {
         const result = await waitForSubagentRuns({ runIds, timeoutMs, pollIntervalMs, mode });
         await emitAfterNodeToolHook({ toolName, data, output: { ok: true, completed: result.completed, mode, count: runIds.length } }).catch(() => {});
+        acknowledgeSubagentResults(normalizeText(data.parentTaskId ?? data.taskId, 128), runIds);
         sendJson(res, 200, { ok: true, ...result });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'subagent_wait_many_failed';
@@ -807,8 +816,8 @@ export function startNodeToolsApiServer(): http.Server {
             ? { provider: modelProvider, model: modelId, ...(modelBaseUrl ? { baseUrl: modelBaseUrl } : {}) }
             : null,
         });
-        await emitAfterNodeToolHook({ toolName, data, output: { ok: true, runId, action } }).catch(() => {});
-        sendJson(res, 200, result);
+        await emitAfterNodeToolHook({ toolName, data, output: { ok: result.ok, runId, action, replacementRunId: result.replacementRunId } }).catch(() => {});
+        sendJson(res, result.ok ? 200 : 422, result);
       } catch (error) {
         const message = error instanceof Error ? error.message : 'subagent_recover_failed';
         const status = message.toLowerCase().includes('not found') ? 404 : 500;
@@ -840,8 +849,8 @@ export function startNodeToolsApiServer(): http.Server {
             ? { provider: modelProvider, model: modelId, ...(modelBaseUrl ? { baseUrl: modelBaseUrl } : {}) }
             : null,
         });
-        await emitAfterNodeToolHook({ toolName, data, output: { ok: true, runId, replacementRunId: result.replacement.runId } }).catch(() => {});
-        sendJson(res, 200, result);
+        await emitAfterNodeToolHook({ toolName, data, output: { ok: result.ok, runId, replacementRunId: result.replacement.runId } }).catch(() => {});
+        sendJson(res, result.ok ? 200 : 422, { ...result, replacementRunId: result.replacement.runId, error: result.replacement.error });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'subagent_replace_failed';
         const status = message.toLowerCase().includes('not found') ? 404 : 500;

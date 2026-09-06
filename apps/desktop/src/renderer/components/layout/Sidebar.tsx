@@ -1,62 +1,60 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
-import { motion, AnimatePresence } from 'framer-motion';
-import { useTaskStore } from '@/stores/taskStore';
-import { useFolderStore } from '@/stores/folderStore';
-import { useAgentStore } from '@/stores/agentStore';
-import { useUsageProjectStore } from '@/stores/usageProjectStore';
-import { getAccomplish } from '@/lib/accomplish';
-import { analytics } from '@/lib/analytics';
-import { staggerContainer } from '@/lib/animations';
-import { cn } from '@/lib/utils';
-import type { ProviderConfig, SelectedModel, Task } from '@accomplish/shared';
 import { Button } from '@/components/ui/button';
-import { ScrollArea } from '@/components/ui/scroll-area';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import ConversationListItem, { getTaskDisplayTitle, getTaskHoverTitle } from './ConversationListItem';
-import FolderItem from './FolderItem';
-import CreateFolderDialog from './CreateFolderDialog';
-import SettingsDialog from './SettingsDialog';
-import SearchAuditDialog from './SearchAuditDialog';
-import ProjectManagementDialog from '@/components/usage/ProjectManagementDialog';
-import { Settings, MessageSquarePlus, Search, FolderPlus, MoreHorizontal, GripVertical, ChevronRight, ChevronDown, User, Check, CircleHelp, Sun, Moon, Monitor, GitBranch, Briefcase, FileSearch } from 'lucide-react';
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
+Dialog,
+DialogContent,
+DialogHeader,
+DialogTitle,
 } from '@/components/ui/dialog';
 import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/components/ui/popover';
-import { getIconByName } from './ProjectIconPicker';
-import { AgentAvatarIcon } from './AgentAvatarPicker';
-import { useTheme } from '@/contexts/ThemeContext';
-import { isAgentCharacterAvatar } from '@/lib/agent-character-gallery';
+DropdownMenu,
+DropdownMenuContent,
+DropdownMenuItem,
+DropdownMenuLabel,
+DropdownMenuRadioGroup,
+DropdownMenuRadioItem,
+DropdownMenuSeparator,
+DropdownMenuSub,
+DropdownMenuSubContent,
+DropdownMenuSubTrigger,
+DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import {
-  normalizeSelectedModel,
-  SELECTED_MODEL_CHANGED_EVENT,
-} from '@/lib/selected-model-events';
+Popover,
+PopoverContent,
+PopoverTrigger,
+} from '@/components/ui/popover';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { useTheme } from '@/contexts/ThemeContext';
+import { getAccomplish } from '@/lib/accomplish';
+import { isAgentCharacterAvatar } from '@/lib/agent-character-gallery';
+import { analytics } from '@/lib/analytics';
+import { staggerContainer } from '@/lib/animations';
 import { APP_COMMAND_EVENTS } from '@/lib/app-commands';
-import logoImage from '/assets/open-deskmate-logo.png';
+import {
+normalizeSelectedModel,
+SELECTED_MODEL_CHANGED_EVENT,
+} from '@/lib/selected-model-events';
+import { cn } from '@/lib/utils';
+import { useAgentStore } from '@/stores/agentStore';
+import { useFolderStore } from '@/stores/folderStore';
+import { useTaskStore } from '@/stores/taskStore';
+import { useUsageProjectStore } from '@/stores/usageProjectStore';
+import type { ProviderConfig, SelectedModel, Task } from '@accomplish/shared';
+import { AnimatePresence, motion } from 'framer-motion';
+import { Briefcase, Check, ChevronDown, ChevronRight, CircleHelp, FileSearch, FolderPlus, GitBranch, GripVertical, MessageSquarePlus, Monitor, Moon, MoreHorizontal, Search, Settings, Sun } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import appFavicon from '../../../../resources/icon.png';
+import { AgentAvatarIcon } from './AgentAvatarPicker';
+import ConversationListItem, { getTaskDisplayTitle, getTaskHoverTitle } from './ConversationListItem';
+import CreateFolderDialog from './CreateFolderDialog';
+import { DeferredProjectManagementDialog as ProjectManagementDialog, DeferredSearchAuditDialog as SearchAuditDialog, DeferredSettingsDialog as SettingsDialog } from './DeferredDialogs';
+import FolderItem from './FolderItem';
+import { getIconByName } from './ProjectIconPicker';
+import logoImage from '/assets/open-deskmate-logo.png';
 
 const PROVIDER_LABELS: Record<string, string> = {
   anthropic: 'Anthropic',

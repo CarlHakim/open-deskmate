@@ -48,10 +48,9 @@ export default function ContextWindowIndicator(props: {
             ].join(' ')}
           >
           <span>
-            Context: {s.estimate.promptTokensEst} / {s.context.contextLimitTokens} ({pct(usedPct)}%)
+            {props.compact ? `Context ${pct(usedPct)}%` : `Context: ${s.estimate.promptTokensEst} / ${s.context.contextLimitTokens} (${pct(usedPct)}%)`}
           </span>
-          <span className="opacity-70">•</span>
-          <span>Room for reply: ~{safeRemaining} tokens</span>
+          {!props.compact && <><span className="opacity-70">•</span><span>Room for reply: ~{safeRemaining} tokens</span></>}
 
           <Popover>
             <PopoverTrigger asChild>
@@ -64,6 +63,7 @@ export default function ContextWindowIndicator(props: {
               </button>
             </PopoverTrigger>
             <PopoverContent className="max-w-xs text-xs leading-relaxed text-foreground" align="start">
+              <div className="mb-2 font-medium">{s.estimate.promptTokensEst.toLocaleString()} / {s.context.contextLimitTokens.toLocaleString()} tokens · ~{safeRemaining.toLocaleString()} available for reply</div>
               Includes system prompt, tools, retrieved docs, and message history included in this request.
               {s.trimmed ? (
                 <div className="mt-2 text-muted-foreground">

@@ -6,6 +6,7 @@ import { getAccomplish } from '../../lib/accomplish';
 import { cn } from '../../lib/utils';
 import { useTopBarControlsStore } from '../../stores/topBarControlsStore';
 import { UsageDetailsDialog } from './UsageDetailsDialog';
+import { FocusSceneButton } from '../chat/FocusScene';
 
 function formatInt(n: number): string {
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(n);
@@ -79,7 +80,7 @@ export function GlobalUsageBanner() {
         aria-label="Open usage estimate details"
       >
         <div className="flex min-h-[48px] items-center gap-3 px-4 py-1.5">
-          <div className="flex shrink-0 items-center gap-1 rounded-lg bg-muted p-1">
+          <div data-focus-secondary="usage-periods" className="flex shrink-0 items-center gap-1 rounded-lg bg-muted p-1">
             {PERIODS.map((p) => (
               <button
                 key={p.id}
@@ -100,7 +101,7 @@ export function GlobalUsageBanner() {
             ))}
           </div>
 
-          <div className="flex-1 min-w-0">
+          <div className="focus-usage-summary flex-1 min-w-0">
             <div className="flex items-baseline gap-2">
               <div className="text-sm font-medium text-foreground truncate">
                 {loading && !summary ? 'Usage' : `Tokens: ${formatInt(summary?.totalTokens ?? 0)}`}
@@ -126,6 +127,7 @@ export function GlobalUsageBanner() {
               {topBarActions}
             </div>
           ) : null}
+          <FocusSceneButton />
         </div>
       </div>
 

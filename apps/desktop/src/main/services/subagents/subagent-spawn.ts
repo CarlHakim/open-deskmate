@@ -1,3 +1,6 @@
+import { getTaskCost } from '../../store/tokenUsage';
+import { createSubagentWorktree } from './subagent-worktree';
+import { normalizeOwnedPaths, findOwnershipConflicts, ownershipPrompt } from './subagent-ownership';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import type { SelectedModel, SubagentExecutionPolicy, SubagentInheritedContext, SubagentRunRecord, SubagentSharedContext, SubagentSpawnMode, SubagentSpawnRequest, SubagentSpawnResult, TaskResult, ToolsetId } from '@accomplish/shared';
@@ -16,7 +19,7 @@ import {
   resolveToolDiscoveryRuntimeMetadata,
 } from '../toolsets';
 import { appendSubagentProgressEvent, syncSubagentRunSupervisor } from './subagent-supervisor';
-import { captureSubagentBuildHandoffBaseline } from './subagent-build-handoff';
+import { captureSubagentBuildHandoffBaseline, generateSubagentBuildHandoffBundle } from './subagent-build-handoff';
 import { resolveAgentWorkspaceRoot } from '../build-mode/file-service';
 import {
   buildSubagentSharedContext,
@@ -55,15 +58,15 @@ function truncateSubagentReport(report: string, maxChars: number): { text: strin
   };
 }
 
-function readLatestChildAssistantReport(childTaskId: string, childAgentId: string): string {
+function readLatestChildAssistantReport(childTaskId: string, childAgentId: string, since?: string): string {
   const childTask = getTask(childTaskId, childAgentId);
-  const assistantMessages = childTask?.messages.filter((message) => message.type === 'assistant') ?? [];
+  const assistantMessages = childTask?.messages.filter((message) => message.type === 'assistant' && (!since || Date.parse(message.timestamp) >= Date.parse(since))) ?? [];
   return assistantMessages[assistantMessages.length - 1]?.content?.trim() || '';
 }
 
-async function waitForChildAssistantReport(childTaskId: string, childAgentId: string): Promise<string> {
+async function waitForChildAssistantReport(childTaskId: string, childAgentId: string, since?: string): Promise<string> {
   for (let attempt = 0; attempt < SUBAGENT_RELAY_FLUSH_ATTEMPTS; attempt += 1) {
-    const latest = readLatestChildAssistantReport(childTaskId, childAgentId);
+    const latest = readLatestChildAssistantReport(childTaskId, childAgentId, since);
     if (latest) return latest;
     await sleep(SUBAGENT_RELAY_FLUSH_INTERVAL_MS);
   }
@@ -71,7 +74,7 @@ async function waitForChildAssistantReport(childTaskId: string, childAgentId: st
 }
 
 function summarizeChildTask(parentTaskId: string, run: SubagentRunRecord): string {
-  const report = run.finalReport?.trim() || readLatestChildAssistantReport(run.childTaskId, run.childAgentId);
+  const report = run.finalReport?.trim() || readLatestChildAssistantReport(run.childTaskId, run.childAgentId, run.lastResumedAt || run.createdAt);
   if (!report) {
     return [
       `Subagent finished for parent task ${parentTaskId}, but no final report text was captured.`,
@@ -399,18 +402,26 @@ export function attachTrackedSubagentCompletion(params: {
   completion: Promise<TaskResult>;
 }): void {
   const parentAgent = getAgent(params.parentAgentId);
+  const trackedGeneration = getSubagentRun(params.runId)?.lastResumedAt;
   void params.completion
     .then(async (completion) => {
       const current = getSubagentRun(params.runId);
-      if (!current) return;
+      if (!current || current.closedAt || current.lastResumedAt !== trackedGeneration) return;
       const sessionId = completion.sessionId || current?.sessionId;
       const completedAt = new Date().toISOString();
-      const report = await waitForChildAssistantReport(current.childTaskId, current.childAgentId);
+      const report = await waitForChildAssistantReport(current.childTaskId, current.childAgentId, current.lastResumedAt || current.createdAt);
+      if (getSubagentRun(params.runId)?.lastResumedAt !== trackedGeneration || getSubagentRun(params.runId)?.closedAt) return;
+      const finalBuildHandoff = current.buildHandoff ? await generateSubagentBuildHandoffBundle(current, 'Final child change review') : undefined;
+      if (getSubagentRun(params.runId)?.lastResumedAt !== trackedGeneration || getSubagentRun(params.runId)?.closedAt) return;
       const stored = report
         ? truncateSubagentReport(report, SUBAGENT_REPORT_STORE_MAX_CHARS)
         : null;
       const next = patchSubagentRun(params.runId, {
         status: completion.status === 'error' ? 'error' : 'done',
+        lifecycle: 'finished',
+        ...getTaskCost(current.childTaskId),
+        ...(finalBuildHandoff ? { buildHandoff: finalBuildHandoff } : {}),
+        resultDelivery: { state: 'ready', updatedAt: completedAt },
         resultStatus: completion.status,
         sessionId,
         sessionState: sessionId ? 'ready' : (current?.sessionState ?? 'missing'),
@@ -439,7 +450,10 @@ export function attachTrackedSubagentCompletion(params: {
       }
     })
     .catch((error) => {
+      if (getSubagentRun(params.runId)?.lastResumedAt !== trackedGeneration || getSubagentRun(params.runId)?.closedAt) return;
       const next = patchSubagentRun(params.runId, {
+        lifecycle: 'finished',
+        resultDelivery: { state: 'ready', updatedAt: new Date().toISOString() },
         status: 'error',
         resultStatus: 'error',
         error: error instanceof Error ? error.message : 'Subagent task failed',
@@ -508,17 +522,27 @@ export async function spawnSubagent(
     mode,
     runTimeoutMs: request.runTimeoutMs,
   });
-  const baseInheritedContext = applyInheritancePolicy(
+  let baseInheritedContext = applyInheritancePolicy(
     context.parentAgentId,
     resolveInheritedContext(context.parentTaskId, context.parentAgentId),
   );
-  const buildHandoff = await captureBuildHandoffForRun({
+  baseInheritedContext = { ...baseInheritedContext, workingDirectory: baseInheritedContext.workingDirectory || targetAgent.workspaceRoot || undefined };
+  const ownedPaths = normalizeOwnedPaths(request.ownedPaths);
+  if (ownedPaths.length && !baseInheritedContext.workingDirectory) return { status: 'forbidden', error: 'Select a working folder before assigning files.' };
+  const conflicts = findOwnershipConflicts(ownedPaths, listSubagentRuns(undefined, { includeArchived: true }), baseInheritedContext.workingDirectory);
+  if (request.isolation !== 'worktree' && conflicts.length) return { status: 'forbidden', error: 'Overlapping file assignments: ' + conflicts.join('; ') };
+  if (request.maxCostUsd !== undefined && (!Number.isFinite(request.maxCostUsd) || request.maxCostUsd <= 0)) {
+    return { status: 'forbidden', error: 'Spending limit must be a positive USD amount.' };
+  }
+  executionPolicy.maxCostUsd = request.maxCostUsd;
+  executionPolicy.limitAction = request.limitAction === 'stop' ? 'stop' : 'notify';
+  let buildHandoff = request.isolation === 'worktree' ? undefined : await captureBuildHandoffForRun({
     request,
     parentAgentId: context.parentAgentId,
     inheritedContext: baseInheritedContext,
   });
 
-  if (mode === 'session' && request.reuseExistingSession !== false) {
+  if (mode === 'session' && request.reuseExistingSession !== false && request.isolation !== 'worktree') {
     const existingRun = findReusableSessionRun({
       parentTaskId: context.parentTaskId,
       childAgentId: targetAgentId,
@@ -539,11 +563,18 @@ export async function spawnSubagent(
         ...inheritedToolContext,
       };
       const sharedContext = buildSubagentSharedContext(context.parentTaskId, { excludeRunId: existingRun.runId });
-      const resumedPrompt = buildSubagentResumePrompt(request.task.trim(), inheritedContext, sharedContext);
+      const resumedPrompt = buildSubagentResumePrompt(request.task.trim(), inheritedContext, sharedContext) + ownershipPrompt(ownedPaths);
       if (requestedModel) {
         setTaskModelOverride(existingRun.childTaskId, requestedModel);
       }
       patchSubagentRun(existingRun.runId, {
+        ownedPaths,
+        lifecycle: 'starting',
+        startedAt: undefined,
+        queuedAt: new Date().toISOString(),
+        resultDelivery: undefined,
+        finalReport: undefined,
+        limitReached: undefined,
         task: request.task.trim(),
         lastPrompt: resumedPrompt,
         status: 'running',
@@ -594,6 +625,11 @@ export async function spawnSubagent(
           },
         },
       });
+      patchSubagentRun(existingRun.runId, {
+        status: resumed.task.status === 'queued' ? 'accepted' : 'running',
+        lifecycle: resumed.task.status === 'queued' ? 'queued' : 'working',
+        startedAt: resumed.task.status === 'queued' ? undefined : new Date().toISOString(),
+      });
       attachTrackedSubagentCompletion({
         runId: existingRun.runId,
         parentAgentId: context.parentAgentId,
@@ -618,6 +654,14 @@ export async function spawnSubagent(
   const runId = `subrun_${crypto.randomUUID()}`;
   const childTaskId = `subtask_${crypto.randomUUID()}`;
   const childSessionKey = `agent:${targetAgentId}:subagent:${crypto.randomUUID()}`;
+  let worktree: SubagentRunRecord['worktree'];
+  if (request.isolation === 'worktree') {
+    if (!baseInheritedContext.workingDirectory) return { status: 'forbidden', error: 'Select a repository working folder first.' };
+    worktree = await createSubagentWorktree(baseInheritedContext.workingDirectory, resolveAgentWorkspaceRoot(targetAgentId), runId);
+    baseInheritedContext = { ...baseInheritedContext, workingDirectory: worktree.path,
+      buildWorkspaceRelativePath: path.relative(resolveAgentWorkspaceRoot(targetAgentId), worktree.path).replace(/\\/g, '/') };
+    if (baseInheritedContext.buildMode) buildHandoff = await captureSubagentBuildHandoffBaseline({ workspaceAgentId: targetAgentId, workspaceRelativePath: baseInheritedContext.buildWorkspaceRelativePath });
+  }
   const inheritedToolContext = resolveInheritedToolContext({
     parentAgentId: context.parentAgentId,
     parentTaskId: context.parentTaskId,
@@ -640,6 +684,7 @@ export async function spawnSubagent(
     runId,
     childTaskId,
     childSessionKey,
+    worktree,
     parentTaskId: context.parentTaskId,
     parentRunId: context.parentRunId,
     parentSessionKey: parentSession,
@@ -653,6 +698,9 @@ export async function spawnSubagent(
     mode,
     reuseCount: 0,
     status: 'accepted',
+    lifecycle: 'starting',
+    queuedAt: createdAt,
+    ownedPaths,
     model: requestedModel,
     sessionState: 'pending',
     executionPolicy,
@@ -665,6 +713,11 @@ export async function spawnSubagent(
     createdAt,
     updatedAt: createdAt,
   };
+  // Recheck after baseline capture: another spawn may have acquired files while awaiting IO.
+  const latestRuns = listSubagentRuns(undefined, { includeArchived: true });
+  const latestConflicts = findOwnershipConflicts(ownedPaths, latestRuns, inheritedContext.workingDirectory);
+  if (latestConflicts.length) return { status: 'forbidden', error: 'Overlapping file assignments: ' + latestConflicts.join('; ') };
+  if (countActiveSubagentRuns(context.parentTaskId) >= maxChildren) return { status: 'forbidden', error: 'Maximum active subagents reached.' };
   registerSubagentRun(record);
   appendSubagentProgressEvent(runId, {
     type: 'started',
@@ -695,7 +748,7 @@ export async function spawnSubagent(
   try {
     const result = await startAgentEngineTask(
       {
-        prompt: request.task.trim(),
+        prompt: request.task.trim() + ownershipPrompt(ownedPaths),
         taskId: childTaskId,
         agentId: targetAgentId,
         speedMode: 'balanced',
@@ -719,14 +772,16 @@ export async function spawnSubagent(
       { source: 'manual' }
     );
     patchSubagentRun(runId, {
-      status: 'running',
+      status: result.task.status === 'queued' ? 'accepted' : 'running',
+      lifecycle: result.task.status === 'queued' ? 'queued' : 'working',
+      startedAt: result.task.status === 'queued' ? undefined : new Date().toISOString(),
       sessionId: getTask(childTaskId, targetAgentId)?.sessionId || getGatewaySessionByTaskId(childTaskId)?.sessionId,
       sessionState: (getTask(childTaskId, targetAgentId)?.sessionId || getGatewaySessionByTaskId(childTaskId)?.sessionId) ? 'ready' : 'pending',
       updatedAt: new Date().toISOString(),
     });
     appendSubagentProgressEvent(runId, {
       type: 'status',
-      title: 'Subagent running',
+      title: result.task.status === 'queued' ? 'Subagent queued' : 'Subagent running',
       detail: targetAgent.name || targetAgentId,
       status: 'running',
     });

@@ -1,3 +1,4 @@
+import { ownershipPrompt, findOwnershipConflicts } from './subagent-ownership';
 import type {
   SelectedModel,
   SubagentRecoveryAction,
@@ -31,7 +32,7 @@ import {
 } from './subagent-shared-context';
 
 function enrichRun(run: SubagentRunRecord): SubagentRunDetail {
-  const syncedRun = syncSubagentRunSupervisor(run.runId) || run;
+  const syncedRun = run;
   const childTask = getTask(syncedRun.childTaskId, syncedRun.childAgentId);
   const gatewaySession = getGatewaySessionByTaskId(syncedRun.childTaskId);
   const sessionId = childTask?.sessionId || gatewaySession?.sessionId || syncedRun.sessionId;
@@ -314,7 +315,7 @@ export async function recoverSubagentRun(params: {
   label?: string;
   runTimeoutMs?: number;
   model?: SelectedModel | null;
-}): Promise<{ ok: boolean; run: SubagentRunDetail; recoveryId?: string }> {
+}): Promise<{ ok: boolean; run: SubagentRunDetail; recoveryId?: string; replacementRunId?: string; replacement?: Awaited<ReturnType<typeof spawnSubagent>>; error?: string }> {
   const run = getSubagentRun(params.runId);
   if (!run) throw new Error('Subagent run not found.');
   const action = params.action || 'resume';
@@ -349,7 +350,8 @@ export async function recoverSubagentRun(params: {
       runTimeoutMs: params.runTimeoutMs,
       model: params.model,
     });
-    return { ok: replaced.ok, recoveryId: replaced.recoveryId, run: replaced.originalRun };
+    return { ok: replaced.ok, recoveryId: replaced.recoveryId, run: replaced.originalRun,
+      replacementRunId: replaced.replacement.runId, replacement: replaced.replacement, error: replaced.replacement.error };
   }
   if (action === 'manual_intervention') {
     const { recoveryId } = recordSubagentRecoveryStarted(params.runId, {
@@ -407,6 +409,12 @@ export async function recoverSubagentRun(params: {
   }
   patchSubagentRun(run.runId, {
     status: 'running',
+    lifecycle: 'starting',
+    startedAt: undefined,
+    queuedAt: new Date().toISOString(),
+    resultDelivery: undefined,
+    finalReport: undefined,
+    limitReached: undefined,
     resultStatus: undefined,
     error: undefined,
     completedAt: undefined,
@@ -438,6 +446,7 @@ export async function recoverSubagentRun(params: {
       },
     },
   });
+  patchSubagentRun(run.runId, { status: resumed.task.status === 'queued' ? 'accepted' : 'running', lifecycle: resumed.task.status === 'queued' ? 'queued' : 'working', startedAt: resumed.task.status === 'queued' ? undefined : new Date().toISOString() });
   attachTrackedSubagentCompletion({
     runId: run.runId,
     parentAgentId: run.parentAgentId,
@@ -454,7 +463,17 @@ export async function recoverSubagentRun(params: {
   };
 }
 
-export async function replaceSubagentRun(params: {
+const pendingReplacements = new Map<string, ReturnType<typeof performSubagentReplacement>>();
+
+export function replaceSubagentRun(params: Parameters<typeof performSubagentReplacement>[0]): ReturnType<typeof performSubagentReplacement> {
+  const pending = pendingReplacements.get(params.runId);
+  if (pending) return pending;
+  const attempt = performSubagentReplacement(params).finally(() => pendingReplacements.delete(params.runId));
+  pendingReplacements.set(params.runId, attempt);
+  return attempt;
+}
+
+async function performSubagentReplacement(params: {
   runId: string;
   targetAgentId?: string;
   instruction?: string;
@@ -465,6 +484,15 @@ export async function replaceSubagentRun(params: {
 }): Promise<{ ok: boolean; originalRun: SubagentRunDetail; replacement: Awaited<ReturnType<typeof spawnSubagent>>; recoveryId?: string }> {
   const run = getSubagentRun(params.runId);
   if (!run) throw new Error('Subagent run not found.');
+  if (run.replacedByRunId) {
+    const existing = getSubagentRun(run.replacedByRunId);
+    if (!existing) throw new Error(`Previously created replacement ${run.replacedByRunId} not found; inspect the original run before retrying.`);
+    return { ok: existing.status !== 'error', originalRun: enrichRun(run), replacement: {
+      status: existing.status === 'error' ? 'error' : 'accepted', runId: existing.runId,
+      childTaskId: existing.childTaskId, childSessionKey: existing.childSessionKey,
+      targetAgentId: existing.childAgentId, error: existing.error,
+    } };
+  }
   const synced = syncSubagentRunSupervisor(run.runId) || run;
   const buildHandoff = await generateSubagentBuildHandoffBundle(
     synced,
@@ -473,6 +501,9 @@ export async function replaceSubagentRun(params: {
   const handoffSynced = buildHandoff
     ? (patchSubagentRun(synced.runId, { buildHandoff }) || { ...synced, buildHandoff })
     : synced;
+  // Validate the entire handoff before stopping the old child or creating a run.
+  const replacementPrompt = buildReplacementPrompt(handoffSynced, params.reason, params.instruction,
+    8000 - ownershipPrompt(synced.ownedPaths || []).length);
   if (buildHandoff) {
     appendSubagentProgressEvent(synced.runId, {
       type: 'recovery',
@@ -488,15 +519,25 @@ export async function replaceSubagentRun(params: {
     reason: params.reason || synced.supervisor?.stalledReason || 'Subagent replacement requested.',
     notes: params.instruction,
   });
+  // Transfer shared file assignments only after the previous writer has stopped.
+  if (synced.ownedPaths?.length && !synced.worktree && (synced.status === 'accepted' || synced.status === 'running')) {
+    await stopAgentEngineTask(synced.childTaskId, { interruptFirst: true });
+    updateTaskStatus(synced.childTaskId, 'interrupted', new Date().toISOString());
+    patchSubagentRun(synced.runId, { status: 'done', lifecycle: 'finished', resultStatus: 'interrupted', completedAt: new Date().toISOString() });
+  }
   const replacement = await spawnSubagent(
     {
       targetAgentId: params.targetAgentId || synced.childAgentId,
-      task: params.instruction?.trim() || buildReplacementPrompt(handoffSynced, params.reason),
+      task: replacementPrompt,
       label: params.label || (synced.label ? `${synced.label} replacement` : 'Replacement'),
       runTimeoutMs: params.runTimeoutMs || synced.executionPolicy?.runTimeoutMs,
       model: params.model ?? synced.model ?? null,
       mode: 'run',
       expectedOutputs: synced.expectedOutputs,
+      ownedPaths: synced.ownedPaths,
+      isolation: synced.worktree ? 'worktree' : 'shared',
+      maxCostUsd: synced.executionPolicy?.maxCostUsd,
+      limitAction: synced.executionPolicy?.limitAction,
       buildHandoff,
       replacesRunId: synced.runId,
       replacementReason: params.reason || synced.supervisor?.stalledReason,
@@ -563,7 +604,9 @@ export async function sendSubagentPrompt(params: {
   const sharedContext = buildSubagentSharedContext(run.parentTaskId, { excludeRunId: run.runId });
   const inheritedToolPrompt = formatInheritedToolContextForPrompt(run.inheritedContext || {});
   const sharedContextPrompt = formatSubagentSharedContextForPrompt(sharedContext);
-  const prompt = [inheritedToolPrompt, sharedContextPrompt, params.prompt].filter(Boolean).join('\n\n');
+  const conflicts = findOwnershipConflicts(run.ownedPaths || [], listSubagentRuns(undefined, { includeArchived: true }), run.inheritedContext?.workingDirectory, run.runId);
+  if (conflicts.length) throw new Error('Overlapping file assignments: ' + conflicts.join('; '));
+  const prompt = [inheritedToolPrompt, sharedContextPrompt, ownershipPrompt(run.ownedPaths || []), params.prompt].filter(Boolean).join('\n\n');
   patchSubagentRun(run.runId, {
     status: 'running',
     resultStatus: undefined,

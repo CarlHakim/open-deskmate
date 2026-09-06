@@ -881,6 +881,13 @@ const accomplishAPI = {
     ipcRenderer.invoke('build-mode:history:pin', payload),
   deleteBuildTaskHistorySession: (payload: BuildTaskSessionDeleteInput): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('build-mode:history:delete', payload),
+  onSubagentsChanged: (callback: (event: { parentTaskIds: string[] }) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: { parentTaskIds: string[] }) => callback(payload);
+    ipcRenderer.on('subagents:changed', listener);
+    return () => ipcRenderer.removeListener('subagents:changed', listener);
+  },
+  updateSubagentPolicy: (payload: { runId: string; maxCostUsd?: number; runTimeoutMs?: number; limitAction: 'notify' | 'stop' }) => ipcRenderer.invoke('subagents:policy', payload),
+  consumeSubagentResults: (payload: { parentTaskId: string }) => ipcRenderer.invoke('subagents:consume', payload),
   listSubagents: (payload: { parentTaskId: string }): Promise<{ runs: SubagentRunDetail[]; tree: SubagentRunTreeNode[]; activeCount: number }> =>
     ipcRenderer.invoke('subagents:list', payload),
   listAllSubagents: (payload?: { includeArchived?: boolean; query?: string; limit?: number }): Promise<{ runs: SubagentRunDetail[]; total?: number; truncated?: boolean }> =>

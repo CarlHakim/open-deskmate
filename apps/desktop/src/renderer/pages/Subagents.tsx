@@ -488,7 +488,25 @@ export default function SubagentsPage() {
               {loading ? (
                 <div className="flex h-full items-center justify-center text-sm text-muted-foreground"><Loader2 className="mr-2 h-4 w-4 animate-spin" />Loading subagent runs…</div>
               ) : filteredRuns.length === 0 ? (
-                <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-sm text-muted-foreground"><Bot className="h-10 w-10 text-muted-foreground/50" /><div>No subagent runs match the current filters.</div></div>
+                <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-muted-foreground">
+                  <Bot className="h-10 w-10 text-primary" />
+                  {query.trim() || statusFilter !== 'all' || !includeArchived || runsTotal > 0 ? (
+                    <>
+                      <h2 className="text-lg font-semibold text-foreground">No matching subagent runs</h2>
+                      <p>Try another search or show all runs, including archived work.</p>
+                      <Button variant="outline" onClick={() => { setQuery(''); setStatusFilter('all'); setIncludeArchived(true); }}>Clear filters</Button>
+                    </>
+                  ) : (
+                    <>
+                      <h2 className="text-lg font-semibold text-foreground">No subagent work yet</h2>
+                      <p className="max-w-md">Subagents handle parts of a task for the main agent. Their progress, results, and follow-up controls will appear here.</p>
+                      <div className="flex flex-wrap justify-center gap-2">
+                        <Button onClick={() => window.dispatchEvent(new CustomEvent('opendeskmate:open-settings', { detail: { query: 'Agents' } }))}>Configure agents</Button>
+                        <Button variant="outline" onClick={() => navigate('/')}>Start a task</Button>
+                      </div>
+                    </>
+                  )}
+                </div>
               ) : (
                 <div className="space-y-3">
                   {filteredRuns.map((run) => {

@@ -1,99 +1,112 @@
+import { AnswerActions, AnswerActionsProvider } from '../components/chat/AnswerActions';
+import { focusSceneBackground } from '../components/chat/FocusScene';
+import { useFocusSceneStore } from '../stores/focusSceneStore';
+import { AgentCharacterButton, AgentCharacterProvider } from '../components/agents/AgentCharacterCard';
+import { TaskJourney, AnswerHighlight } from '../components/chat/TaskJourney';
+import { GuidanceContext } from '../components/chat/GuidanceChoices';
+import SubagentTreeList from '../components/subagents/SubagentTreeList';
+import { useSubagentRefresh } from '../hooks/useSubagentRefresh';
+import { executionMessageComponents, type ExecutionMessageContext } from '../components/chat/ExecutionMessageFooter';
+import ComposerOptions from '../components/chat/ComposerOptions';
+import ActionShelf from '../components/chat/ActionShelf';
+import { AnswerScope, InteractiveAnswerPre } from '../components/chat/InteractiveAnswer';
+import { canRequestSubagentRecovery, formatSubagentElapsed, formatSubagentModeLabel, formatSubagentProgressEvent, formatSubagentRunStatus, formatSubagentUpdatedAge, getRelayedSubagentCompletionMeta, getSubagentBuildHandoffSummary, getSubagentLatestActivitySummary, getSubagentRecoverySummary, getSubagentResultBundleSummary, getSubagentRunIndicators, getSubagentRunStatusClasses, isActiveSubagentRun, preserveEquivalentSubagentRunReferences, preserveEquivalentSubagentTreeReferences } from '../lib/subagent-presentation';
 'use client';
 
-import { useEffect, useState, useRef, useMemo, useCallback, memo, forwardRef, useImperativeHandle, useLayoutEffect, type ChangeEvent, type CSSProperties, type PointerEvent, type ReactElement, type WheelEvent } from 'react';
-import { useParams, useNavigate, useLocation, Link } from 'react-router-dom';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
-import { useTaskStore } from '../stores/taskStore';
-import { useSavedPromptsStore } from '../stores/savedPromptsStore';
-import { useAgentStore } from '../stores/agentStore';
-import { getAccomplish } from '../lib/accomplish';
-import { springs } from '../lib/animations';
-import type {
-  ContextWindowEstimateResponse,
-  AgentAppearance,
-  ProviderConfig,
-  SelectedModel,
-  SubagentRunRecord,
-  SubagentRunTreeNode,
-  Task,
-  TaskMessage,
-  UsageProject,
-  UsageProjectWorkItem,
-  UsageProjectWorkItemDocumentLink,
-  UsageProjectWorkItemNote,
-  UsageProjectWorkItemSourceLink,
-  UserSkillSharingScope,
-} from '@accomplish/shared';
+import ChatBackgroundSwitcher from '@/components/chat/ChatBackgroundSwitcher';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
-import { Textarea } from '@/components/ui/textarea';
-import { XCircle, CornerDownLeft, ArrowLeft, CheckCircle2, AlertCircle, Terminal, Wrench, FileText, Search, Code, Brain, Clock, Square, Play, Download, Bug, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Trash2, Check, Folder, FolderOpen, X, Bookmark, BookmarkCheck, Settings, User, Mic, Copy, Plus, Image, Sparkles, Shield, ZoomIn, ZoomOut, RotateCcw, Loader2, Eye, EyeOff, MoreHorizontal, Archive, ExternalLink } from 'lucide-react';
-import { cn } from '@/lib/utils';
-import ReactMarkdown from 'react-markdown';
-import type { Components } from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
+DropdownMenu,
+DropdownMenuContent,
+DropdownMenuItem,
+DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { StreamingText } from '../components/ui/streaming-text';
-import { isWaitingForUser } from '../lib/waiting-detection';
-import SavedPromptsDialog from '../components/layout/SavedPromptsDialog';
-import ModeSwitch from '../components/layout/ModeSwitch';
-import BuildRuntimeIndicator from '../components/layout/BuildRuntimeIndicator';
-import ContextWindowIndicator from '../components/chat/ContextWindowIndicator';
-import ContextInspector from '../components/chat/ContextInspector';
-import AgentToolStateIndicator, { getToolActivityStepsFromActivity } from '../components/chat/AgentToolStateIndicator';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { isAgentCharacterAvatar } from '@/lib/agent-character-gallery';
+import {
+DEFAULT_CHAT_BACKGROUND_ID,
+getChatBackground,
+normalizeChatBackgroundId,
+} from '@/lib/chat-backgrounds';
+import { cn } from '@/lib/utils';
+import type {
+AgentAppearance,
+ContextWindowEstimateResponse,
+ProviderConfig,
+SelectedModel,
+SubagentRunRecord,
+SubagentRunTreeNode,
+Task,
+TaskMessage,
+UsageProject,
+UsageProjectWorkItem,
+UsageProjectWorkItemDocumentLink,
+UsageProjectWorkItemNote,
+UsageProjectWorkItemSourceLink,
+UserSkillSharingScope,
+} from '@accomplish/shared';
+import { AnimatePresence, motion } from 'framer-motion';
+import { AlertCircle, Archive, ArrowLeft, Bookmark, BookmarkCheck, Brain, Bug, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Clock, Code, Copy, CornerDownLeft, Download, ExternalLink, Eye, EyeOff, FileText, Folder, FolderOpen, Image, Loader2, Mic, MoreHorizontal, Play, Plus, RotateCcw, Search, Settings, Shield, Sparkles, Square, Terminal, Trash2, User, Wrench, X, XCircle, ZoomIn, ZoomOut } from 'lucide-react';
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type PointerEvent, type ReactElement, type WheelEvent } from 'react';
+import type { Components } from 'react-markdown';
+import ReactMarkdown from 'react-markdown';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
+import remarkGfm from 'remark-gfm';
+import BuildProjectWorkPopup from '../components/build/BuildProjectWorkPopup';
+import { getToolActivityStepsFromActivity } from '../components/chat/AgentToolStateIndicator';
 import ChatPostcardDialog, {
-  type ChatPostcardActionPayload,
-  type ChatPostcardDraft as ChatPostcardDialogDraft,
-  type ChatPostcardTemplateId,
+type ChatPostcardActionPayload,
+type ChatPostcardDraft as ChatPostcardDialogDraft,
+type ChatPostcardTemplateId,
 } from '../components/chat/ChatPostcardDialog';
+import ContextInspector from '../components/chat/ContextInspector';
+import ContextWindowIndicator from '../components/chat/ContextWindowIndicator';
 import PromptNavigator, { createPromptPreview, type PromptNavigatorEntry } from '../components/chat/PromptNavigator';
+import InlineSlashCommandMenu from '../components/commands/InlineSlashCommandMenu';
+import { AgentAvatarIcon } from '../components/layout/AgentAvatarPicker';
+import BuildRuntimeIndicator from '../components/layout/BuildRuntimeIndicator';
+import ModeSwitch from '../components/layout/ModeSwitch';
+import SavedPromptsDialog from '../components/layout/SavedPromptsDialog';
+import { StreamingText } from '../components/ui/streaming-text';
 import { UsageBudgetPill } from '../components/usage/UsageBudgetPill';
 import { UsageProjectSelector } from '../components/usage/UsageProjectSelector';
-import BuildProjectWorkPopup from '../components/build/BuildProjectWorkPopup';
-import { useVoiceWakeTalkMode } from '../hooks/useVoiceWakeTalkMode';
-import { useAttachmentStore } from '../stores/attachmentStore';
-import InlineSlashCommandMenu from '../components/commands/InlineSlashCommandMenu';
-import { filterSlashCommands, type SlashCommandDefinition } from '../lib/slash-commands';
-import { APP_COMMAND_EVENTS, createAppSlashCommands } from '../lib/app-commands';
 import { usePluginSlashCommands } from '../hooks/usePluginSlashCommands';
-import {
-  addPromptHistoryEntry,
-  CHAT_PROMPT_HISTORY_STORAGE_KEY,
-  readPromptHistory,
-  shouldHandlePromptHistoryRecall,
-} from '../lib/prompt-history';
-import { normalizeMarkdownTables } from '../lib/markdown-tables';
-import { buildWordFriendlyRtfWithRenderedIcons } from '../lib/rich-text-export';
+import { useVoiceWakeTalkMode } from '../hooks/useVoiceWakeTalkMode';
+import { getAccomplish } from '../lib/accomplish';
+import { springs } from '../lib/animations';
+import { APP_COMMAND_EVENTS, createAppSlashCommands } from '../lib/app-commands';
 import { BUILD_RECIPES } from '../lib/build-recipes';
+import { normalizeMarkdownTables } from '../lib/markdown-tables';
 import {
-  readChatProjectWorkPopupSession,
-  writeChatProjectWorkPopupSession,
+readChatProjectWorkPopupSession,
+writeChatProjectWorkPopupSession,
 } from '../lib/project-work-popup-session';
 import {
-  normalizeSelectedModel,
-  SELECTED_MODEL_CHANGED_EVENT,
-} from '../lib/selected-model-events';
+addPromptHistoryEntry,
+CHAT_PROMPT_HISTORY_STORAGE_KEY,
+readPromptHistory,
+shouldHandlePromptHistoryRecall,
+} from '../lib/prompt-history';
 import { registerPromptAttachmentTarget, registerPromptInsertionTarget } from '../lib/prompt-insertion';
-import { useUsageProjectStore } from '../stores/usageProjectStore';
-import { useFolderStore } from '../stores/folderStore';
-import { AgentAvatarIcon } from '../components/layout/AgentAvatarPicker';
-import { isAgentCharacterAvatar } from '@/lib/agent-character-gallery';
-import ChatBackgroundSwitcher from '@/components/chat/ChatBackgroundSwitcher';
+import { buildWordFriendlyRtfWithRenderedIcons } from '../lib/rich-text-export';
 import {
-  DEFAULT_CHAT_BACKGROUND_ID,
-  getChatBackground,
-  normalizeChatBackgroundId,
-} from '@/lib/chat-backgrounds';
+normalizeSelectedModel,
+SELECTED_MODEL_CHANGED_EVENT,
+} from '../lib/selected-model-events';
+import { filterSlashCommands, type SlashCommandDefinition } from '../lib/slash-commands';
+import { isWaitingForUser } from '../lib/waiting-detection';
+import { useAgentStore } from '../stores/agentStore';
+import { useAttachmentStore } from '../stores/attachmentStore';
+import { useFolderStore } from '../stores/folderStore';
+import { useSavedPromptsStore } from '../stores/savedPromptsStore';
+import { useTaskStore } from '../stores/taskStore';
 import { useTopBarControls } from '../stores/topBarControlsStore';
+import { useUsageProjectStore } from '../stores/usageProjectStore';
 // Debug log entry type
 interface DebugLogEntry {
   taskId: string;
@@ -197,14 +210,6 @@ const SUBAGENT_DETAIL_TRANSCRIPT_INCREMENT = 80;
 
 const assistantLinkPreviewCache = new Map<string, AssistantLinkPreviews>();
 const EMPTY_SAVED_NOTE_ASSETS: SavedNoteAsset[] = [];
-
-function hashForRenderVersion(value: string): string {
-  let hash = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    hash = ((hash << 5) - hash + value.charCodeAt(index)) | 0;
-  }
-  return `${value.length}:${hash}`;
-}
 
 function createConversationMapFullText(content: string): string {
   const normalized = String(content || '').replace(/\s+/g, ' ').trim();
@@ -1162,135 +1167,6 @@ function resolveUniqueSkillId(baseId: string, existingIds: Set<string>): string 
   return `${normalizedBase.slice(0, 56)}-${Date.now().toString().slice(-7)}`;
 }
 
-function formatSubagentRunStatus(status: SubagentRunRecord['status'], resultStatus?: SubagentRunRecord['resultStatus']): string {
-  if (status === 'done') {
-    if (resultStatus === 'interrupted') return 'Interrupted';
-    if (resultStatus === 'error') return 'Failed';
-    return 'Completed';
-  }
-  if (status === 'error') return 'Failed';
-  if (status === 'accepted') return 'Queued';
-  return 'Running';
-}
-
-function getSubagentRunStatusClasses(status: SubagentRunRecord['status'], resultStatus?: SubagentRunRecord['resultStatus']): string {
-  if (status === 'done' && resultStatus === 'success') return 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300';
-  if ((status === 'done' && resultStatus === 'interrupted') || status === 'accepted') return 'bg-amber-500/10 text-amber-700 dark:text-amber-300';
-  if (status === 'error' || (status === 'done' && resultStatus === 'error')) return 'bg-destructive/10 text-destructive';
-  return 'bg-sky-500/10 text-sky-700 dark:text-sky-300';
-}
-
-function formatSubagentModeLabel(run: Pick<SubagentRunRecord, 'mode' | 'sessionState' | 'reuseCount'> & { childTaskStatus?: string }): string {
-  const parts = [run.mode === 'session' ? 'Session mode' : 'Run mode'];
-  if (run.mode === 'session' && run.sessionState) {
-    parts.push(`session ${run.sessionState}`);
-  }
-  if (run.mode === 'run' && run.childTaskStatus) {
-    parts.push(`task ${run.childTaskStatus}`);
-  }
-  if (typeof run.reuseCount === 'number' && run.reuseCount > 0) {
-    parts.push(`reused ${run.reuseCount}x`);
-  }
-  return parts.join(' · ');
-}
-
-function isActiveSubagentRun(run: Pick<SubagentRunRecord, 'status'>): boolean {
-  return run.status === 'running' || run.status === 'accepted';
-}
-
-function formatSubagentShortDuration(ms: number): string {
-  if (!Number.isFinite(ms) || ms < 0) return 'n/a';
-  const minutes = Math.floor(ms / 60_000);
-  if (minutes < 1) return '<1m';
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ${minutes % 60}m`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ${hours % 24}h`;
-}
-
-function formatSubagentElapsed(run: Pick<SubagentRunRecord, 'createdAt' | 'updatedAt' | 'completedAt' | 'status'>): string {
-  const started = Date.parse(run.createdAt);
-  if (!Number.isFinite(started)) return 'n/a';
-  const updated = Date.parse(run.updatedAt);
-  const completed = run.completedAt ? Date.parse(run.completedAt) : Number.NaN;
-  const ended = Number.isFinite(completed)
-    ? completed
-    : isActiveSubagentRun(run)
-      ? Date.now()
-      : Number.isFinite(updated)
-        ? updated
-        : Date.now();
-  return formatSubagentShortDuration(ended - started);
-}
-
-function formatSubagentUpdatedAge(value?: string): string {
-  if (!value) return 'n/a';
-  const updated = Date.parse(value);
-  if (!Number.isFinite(updated)) return 'n/a';
-  return `${formatSubagentShortDuration(Date.now() - updated)} ago`;
-}
-
-function compactSubagentActivitySummary(value: string): string {
-  const normalized = String(value || '').replace(/\s+/g, ' ').trim();
-  if (normalized.length <= 420) return normalized;
-  return `${normalized.slice(0, 420).trimEnd()}...`;
-}
-
-function getSubagentLatestProgressEvent(run: Pick<SubagentRunRecord, 'progressEvents'>): NonNullable<SubagentRunRecord['progressEvents']>[number] | null {
-  const events = run.progressEvents || [];
-  if (events.length === 0) return null;
-  return events.reduce((latest, event) => {
-    const latestTime = Date.parse(latest.timestamp);
-    const eventTime = Date.parse(event.timestamp);
-    if (!Number.isFinite(eventTime)) return latest;
-    if (!Number.isFinite(latestTime) || eventTime >= latestTime) return event;
-    return latest;
-  }, events[0]);
-}
-
-function formatSubagentProgressEvent(run: Pick<SubagentRunRecord, 'progressEvents'>): string | null {
-  const event = getSubagentLatestProgressEvent(run);
-  if (!event) return null;
-  const parts = [
-    event.title || event.currentStep || event.type,
-    typeof event.percentage === 'number' ? `${Math.round(event.percentage)}%` : null,
-    typeof event.completedSteps === 'number' && typeof event.totalSteps === 'number'
-      ? `${event.completedSteps}/${event.totalSteps}`
-      : null,
-    event.detail,
-  ].filter(Boolean);
-  return compactSubagentActivitySummary(parts.join(' · '));
-}
-
-function getSubagentRecoverySummary(run: Pick<SubagentRunRecord, 'recoveryHistory'>): string | null {
-  const history = run.recoveryHistory || [];
-  if (history.length === 0) return null;
-  const latest = history[history.length - 1];
-  return `${history.length} recovery ${history.length === 1 ? 'attempt' : 'attempts'} · ${latest.action} ${latest.status}`;
-}
-
-function getSubagentResultBundleSummary(run: Pick<SubagentRunRecord, 'resultBundle'>): string | null {
-  const bundle = run.resultBundle;
-  if (!bundle) return null;
-  const itemCount = bundle.items?.length || 0;
-  const missingCount = bundle.missingExpectedOutputIds?.length || 0;
-  if (missingCount > 0) return `${itemCount} outputs · ${missingCount} missing`;
-  return `${itemCount} outputs`;
-}
-
-function getSubagentBuildHandoffSummary(run: Pick<SubagentRunRecord, 'buildHandoff'>): string | null {
-  const handoff = run.buildHandoff;
-  if (!handoff) return null;
-  const changedCount = handoff.changedFiles?.length ?? handoff.gitSummary?.changedFileCount ?? 0;
-  const stats = handoff.gitSummary
-    ? `+${handoff.gitSummary.totalAddedLines} -${handoff.gitSummary.totalDeletedLines}`
-    : null;
-  const mode = handoff.diffMode || (handoff.baselineId ? 'synthetic' : 'workspace');
-  const generated = handoff.generatedAt ? ` · refreshed ${new Date(handoff.generatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : '';
-  return `Build handoff: ${changedCount} file${changedCount === 1 ? '' : 's'}${stats ? ` · ${stats}` : ''} · ${mode}${generated}`;
-}
-
 function getSubagentInheritedToolsSummary(run: Pick<SubagentRunRecord, 'inheritedContext'>): string | null {
   const inherited = run.inheritedContext;
   const inheritedToolsets = inherited?.inheritedToolsetIds || inherited?.enabledToolsetIds || inherited?.toolsetIds || [];
@@ -1323,558 +1199,7 @@ function getSubagentSharedContextSummary(run: Pick<SubagentRunRecord, 'sharedCon
   return parts.length > 0 ? parts.join(' · ') : null;
 }
 
-function getSubagentRunIndicators(run: SubagentRunRecord): Array<{ label: string; title: string; className: string }> {
-  const latestProgress = getSubagentLatestProgressEvent(run);
-  const heartbeatAt = Date.parse(run.supervisor?.heartbeatAt || run.supervisor?.lastCheckedAt || run.updatedAt);
-  const latestProgressAt = latestProgress ? Date.parse(latestProgress.timestamp) : Number.NaN;
-  const latestActivityAt = Math.max(
-    Number.isFinite(heartbeatAt) ? heartbeatAt : 0,
-    Number.isFinite(latestProgressAt) ? latestProgressAt : 0
-  );
-  const stale = isActiveSubagentRun(run) && latestActivityAt > 0 && Date.now() - latestActivityAt > 10 * 60_000;
-  const stuck = Boolean(run.supervisor?.stallDetectedAt || run.supervisor?.stalledReason || latestProgress?.type === 'blocked');
-  const recovering = Boolean((run.recoveryHistory || []).some((entry) => entry.status === 'planned' || entry.status === 'running'));
-  const indicators: Array<{ label: string; title: string; className: string }> = [];
-  if (stale) {
-    indicators.push({
-      label: 'Stale',
-      title: `No heartbeat or progress for ${formatSubagentShortDuration(Date.now() - latestActivityAt)}`,
-      className: 'bg-amber-500/10 text-amber-700 dark:text-amber-300',
-    });
-  }
-  if (stuck) {
-    indicators.push({
-      label: 'Stuck',
-      title: run.supervisor?.stalledReason || latestProgress?.detail || 'Supervisor marked this run as blocked',
-      className: 'bg-destructive/10 text-destructive',
-    });
-  }
-  if (recovering) {
-    indicators.push({
-      label: 'Recovering',
-      title: getSubagentRecoverySummary(run) || 'Recovery is in progress',
-      className: 'bg-sky-500/10 text-sky-700 dark:text-sky-300',
-    });
-  }
-  if (run.replacesRunId) {
-    indicators.push({
-      label: `Replaces ${run.replacesRunId.slice(0, 8)}`,
-      title: `Replacement for run ${run.replacesRunId}`,
-      className: 'bg-violet-500/10 text-violet-700 dark:text-violet-300',
-    });
-  }
-  if (run.replacedByRunId) {
-    indicators.push({
-      label: `Replaced by ${run.replacedByRunId.slice(0, 8)}`,
-      title: `Superseded by run ${run.replacedByRunId}`,
-      className: 'bg-muted text-muted-foreground',
-    });
-  }
-  return indicators;
-}
 
-function canRequestSubagentRecovery(run: SubagentRunRecord): boolean {
-  const latestProgress = getSubagentLatestProgressEvent(run);
-  return isActiveSubagentRun(run) && Boolean(run.supervisor?.recoveryEligible || latestProgress?.recoverable || run.supervisor?.stallDetectedAt);
-}
-
-function getSubagentLatestActivitySummary(run: SubagentRunRecord & { childTaskSummary?: string; childTaskStatus?: string }): string | null {
-  const finalReport = run.finalReport?.trim();
-  if (finalReport) return compactSubagentActivitySummary(finalReport);
-  const progressSummary = formatSubagentProgressEvent(run);
-  if (progressSummary) return progressSummary;
-  const childSummary = run.childTaskSummary?.trim();
-  if (childSummary) return compactSubagentActivitySummary(childSummary);
-  const lastPrompt = run.lastPrompt?.trim();
-  if (lastPrompt && lastPrompt !== run.task.trim()) return `Latest prompt: ${lastPrompt}`;
-  if (run.childTaskStatus) return `Child task ${run.childTaskStatus}`;
-  return null;
-}
-
-type RelayedSubagentCompletionMeta = {
-  childAgentId: string;
-  label?: string;
-};
-
-function getRelayedSubagentCompletionMeta(message: Pick<TaskMessage, 'type' | 'content'>): RelayedSubagentCompletionMeta | null {
-  const content = String(message.content || '').trim();
-  if (
-    message.type !== 'assistant'
-    || !/\nStatus:\s*\S+/i.test(content)
-    || !/\nSession:\s*\S+/i.test(content)
-  ) {
-    return null;
-  }
-  const firstLine = content.split(/\r?\n/, 1)[0] || '';
-  const match = firstLine.match(/^Subagent\s+(.+?)\s+completed\./i);
-  if (!match) return null;
-  const rawChildLabel = match[1].trim();
-  const labelledChild = rawChildLabel.match(/^(.*?)\s+\((.*?)\)$/);
-  const childAgentId = (labelledChild?.[1] || rawChildLabel).trim();
-  if (!childAgentId) return null;
-  return {
-    childAgentId,
-    label: labelledChild?.[2]?.trim() || undefined,
-  };
-}
-
-function isRelayedSubagentCompletionMessage(message: Pick<TaskMessage, 'type' | 'content'>): boolean {
-  return Boolean(getRelayedSubagentCompletionMeta(message));
-}
-
-function compactSubagentTextSignature(value: string | undefined | null, maxInlineChars = 160): string {
-  if (!value) return '';
-  return value.length <= maxInlineChars ? value : hashForRenderVersion(value);
-}
-
-function buildSubagentPartSignature(parts: Array<string | number | boolean | null | undefined>): string {
-  return parts.map((part) => part ?? '').join('\u001f');
-}
-
-function getSubagentProgressEventsSignature(events: SubagentRunRecord['progressEvents']): string {
-  if (!events?.length) return '0';
-  const recentEvents = events.slice(-8).map((event) => buildSubagentPartSignature([
-    event.id,
-    event.type,
-    event.timestamp,
-    event.status,
-    event.toolName,
-    event.messageId,
-    event.percentage,
-    event.currentStep,
-    event.totalSteps,
-    event.completedSteps,
-    event.recoverable,
-    event.domain,
-    event.httpStatus,
-    event.failureKind,
-    compactSubagentTextSignature(event.title, 80),
-    compactSubagentTextSignature(event.detail, 80),
-    compactSubagentTextSignature(event.fallbackSuggested, 80),
-  ]));
-  return `${events.length}\u001e${recentEvents.join('\u001e')}`;
-}
-
-function getSubagentSupervisorSignature(supervisor: SubagentRunRecord['supervisor']): string {
-  if (!supervisor) return '';
-  return buildSubagentPartSignature([
-    supervisor.state,
-    supervisor.lastCheckedAt,
-    supervisor.nextCheckAt,
-    supervisor.heartbeatAt,
-    supervisor.lastProgressAt,
-    supervisor.lastMeaningfulProgressAt,
-    supervisor.stallDetectedAt,
-    supervisor.stalledReason,
-    supervisor.staleReason,
-    supervisor.stuckReason,
-    supervisor.blockedReason,
-    supervisor.repeatedToolName,
-    supervisor.repeatedToolCount,
-    supervisor.blockedSourceDomain,
-    supervisor.blockedSourceUrl,
-    supervisor.blockedHttpStatus,
-    supervisor.blockedFailureKind,
-    supervisor.blockedSourceCount,
-    supervisor.recommendedAction,
-    supervisor.recoveryEligible,
-    supervisor.recoveryAttempts,
-    compactSubagentTextSignature(supervisor.notes, 120),
-  ]);
-}
-
-function getSubagentResultBundleSignature(bundle: SubagentRunRecord['resultBundle']): string {
-  if (!bundle) return '';
-  const itemSignature = (bundle.items || []).map((item) => buildSubagentPartSignature([
-    item.id,
-    item.kind,
-    item.label,
-    item.path,
-    compactSubagentTextSignature(item.content, 120),
-  ])).join('\u001e');
-  return buildSubagentPartSignature([
-    bundle.generatedAt,
-    bundle.finalReportTruncated,
-    compactSubagentTextSignature(bundle.summary, 160),
-    compactSubagentTextSignature(bundle.partialReport, 160),
-    compactSubagentTextSignature(bundle.finalReport, 160),
-    bundle.missingExpectedOutputIds?.join(',') || '',
-    bundle.items?.length || 0,
-    itemSignature,
-  ]);
-}
-
-function getSubagentRecoveryHistorySignature(history: SubagentRunRecord['recoveryHistory']): string {
-  if (!history?.length) return '0';
-  return history.map((entry) => buildSubagentPartSignature([
-    entry.id,
-    entry.action,
-    entry.status,
-    entry.startedAt,
-    entry.completedAt,
-    entry.replacementRunId,
-    compactSubagentTextSignature(entry.reason, 100),
-    compactSubagentTextSignature(entry.error, 100),
-    compactSubagentTextSignature(entry.notes, 100),
-  ])).join('\u001e');
-}
-
-function getSubagentInheritedContextSignature(context: SubagentRunRecord['inheritedContext']): string {
-  if (!context) return '';
-  return buildSubagentPartSignature([
-    context.workingDirectory,
-    context.privacyMode,
-    context.buildMode,
-    context.buildWorkspaceRelativePath,
-    context.attachedFiles?.join(',') || '',
-    context.toolsetIds?.join(',') || '',
-    context.deferredToolDiscoveryEnabled,
-    context.enabledToolsetIds?.join(',') || '',
-    context.availableToolsetIds?.join(',') || '',
-    context.inheritedToolsetIds?.join(',') || '',
-  ]);
-}
-
-function getSubagentSharedContextSignature(context: SubagentRunRecord['sharedContext']): string {
-  if (!context) return '';
-  const blockedSources = (context.blockedSources || []).map((source) => buildSubagentPartSignature([
-    source.domain,
-    source.sourceUrl,
-    source.httpStatus,
-    source.failureKind,
-    source.count,
-    source.lastSeenAt,
-    compactSubagentTextSignature(source.example, 80),
-  ])).join('\u001e');
-  return buildSubagentPartSignature([
-    context.generatedAt,
-    blockedSources,
-    context.blockedTools?.join(',') || '',
-    context.successfulFallbacks?.join(',') || '',
-    context.confirmedFindings?.length || 0,
-    context.openGaps?.length || 0,
-  ]);
-}
-
-function getSubagentBuildHandoffSignature(handoff: SubagentRunRecord['buildHandoff']): string {
-  if (!handoff) return '';
-  const changedFiles = (handoff.changedFiles || []).slice(0, 80).map((file) => buildSubagentPartSignature([
-    file.relativePath,
-    file.changeType,
-    file.addedLines,
-    file.deletedLines,
-    file.beforeTruncated,
-    file.afterTruncated,
-  ])).join('\u001e');
-  return buildSubagentPartSignature([
-    handoff.workspaceAgentId,
-    handoff.workspaceRelativePath,
-    handoff.baselineId,
-    handoff.diffMode,
-    handoff.diffAvailable,
-    handoff.diffSummary,
-    handoff.changedFiles?.length || 0,
-    changedFiles,
-    handoff.patchTruncated,
-    compactSubagentTextSignature(handoff.patchExcerpt, 120),
-    handoff.gitSummary?.branch,
-    handoff.gitSummary?.dirty,
-    handoff.gitSummary?.changedFileCount,
-    handoff.gitSummary?.totalAddedLines,
-    handoff.gitSummary?.totalDeletedLines,
-    handoff.generatedAt,
-  ]);
-}
-
-function getSubagentRunSignature(run: SubagentRunRecord & { childTaskStatus?: string; childTaskSummary?: string }): string {
-  return buildSubagentPartSignature([
-    run.runId,
-    run.childTaskId,
-    run.childSessionKey,
-    run.sessionId,
-    run.sessionState,
-    run.parentTaskId,
-    run.parentRunId,
-    run.parentSessionKey,
-    run.parentAgentId,
-    run.childAgentId,
-    run.persistentKey,
-    run.label,
-    compactSubagentTextSignature(run.task, 160),
-    compactSubagentTextSignature(run.lastPrompt, 160),
-    run.depth,
-    run.mode,
-    run.reuseCount,
-    run.status,
-    run.resultStatus,
-    compactSubagentTextSignature(run.error, 160),
-    compactSubagentTextSignature(run.finalReport, 160),
-    run.finalReportTruncated,
-    getSubagentProgressEventsSignature(run.progressEvents),
-    getSubagentSupervisorSignature(run.supervisor),
-    run.expectedOutputs?.length || 0,
-    getSubagentResultBundleSignature(run.resultBundle),
-    getSubagentRecoveryHistorySignature(run.recoveryHistory),
-    run.replacesRunId,
-    run.replacedByRunId,
-    run.replacementReason,
-    run.model?.provider,
-    run.model?.model,
-    run.executionPolicy?.mode,
-    run.executionPolicy?.maxChildren,
-    run.executionPolicy?.maxDepth,
-    run.executionPolicy?.runTimeoutMs,
-    run.executionPolicy?.autoRelayCompletions,
-    getSubagentInheritedContextSignature(run.inheritedContext),
-    getSubagentSharedContextSignature(run.sharedContext),
-    getSubagentBuildHandoffSignature(run.buildHandoff),
-    run.childTaskStatus,
-    compactSubagentTextSignature(run.childTaskSummary, 160),
-    run.createdAt,
-    run.updatedAt,
-    run.completedAt,
-    run.lastResumedAt,
-    run.archivedAt,
-    run.closedAt,
-  ]);
-}
-
-function preserveEquivalentSubagentRunReferences<T extends SubagentRunRecord>(current: T[], incoming: T[]): T[] {
-  if (incoming.length === 0) return current.length === 0 ? current : incoming;
-  const currentById = new Map(current.map((run) => [run.runId, run]));
-  let changed = incoming.length !== current.length;
-  const next = incoming.map((run, index) => {
-    const existing = currentById.get(run.runId);
-    if (existing && getSubagentRunSignature(existing) === getSubagentRunSignature(run)) {
-      if (current[index] !== existing) changed = true;
-      return existing as T;
-    }
-    changed = true;
-    return run;
-  });
-  return changed ? next : current;
-}
-
-function preserveEquivalentSubagentTreeReferences(current: SubagentRunTreeNode[], incoming: SubagentRunTreeNode[]): SubagentRunTreeNode[] {
-  if (incoming.length === 0) return current.length === 0 ? current : incoming;
-  const currentById = new Map(current.map((run) => [run.runId, run]));
-  let changed = incoming.length !== current.length;
-  const next = incoming.map((run, index) => {
-    const existing = currentById.get(run.runId);
-    const children = preserveEquivalentSubagentTreeReferences(existing?.children || [], run.children || []);
-    const sameRun = existing && getSubagentRunSignature(existing) === getSubagentRunSignature(run);
-    if (sameRun && children === existing.children) {
-      if (current[index] !== existing) changed = true;
-      return existing;
-    }
-    changed = true;
-    return children === run.children ? run : { ...run, children };
-  });
-  return changed ? next : current;
-}
-
-function SubagentTreeList({
-  nodes,
-  level = 0,
-  stoppingSubagentRunId,
-  agentNames,
-  onOpen,
-  onInspect,
-  onStop,
-  onArchive,
-  onRecover,
-  onReplace,
-}: {
-  nodes: SubagentRunTreeNode[];
-  level?: number;
-  stoppingSubagentRunId: string | null;
-  agentNames: Map<string, string>;
-  onOpen: (run: SubagentRunRecord) => void;
-  onInspect: (run: SubagentRunRecord) => void;
-  onStop: (runId: string) => void;
-  onArchive: (runId: string) => void;
-  onRecover: (run: SubagentRunRecord) => void;
-  onReplace: (run: SubagentRunRecord) => void;
-}): ReactElement | null {
-  if (nodes.length === 0) return null;
-  return (
-    <div className={cn('space-y-1.5', level > 0 ? 'ml-3 border-l border-border/50 pl-3 sm:ml-4' : '')}>
-      {nodes.map((run) => {
-        const stoppable = isActiveSubagentRun(run);
-        const childAgentName = agentNames.get(run.childAgentId) || run.childAgentId;
-        const activitySummary = getSubagentLatestActivitySummary(run);
-        const progressSummary = formatSubagentProgressEvent(run);
-        const recoverySummary = getSubagentRecoverySummary(run);
-        const resultBundleSummary = getSubagentResultBundleSummary(run);
-        const buildHandoffSummary = getSubagentBuildHandoffSummary(run);
-        const inheritedToolsSummary = getSubagentInheritedToolsSummary(run);
-        const sharedContextSummary = getSubagentSharedContextSummary(run);
-        const indicators = getSubagentRunIndicators(run);
-        const canRecover = canRequestSubagentRecovery(run);
-        const canReplace = canRecover && !run.replacedByRunId;
-        const relayEnabled = run.status === 'done' && run.executionPolicy?.autoRelayCompletions === true;
-        return (
-          <div key={run.runId} className="rounded-md border border-border/50 bg-card/70 px-2.5 py-2 shadow-sm backdrop-blur-sm">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-              <div className="min-w-0 flex-1">
-                <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                  <div className="truncate text-xs font-semibold text-foreground" title={run.label || run.task}>
-                    {run.label || run.childAgentId}
-                  </div>
-                  <span className={cn('rounded-full px-1.5 py-0.5 text-[10px] font-medium', getSubagentRunStatusClasses(run.status, run.resultStatus))}>
-                    {formatSubagentRunStatus(run.status, run.resultStatus)}
-                  </span>
-                  {relayEnabled ? (
-                    <span className="rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
-                      Relay enabled
-                    </span>
-                  ) : null}
-                  {indicators.map((indicator) => (
-                    <span
-                      key={`${run.runId}-${indicator.label}`}
-                      className={cn('rounded-full px-1.5 py-0.5 text-[10px] font-medium', indicator.className)}
-                      title={indicator.title}
-                    >
-                      {indicator.label}
-                    </span>
-                  ))}
-                </div>
-                <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
-                  <span className="truncate">Child: {childAgentName}</span>
-                  {run.model ? <span className="truncate">{run.model.provider}:{run.model.model}</span> : null}
-                  <span>{formatSubagentModeLabel(run)}</span>
-                  <span>Elapsed {formatSubagentElapsed(run)}</span>
-                  <span>Updated {formatSubagentUpdatedAge(run.updatedAt)}</span>
-                </div>
-                <div className="mt-1 truncate text-[10px] text-muted-foreground" title={run.task}>
-                  Goal: {run.task}
-                </div>
-                {activitySummary ? (
-                  <div className="mt-0.5 truncate text-[10px] text-muted-foreground" title={activitySummary}>
-                    Latest: {activitySummary}
-                  </div>
-                ) : null}
-                {progressSummary && progressSummary !== activitySummary ? (
-                  <div className="mt-0.5 truncate text-[10px] text-muted-foreground" title={progressSummary}>
-                    Progress: {progressSummary}
-                  </div>
-                ) : null}
-                {recoverySummary || resultBundleSummary ? (
-                  <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
-                    {recoverySummary ? <span className="truncate" title={recoverySummary}>{recoverySummary}</span> : null}
-                    {resultBundleSummary ? <span className="truncate" title={resultBundleSummary}>Results: {resultBundleSummary}</span> : null}
-                  </div>
-                ) : null}
-                {buildHandoffSummary ? (
-                  <div
-                    className="mt-1 rounded-md border border-amber-500/20 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-800 dark:text-amber-200"
-                    title={run.buildHandoff?.diffSummary || buildHandoffSummary}
-                  >
-                    {buildHandoffSummary}
-                  </div>
-                ) : null}
-                {inheritedToolsSummary || sharedContextSummary ? (
-                  <div
-                    className="mt-1 space-y-0.5 rounded-md border border-sky-500/20 bg-sky-500/10 px-2 py-1 text-[10px] text-sky-800 dark:text-sky-200"
-                    title={[inheritedToolsSummary, sharedContextSummary].filter(Boolean).join('\n')}
-                  >
-                    {inheritedToolsSummary ? <div className="truncate">{inheritedToolsSummary}</div> : null}
-                    {sharedContextSummary ? <div className="truncate">{sharedContextSummary}</div> : null}
-                  </div>
-                ) : null}
-              </div>
-              <div className="flex shrink-0 flex-wrap items-center gap-1 sm:justify-end">
-                {canRecover ? (
-                  <Button
-                    size="icon"
-                    variant="outline"
-                    className="h-6 w-6"
-                    onClick={() => onRecover(run)}
-                    title="Ask subagent to recover"
-                    aria-label="Ask subagent to recover"
-                  >
-                    <RotateCcw className="h-3.5 w-3.5" />
-                  </Button>
-                ) : null}
-                {canReplace ? (
-                  <Button
-                    size="icon"
-                    variant="outline"
-                    className="h-6 w-6"
-                    onClick={() => onReplace(run)}
-                    title="Ask subagent to prepare replacement handoff"
-                    aria-label="Ask subagent to prepare replacement handoff"
-                  >
-                    <Play className="h-3.5 w-3.5" />
-                  </Button>
-                ) : null}
-                <Button
-                  size="icon"
-                  variant="outline"
-                  className="h-6 w-6"
-                  onClick={() => onOpen(run)}
-                  title="Open subagent transcript"
-                  aria-label="Open subagent transcript"
-                >
-                  <Eye className="h-3.5 w-3.5" />
-                </Button>
-                <Button
-                  size="icon"
-                  variant="outline"
-                  className="h-6 w-6"
-                  onClick={() => onInspect(run)}
-                  title="Inspect in Subagents"
-                  aria-label="Inspect in Subagents"
-                >
-                  <ExternalLink className="h-3.5 w-3.5" />
-                </Button>
-                {stoppable ? (
-                  <Button
-                    size="icon"
-                    variant="outline"
-                    className="h-6 w-6"
-                    onClick={() => onStop(run.runId)}
-                    disabled={stoppingSubagentRunId === run.runId}
-                    title="Cancel child run"
-                    aria-label="Cancel child run"
-                  >
-                    {stoppingSubagentRunId === run.runId ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Square className="h-3.5 w-3.5" />}
-                  </Button>
-                ) : null}
-                <Button
-                  size="icon"
-                  variant="outline"
-                  className="h-6 w-6"
-                  onClick={() => onArchive(run.runId)}
-                  title="Archive subagent run"
-                  aria-label="Archive subagent run"
-                >
-                  <Archive className="h-3.5 w-3.5" />
-                </Button>
-              </div>
-            </div>
-            {run.children.length > 0 ? (
-              <div className="mt-2">
-                <SubagentTreeList
-                  nodes={run.children}
-                  level={level + 1}
-                  stoppingSubagentRunId={stoppingSubagentRunId}
-                  agentNames={agentNames}
-                  onOpen={onOpen}
-                  onInspect={onInspect}
-                  onStop={onStop}
-                  onArchive={onArchive}
-                  onRecover={onRecover}
-                  onReplace={onReplace}
-                />
-              </div>
-            ) : null}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
 
 function SubagentBackgroundWorkCard({
   activeCount,
@@ -2382,7 +1707,7 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
           translucentSurface ? 'bg-background/28 backdrop-blur-md' : 'bg-card/50'
         )}
       >
-        <div className="mx-auto max-w-5xl space-y-1.5">
+        <div className="focus-content-width mx-auto max-w-5xl space-y-1.5">
           {privacyMode === 'incognito' && (
             <p className="text-[10px] leading-tight text-muted-foreground">
               Chat content is not saved. Usage totals still include this session.
@@ -2542,16 +1867,9 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
           </div>
 
           {/* Action buttons under prompt input */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <ContextWindowIndicator stats={contextStats} />
-            <ContextInspector
-              stats={contextStats}
-              agentId={agentId}
-              workspace={workingFolder}
-              attachedFiles={attachedFiles}
-              privacyMode={privacyMode}
-              usageProjectId={selectedUsageProjectId}
-            />
+          <div className="flex min-w-0 flex-nowrap items-center gap-1.5 overflow-x-auto py-1">
+            <ContextWindowIndicator compact stats={contextStats} />
+
             <UsageProjectSelector
               mode="chat"
               value={selectedUsageProjectId}
@@ -2572,7 +1890,19 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
               <Folder className="h-3.5 w-3.5" />
             </button>
 
-            {onPrivacyModeChange && (
+{privacyMode === 'incognito' && <span className="text-xs font-medium text-amber-700">Incognito</span>}
+          {(voiceEnabled || talkModeActive) && <span className="text-xs font-medium text-emerald-700" role="status">{talkModeActive ? 'Listening…' : 'Voice wake on'}</span>}
+          <div className="inline-flex min-w-[280px] flex-1 items-center gap-1.5">
+          <ComposerOptions side="top" activeCount={Number(privacyMode === 'incognito') + Number(voiceEnabled || talkModeActive)}>
+<ContextInspector
+              stats={contextStats}
+              agentId={agentId}
+              workspace={workingFolder}
+              attachedFiles={attachedFiles}
+              privacyMode={privacyMode}
+              usageProjectId={selectedUsageProjectId}
+            />
+{onPrivacyModeChange && (
               <button
                 type="button"
                 onClick={() => onPrivacyModeChange(privacyMode === 'incognito' ? 'normal' : 'incognito')}
@@ -2584,12 +1914,13 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
                 }`}
                 title="Toggle incognito mode for this task/session"
                 aria-label="Toggle incognito mode for this task/session"
+                data-option-label="Incognito"
+                aria-pressed={privacyMode === 'incognito'}
               >
                 <Shield className="h-3.5 w-3.5" />
               </button>
             )}
-
-            <button
+<button
               type="button"
               onClick={() => onOpenSavedPrompts('select')}
               disabled={isLoading || promptsCount === 0}
@@ -2604,8 +1935,7 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
                 </span>
               )}
             </button>
-
-            <button
+<button
               type="button"
               onClick={() => onOpenSavedPrompts('manage')}
               disabled={isLoading}
@@ -2615,8 +1945,7 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
             >
               <Settings className="h-3.5 w-3.5" />
             </button>
-
-            <button
+<button
               type="button"
               onClick={onOpenProjectWork}
               disabled={isLoading || !onOpenProjectWork}
@@ -2626,10 +1955,9 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
             >
               <FolderOpen className="h-3.5 w-3.5" />
             </button>
-
-            <button
+<button
               type="button"
-              onClick={toggleVoiceWake}
+              data-option-label="Voice wake" aria-pressed={voiceEnabled} onClick={toggleVoiceWake}
               disabled={voiceToggleBusy || isLoading || !voiceAccessKeySet || talkModeActive}
               className={`flex items-center gap-2 rounded-lg border border-border/70 px-2.5 py-1.5 text-xs font-medium shadow-sm backdrop-blur-sm transition-colors ${
                 voiceEnabled ? 'bg-emerald-500/20 text-emerald-700' : 'bg-background/85 text-foreground/80'
@@ -2676,7 +2004,15 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
                 })()}
               </div>
             </button>
+</ComposerOptions>
+            <span aria-hidden="true" className="mx-1 h-5 w-px shrink-0 bg-border" />
+            <ActionShelf compact key={taskId} mode="chat" projectId={selectedUsageProjectId} incognito={privacyMode === 'incognito'} getDraft={() => inputRef.current?.value || ''} onInsert={text => {
+              resetPromptHistoryNavigation();
+              setFollowUp(current => current.trim() ? `${current.trim()}\n\n${text}` : text);
+              window.requestAnimationFrame(() => { inputRef.current?.focus(); const end = inputRef.current?.value.length || 0; inputRef.current?.setSelectionRange(end, end); });
+            }} onManage={() => onOpenSavedPrompts('manage')} />
           </div>
+</div>
 
           {(talkModeActive || talkModeError) && (
             <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
@@ -2754,6 +2090,7 @@ const FollowUpBar = forwardRef<FollowUpBarHandle, FollowUpBarProps>(
 );
 
 export default function ExecutionPage() {
+  const focusScene = useFocusSceneStore(state => state.active);
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
@@ -3207,6 +2544,9 @@ export default function ExecutionPage() {
     setSaveSkillShareAgentIds((current) => current.filter((agentId) => agentId !== saveSkillOwnerAgentId));
   }, [saveSkillOwnerAgentId]);
 
+  const subagentRefreshParentRef = useRef(currentTask?.id);
+  subagentRefreshParentRef.current = currentTask?.id;
+  const subagentRefreshSequence = useRef(0);
   const refreshSubagentRuns = useCallback(async (showLoading = false) => {
     if (!currentTask?.id) {
       setSubagentRuns([]);
@@ -3218,7 +2558,10 @@ export default function ExecutionPage() {
       setSubagentRunsLoading(true);
     }
     try {
+      const requestedParent = currentTask?.id;
+      const sequence = ++subagentRefreshSequence.current;
       const result = await accomplish.listSubagents({ parentTaskId: currentTask.id });
+      if (subagentRefreshParentRef.current !== requestedParent || sequence !== subagentRefreshSequence.current) return;
       setSubagentRuns((current) => preserveEquivalentSubagentRunReferences(current, result.runs || []));
       setSubagentTree((current) => preserveEquivalentSubagentTreeReferences(current, result.tree || []));
     } catch (err) {
@@ -3254,25 +2597,7 @@ export default function ExecutionPage() {
     };
   }, [canSaveSkillFromTask, interruptTask, refreshSubagentRuns]);
 
-  useEffect(() => {
-    if (!currentTask?.id) {
-      setSubagentRuns([]);
-      setSubagentTree([]);
-      setSubagentPanelMinimized(false);
-      return;
-    }
-    void refreshSubagentRuns(subagentRuns.length === 0);
-    const shouldKeepPolling = currentTask.status === 'running'
-      || currentTask.status === 'queued'
-      || activeSubagentCount > 0;
-    if (!shouldKeepPolling) {
-      return;
-    }
-    const timer = window.setInterval(() => {
-      void refreshSubagentRuns();
-    }, 2000);
-    return () => window.clearInterval(timer);
-  }, [activeSubagentCount, currentTask?.id, currentTask?.status, refreshSubagentRuns, subagentRuns.length]);
+  useSubagentRefresh(refreshSubagentRuns, currentTask?.id);
 
   const stopSubagentRun = useCallback(async (runId: string) => {
     if (!runId) return;
@@ -3309,6 +2634,9 @@ export default function ExecutionPage() {
     navigate(`/subagents?runId=${encodeURIComponent(run.runId)}&q=${encodeURIComponent(run.childTaskId)}`, { state: { from } });
   }, [location.pathname, location.search, navigate]);
 
+  const subagentDetailRequestRef = useRef(0);
+  const subagentDetailIdRef = useRef(subagentDetailRun?.runId);
+  subagentDetailIdRef.current = subagentDetailRun?.runId;
   const loadSubagentDetail = useCallback(async (run: SubagentRunRecord, options?: { showLoading?: boolean; replaceRun?: boolean }) => {
     if (options?.replaceRun !== false) {
       setSubagentDetailRun(run);
@@ -3317,7 +2645,9 @@ export default function ExecutionPage() {
       setSubagentDetailLoading(true);
     }
     try {
+      const requestId = ++subagentDetailRequestRef.current;
       const task = await accomplish.getTask(run.childTaskId, run.childAgentId);
+      if (subagentDetailIdRef.current !== run.runId || requestId !== subagentDetailRequestRef.current) return;
       setSubagentDetailTask(task);
     } catch (err) {
       console.error('Failed to load subagent transcript:', err);
@@ -3359,11 +2689,9 @@ export default function ExecutionPage() {
     if (!isActiveSubagentRun(subagentDetailRun)) {
       return;
     }
-    const timer = window.setInterval(() => {
-      void loadSubagentDetail(subagentDetailRun, { showLoading: false, replaceRun: false });
-    }, 2000);
-    return () => window.clearInterval(timer);
+
   }, [loadSubagentDetail, subagentDetailRun?.runId, subagentDetailRun?.status]);
+  useSubagentRefresh(async () => { if (subagentDetailRun) await loadSubagentDetail(subagentDetailRun, { showLoading: false, replaceRun: false }); }, subagentDetailRun?.runId);
 
   const sendSubagentFollowUp = useCallback(async () => {
     const prompt = subagentDetailPrompt.trim();
@@ -3502,7 +2830,7 @@ export default function ExecutionPage() {
       behavior: scrollBehavior,
     });
     messagesVirtuosoRef.current?.scrollTo({
-      top: Number.MAX_SAFE_INTEGER,
+      top: messageScrollerRef.current?.scrollHeight ?? 0,
       behavior: scrollBehavior,
     });
   }, [visibleTaskMessages.length]);
@@ -3589,7 +2917,7 @@ export default function ExecutionPage() {
       setShowScrollToBottom(true);
       return;
     }
-    if (currentTask?.status === 'running') {
+    if (isNearBottomRef.current) {
       isNearBottomRef.current = true;
       setShowScrollToBottom(false);
       scheduleScrollToBottom('auto');
@@ -4791,13 +4119,14 @@ export default function ExecutionPage() {
   const effectiveChatBackground = getChatBackground(agentChatBackgroundId);
   const effectiveChatBackgroundStyle = useMemo<CSSProperties>(() => {
     if (!effectiveChatBackground) return {};
+    if (focusScene) return focusSceneBackground(effectiveChatBackground.src);
     return {
       backgroundImage: `linear-gradient(135deg, hsl(var(--background) / 0.22), hsl(var(--background) / 0.38)), url("${effectiveChatBackground.src}")`,
       backgroundPosition: 'center',
       backgroundSize: 'cover',
       backgroundRepeat: 'no-repeat',
     };
-  }, [effectiveChatBackground]);
+  }, [effectiveChatBackground, focusScene]);
   const activeChatAccentColor = activeThemeProject?.chatTheme?.accentColor
     || topBarTaskAgent?.appearance?.accentColor
     || topBarTaskAgent?.avatarColor
@@ -5208,6 +4537,7 @@ export default function ExecutionPage() {
           {topBarModelBadgeLabel && (
             <span
               data-testid="execution-model-badge"
+              data-focus-secondary="model-details"
               title={topBarModelBadgeLabel}
               className="inline-flex max-w-[300px] shrink-0 items-center gap-1.5 truncate rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground"
             >
@@ -5275,6 +4605,15 @@ export default function ExecutionPage() {
     setChatAnswerAvatarsVisible(topBarTaskAgent?.appearance?.showAvatarOnAnswers !== false);
   }, [topBarTaskAgent?.appearance?.showAvatarOnAnswers, topBarTaskAgent?.id]);
 
+  const guidance = useMemo(() => ({
+    messageId: [...(currentTask?.messages || [])].reverse().find(message => message.type === 'assistant')?.id,
+    disabled: currentTask?.status !== 'completed' || isLoading,
+    onChoose: (prompt: string) => {
+      followUpBarRef.current?.appendValue(prompt);
+      followUpBarRef.current?.focus();
+    },
+  }), [currentTask?.messages, currentTask?.status, isLoading]);
+
   if (error) {
     return (
       <div className="h-full flex items-center justify-center p-6">
@@ -5303,10 +4642,27 @@ export default function ExecutionPage() {
   const subagentAgentNames = new Map(agents.map((agent) => [agent.id, agent.name || agent.id]));
 
   return (
+    <AgentCharacterProvider agentId={taskAgentId} taskId={currentTask.id} status={currentTask.status} messages={currentTask.messages} runs={subagentRuns}
+      onOpenRun={run => void loadSubagentDetail(run)}
+      onGuideParent={canInlinePrompt ? () => followUpBarRef.current?.focus() : undefined}
+      onOpenMessage={id => {
+        const index = visibleTaskMessages.findIndex(message => message.id === id);
+        if (index >= 0) messagesVirtuosoRef.current?.scrollToIndex({ index, align: 'center', behavior: 'auto' });
+      }}>
+    <AnswerActionsProvider taskId={currentTask.id} messages={currentTask.messages} canDraft={isComplete && canInlinePrompt && !isLoading}
+      incognito={currentTask.privacyMode === 'incognito'} mode="chat" onDraft={guidance.onChoose}>
+    <GuidanceContext.Provider value={guidance}>
     <div
-      className="h-full flex flex-col bg-background relative"
+      className="focus-chat-scene h-full flex flex-col bg-background relative"
       style={effectiveChatBackground ? effectiveChatBackgroundStyle : undefined}
     >
+      <div className="shrink-0 px-3 py-2 sm:px-6">
+        <TaskJourney key={currentTask.id} taskId={currentTask.id} status={currentTask.status} messages={currentTask.messages} activity={currentTask.activity} agent={taskAgent}
+          onOpenMessage={id => {
+            const index = visibleTaskMessages.findIndex(message => message.id === id);
+            if (index >= 0) messagesVirtuosoRef.current?.scrollToIndex({ index, align: 'center', behavior: 'auto' });
+          }} />
+      </div>
       {currentTask?.id && subagentRuns.length > 0 ? (
         <div
           className={cn(
@@ -5314,7 +4670,7 @@ export default function ExecutionPage() {
             subagentPanelMinimized ? 'bg-background/35 pb-1 pt-0' : 'bg-background/70 py-2'
           )}
         >
-          <div className={cn('mx-auto', subagentPanelMinimized ? 'max-w-4xl' : 'max-w-6xl')}>
+          <div className={cn('focus-content-width mx-auto', subagentPanelMinimized ? 'max-w-4xl' : 'max-w-6xl')}>
             {subagentPanelMinimized ? (
               <button
                 type="button"
@@ -5536,7 +4892,7 @@ export default function ExecutionPage() {
                 : undefined;
               return (
                 <div className={cn('px-6', index === 0 ? 'pt-6' : 'pt-2', isLastMessage ? 'pb-5' : 'pb-2')}>
-                  <div className="mx-auto max-w-5xl">
+                  <div className="focus-content-width mx-auto max-w-5xl">
                     <MessageBubble
                       message={message}
                       onSavePrompt={handleSavePrompt}
@@ -5580,7 +4936,7 @@ export default function ExecutionPage() {
                     initial={{ opacity: 0, y: 8 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={springs.gentle}
-                    className="mx-auto flex max-w-5xl flex-col items-center gap-4 py-8"
+                    className="focus-content-width mx-auto flex max-w-5xl flex-col items-center gap-4 py-8"
                   >
                     <div className="flex h-12 w-12 items-center justify-center rounded-full bg-amber-500/10">
                       <Clock className="h-6 w-6 text-amber-600" />
@@ -5636,7 +4992,6 @@ export default function ExecutionPage() {
             atBottomThreshold={240}
             increaseViewportBy={{ top: 500, bottom: 700 }}
             followOutput={(isAtBottom) => {
-              if (currentTask.status !== 'running') return false;
               if (isAutoFollowSuppressed()) return false;
               return isAtBottom || isNearBottomRef.current ? 'auto' : false;
             }}
@@ -5659,7 +5014,7 @@ export default function ExecutionPage() {
                 : undefined;
               return (
                 <div className={cn('px-6', index === 0 ? 'pt-6' : 'pt-2', isLastMessage ? 'pb-5' : 'pb-2')}>
-                  <div className="mx-auto max-w-5xl">
+                  <div className="focus-content-width mx-auto max-w-5xl">
                     <MessageBubble
                       message={message}
                       shouldStream={isLastAssistantMessage && currentTask.status === 'running'}
@@ -5703,35 +5058,25 @@ export default function ExecutionPage() {
                 </div>
               );
             }}
-            components={{
-              Footer: () => (
-                <div className="px-6 pb-6 pt-2">
-                  <AnimatePresence>
-                    {currentTask.status === 'running' && !permissionRequest ? (
-                      <motion.div
-                        initial={{ opacity: 0, y: 8 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -8 }}
-                        transition={springs.gentle}
-                      >
-                        <AgentToolStateIndicator
-                          presence={agentPresence}
-                          activitySteps={agentToolActivitySteps}
-                          agentName={topBarTaskAgentName || 'Agent'}
-                          agentRoleName={topBarTaskAgent?.roleName}
-                          agentAvatar={topBarTaskAgent?.avatar}
-                          agentAvatarColor={topBarTaskAgent?.avatarColor}
-                          agentAvatarImageDataUrl={topBarTaskAgent?.avatarImageDataUrl}
-                          className={cn('mx-auto max-w-5xl', effectiveChatBackground && 'bg-background/55')}
-                          style={effectiveThinkingIndicatorStyle}
-                          testId="execution-thinking-indicator"
-                        />
-                      </motion.div>
-                    ) : null}
-                  </AnimatePresence>
-                </div>
-              ),
+            components={executionMessageComponents}
+            totalListHeightChanged={() => {
+              if (isNearBottomRef.current && !isAutoFollowSuppressed()) scheduleScrollToBottom('auto');
             }}
+            context={{
+              showThinking: currentTask.status === 'running' && !permissionRequest,
+              indicator: {
+                presence: agentPresence,
+                activitySteps: agentToolActivitySteps,
+                agentName: topBarTaskAgentName || 'Agent',
+                agentRoleName: topBarTaskAgent?.roleName,
+                agentAvatar: topBarTaskAgent?.avatar,
+                agentAvatarColor: topBarTaskAgent?.avatarColor,
+                agentAvatarImageDataUrl: topBarTaskAgent?.avatarImageDataUrl,
+                className: cn('focus-content-width mx-auto max-w-5xl', effectiveChatBackground && 'bg-background/55'),
+                style: effectiveThinkingIndicatorStyle,
+                testId: 'execution-thinking-indicator',
+              },
+            } satisfies ExecutionMessageContext}
           />
           <PromptNavigator
             entries={promptNavigatorEntries}
@@ -6348,6 +5693,10 @@ export default function ExecutionPage() {
               </div>
             ) : null}
 
+            <AnswerActionsProvider taskId={subagentDetailTask?.id || ''} messages={subagentDetailTask?.messages || []}
+              canDraft={Boolean(subagentDetailTask) && !subagentDetailSending && !subagentDetailMutating && !subagentDetailLoading}
+              incognito={subagentDetailTask?.privacyMode === 'incognito' || subagentDetailRun?.inheritedContext?.privacyMode === 'incognito'} mode="chat"
+              onDraft={prompt => setSubagentDetailPrompt(current => current.trim() ? `${current}\n\n${prompt}` : prompt)}>
             <div className="max-h-[420px] overflow-y-auto rounded-md border border-border/60 bg-background/70 p-3">
               {subagentDetailLoading ? (
                 <div className="text-xs text-muted-foreground">Loading transcript…</div>
@@ -6391,6 +5740,8 @@ export default function ExecutionPage() {
                         onSaveAssetAsProjectNote={handleSaveAssetAsProjectNote}
                         onSaveSourceToWorkboard={openSourceLinkSaveDialog}
                         onAttachAssetToWorkboard={handleAttachAssetToWorkboard}
+                        assistantRunId={subagentDetailRun?.runId}
+                        assistantChildAgentId={subagentDetailTask?.agentId || subagentDetailRun?.childAgentId}
                         assistantAgentName={subagentDetailAgent?.name || subagentDetailTask?.agentId || subagentDetailRun?.childAgentId || 'Agent'}
                         assistantAgentRoleName={subagentDetailAgent?.roleName}
                         assistantAgentAvatar={subagentDetailAgent?.avatar}
@@ -6413,6 +5764,7 @@ export default function ExecutionPage() {
               )}
             </div>
 
+            </AnswerActionsProvider>
             <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_220px] sm:items-end">
               <div className="grid gap-2">
                 <label className="text-xs text-muted-foreground">Send follow-up to child session</label>
@@ -6657,7 +6009,7 @@ export default function ExecutionPage() {
 
       {/* Debug Panel - Only visible when debug mode is enabled */}
       {debugModeEnabled && (
-        <div className="flex-shrink-0 border-t border-border">
+        <div data-focus-secondary="debug" className="flex-shrink-0 border-t border-border">
           {/* Toggle header */}
           <div
             role="button"
@@ -6774,6 +6126,9 @@ export default function ExecutionPage() {
         </div>
       )}
     </div>
+    </GuidanceContext.Provider>
+    </AnswerActionsProvider>
+    </AgentCharacterProvider>
   );
 }
 
@@ -6790,6 +6145,8 @@ interface MessageBubbleProps {
   onSaveAnswerAsProjectNote?: (payload: { messageId: string; content: string; sourceElement?: HTMLElement | null }) => void;
   onSaveAnswerAsRtf?: (payload: { messageId: string; content: string; sourceElement?: HTMLElement | null }) => void;
   assistantAgentName?: string;
+  assistantRunId?: string;
+  assistantChildAgentId?: string;
   assistantAgentRoleName?: string;
   assistantAgentAvatar?: string;
   assistantAgentAvatarColor?: string;
@@ -6849,7 +6206,7 @@ function areSavedNoteAssetsEqual(a?: SavedNoteAsset[], b?: SavedNoteAsset[]): bo
 }
 
 // Memoized MessageBubble to prevent unnecessary re-renders and markdown re-parsing
-const MessageBubble = memo(function MessageBubble({ message, shouldStream = false, isLastMessage = false, isRunning = false, showContinueButton = false, continueLabel, onContinue, isLoading = false, onSavePrompt, onSaveAnswerAsProjectNote, onSaveAnswerAsRtf, assistantAgentName = 'Agent', assistantAgentRoleName, assistantAgentAvatar, assistantAgentAvatarColor, assistantAgentAvatarImageDataUrl, assistantAvatarFrame = 'none', assistantAccentColor, assistantAnswerStyle = 'balanced', relayedSubagentAgentName, relayedSubagentAgentRoleName, relayedSubagentAgentAvatar, relayedSubagentAgentAvatarColor, relayedSubagentAgentAvatarImageDataUrl, relayedSubagentAvatarFrame = 'none', relayedSubagentLabel, assistantReactions = [], savedNoteAssets = [], showAssistantAvatar = true, onToggleAssistantAvatar, onCreatePostcard, decisionPinned = false, onToggleDecisionPin, onSaveAssetAsProjectNote, onSaveSourceToWorkboard, onAttachAssetToWorkboard, debugMode = false }: MessageBubbleProps) {
+const MessageBubble = memo(function MessageBubble({ message, shouldStream = false, isLastMessage = false, isRunning = false, showContinueButton = false, continueLabel, onContinue, isLoading = false, onSavePrompt, onSaveAnswerAsProjectNote, onSaveAnswerAsRtf, assistantAgentName = 'Agent', assistantRunId, assistantChildAgentId, assistantAgentRoleName, assistantAgentAvatar, assistantAgentAvatarColor, assistantAgentAvatarImageDataUrl, assistantAvatarFrame = 'none', assistantAccentColor, assistantAnswerStyle = 'balanced', relayedSubagentAgentName, relayedSubagentAgentRoleName, relayedSubagentAgentAvatar, relayedSubagentAgentAvatarColor, relayedSubagentAgentAvatarImageDataUrl, relayedSubagentAvatarFrame = 'none', relayedSubagentLabel, assistantReactions = [], savedNoteAssets = [], showAssistantAvatar = true, onToggleAssistantAvatar, onCreatePostcard, decisionPinned = false, onToggleDecisionPin, onSaveAssetAsProjectNote, onSaveSourceToWorkboard, onAttachAssetToWorkboard, debugMode = false }: MessageBubbleProps) {
   const [streamComplete, setStreamComplete] = useState(!shouldStream);
   const [saved, setSaved] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -7251,6 +6608,7 @@ const MessageBubble = memo(function MessageBubble({ message, shouldStream = fals
         </span>
       );
     },
+    pre: isAssistant ? InteractiveAnswerPre : undefined,
     code: ({ children, className }) => {
       const rawCode = textFromMarkdownChildren(children).trim();
       if (!className && isDocumentHref(rawCode)) {
@@ -7281,7 +6639,7 @@ const MessageBubble = memo(function MessageBubble({ message, shouldStream = fals
 
       return <code className={className}>{children}</code>;
     },
-  }), [openDocumentLink, openImagePreview]);
+  }), [openDocumentLink, openImagePreview, isAssistant]);
 
   const markdownComponents = useMemo<Components>(() => createMarkdownComponents(), [createMarkdownComponents]);
 
@@ -7596,13 +6954,13 @@ const MessageBubble = memo(function MessageBubble({ message, shouldStream = fals
         <TooltipProvider delayDuration={200}>
           <Tooltip>
             <TooltipTrigger asChild>
-              <div
+              <AgentCharacterButton target={{ runId: assistantRunId, childAgentId: assistantChildAgentId }}
                 className={cn('flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden border border-border/60 bg-muted/60', assistantFrameClass)}
                 style={{
                   backgroundColor: assistantAgentAvatarColor ? `${assistantAgentAvatarColor}15` : undefined,
                   boxShadow: assistantAvatarFrame === 'badge' && assistantAccentColor ? `0 0 0 2px ${assistantAccentColor}55` : undefined,
                 }}
-                aria-label={`${assistantAgentName}, ${roleLabel}`}
+                aria-label={`Open agent card for ${assistantAgentName}`}
               >
                 <AgentAvatarIcon
                   avatar={assistantAgentAvatar}
@@ -7610,7 +6968,7 @@ const MessageBubble = memo(function MessageBubble({ message, shouldStream = fals
                   imageDataUrl={assistantAgentAvatarImageDataUrl}
                   className={avatarIsPicture ? 'h-full w-full' : 'h-7 w-7'}
                 />
-              </div>
+              </AgentCharacterButton>
             </TooltipTrigger>
             <TooltipContent side="right" align="start" sideOffset={10} className="w-64 p-3">
               <div className="flex items-center gap-3">
@@ -7638,6 +6996,7 @@ const MessageBubble = memo(function MessageBubble({ message, shouldStream = fals
   };
 
   const renderAssistantFooter = () => (
+    <>
     <div className="mt-1.5 flex items-center justify-between gap-2">
       <div className="flex min-w-0 items-center gap-1">
         {assistantReactions.length > 0 ? (
@@ -7738,6 +7097,8 @@ const MessageBubble = memo(function MessageBubble({ message, shouldStream = fals
         {formatMessageDateTime(message.timestamp)}
       </p>
     </div>
+    <AnswerActions messageId={message.id} content={assistantAnswerContent} />
+    </>
   );
 
   const renderContinueButton = () => (
@@ -7857,13 +7218,12 @@ const MessageBubble = memo(function MessageBubble({ message, shouldStream = fals
           Relayed child completion
         </div>
         <div className="flex items-center gap-2 rounded-xl border border-emerald-500/20 bg-background/75 px-2.5 py-2 text-card-foreground">
-          <div
+          <AgentCharacterButton target={{ ...relayedSubagentMeta!, messageId: message.id }} aria-label={`Open agent card for ${subagentName}`}
             className={cn(
               'flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden border border-border/70 bg-muted/70',
               relayedSubagentFrameClass
             )}
             style={{ backgroundColor: relayedSubagentAgentAvatarColor ? `${relayedSubagentAgentAvatarColor}18` : undefined }}
-            aria-hidden="true"
           >
             <AgentAvatarIcon
               avatar={relayedSubagentAgentAvatar}
@@ -7871,7 +7231,7 @@ const MessageBubble = memo(function MessageBubble({ message, shouldStream = fals
               imageDataUrl={relayedSubagentAgentAvatarImageDataUrl}
               className={avatarIsPicture ? 'h-full w-full' : 'h-5 w-5'}
             />
-          </div>
+          </AgentCharacterButton>
           <div className="min-w-0">
             <div className="truncate text-sm font-semibold text-foreground">{subagentName}</div>
             <div className="truncate text-xs text-muted-foreground">{subagentDetail}</div>
@@ -7956,7 +7316,7 @@ const MessageBubble = memo(function MessageBubble({ message, shouldStream = fals
   };
 
   return (
-    <>
+    <AnswerScope.Provider value={message.id}><AnswerHighlight messageId={message.id}>
       <motion.div
         initial={false}
         className={cn('flex', isUser ? 'justify-end' : 'justify-start')}
@@ -8001,7 +7361,7 @@ const MessageBubble = memo(function MessageBubble({ message, shouldStream = fals
                   <pre
                     ref={(el) => { expandableMeasureRef.current = el; }}
                     className="text-xs text-foreground/90 whitespace-pre-wrap break-words bg-background/70 rounded-md p-2"
-                    style={!expanded && canExpand ? { maxHeight: `${collapsedMaxHeight}px`, overflow: 'hidden' } : undefined}
+                    style={!expanded ? { maxHeight: `${collapsedMaxHeight}px`, overflow: 'hidden' } : undefined}
                   >
                     {toolContent}
                   </pre>
@@ -8326,7 +7686,7 @@ const MessageBubble = memo(function MessageBubble({ message, shouldStream = fals
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </>
+    </AnswerHighlight></AnswerScope.Provider>
   );
 }, (prev, next) => (
   prev.message.id === next.message.id
@@ -8343,6 +7703,8 @@ const MessageBubble = memo(function MessageBubble({ message, shouldStream = fals
   && prev.debugMode === next.debugMode
   && prev.onSaveAnswerAsProjectNote === next.onSaveAnswerAsProjectNote
   && prev.onSaveAnswerAsRtf === next.onSaveAnswerAsRtf
+  && prev.assistantRunId === next.assistantRunId
+  && prev.assistantChildAgentId === next.assistantChildAgentId
   && prev.assistantAgentName === next.assistantAgentName
   && prev.assistantAgentRoleName === next.assistantAgentRoleName
   && prev.assistantAgentAvatar === next.assistantAgentAvatar

@@ -200,6 +200,7 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
   private currentTaskId: string | null = null;
   private currentTaskStartedAtMs: number | null = null;
   private currentConfigPath: string | null = null;
+  private currentConfig: TaskConfig | null = null;
   private messages: TaskMessage[] = [];
   private rawOutputBuffer = '';
   private hasParsedMessages = false;
@@ -248,6 +249,7 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
 
     const taskId = config.taskId || this.generateTaskId();
     this.currentTaskId = taskId;
+    this.currentConfig = { ...config, taskId };
     this.currentTaskStartedAtMs = Date.now();
     this.requestedSessionId = config.sessionId || null;
     this.currentSessionId = config.sessionId || null;
@@ -1364,6 +1366,7 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
 
   private handleProcessExit(code: number | null): void {
     this.clearInterruptForceKillTimer();
+    let recoveryConfig: TaskConfig | null = null;
 
     if (!this.hasParsedMessages && this.rawOutputBuffer.trim()) {
       const cleaned = this.buildFallbackAssistantText(this.rawOutputBuffer);
@@ -1407,11 +1410,20 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
         if (!this.sawAssistantText) {
           this.recoverFinalAssistantMessageFromExport();
         }
-        // Normal exit without result message
-        this.emit('complete', {
-          status: 'success',
-          sessionId: this.currentSessionId || this.requestedSessionId || undefined,
-        });
+        if (this.sawAssistantText) {
+          this.emit('complete', {
+            status: 'success',
+            sessionId: this.currentSessionId || this.requestedSessionId || undefined,
+          });
+        } else if (!this.hasParsedMessages && this.currentConfig?.sessionId && this.currentConfig.systemPromptAppend?.trim()) {
+          // Some older sessions accept the new user message but exit before an
+          // assistant turn starts. The prepared system context includes the app's
+          // saved conversation. Keep it, the prompt, attachments and workspace;
+          // remove only the broken runner session. A fresh run cannot retry again.
+          recoveryConfig = { ...this.currentConfig, sessionId: undefined };
+        } else {
+          this.emit('error', new Error('The agent exited without a reply. Please retry your prompt.'));
+        }
       } else if (code !== null) {
         // Error exit
         this.emit('error', new Error(`OpenCode CLI exited with code ${code}`));
@@ -1422,6 +1434,17 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
     this.currentTaskId = null;
     this.currentTaskStartedAtMs = null;
     this.requestedSessionId = null;
+    this.currentConfig = null;
+
+    if (recoveryConfig) {
+      this.emit('progress', {
+        stage: 'setup',
+        message: 'The saved agent session returned no reply. Reconnecting with saved conversation context...',
+      });
+      void this.startTask(recoveryConfig).catch((error: unknown) => {
+        this.emit('error', error instanceof Error ? error : new Error(String(error)));
+      });
+    }
   }
 
   private scheduleComplete(result: TaskResult): void {

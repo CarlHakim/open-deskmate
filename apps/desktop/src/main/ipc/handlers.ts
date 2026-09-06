@@ -1,530 +1,465 @@
-import { ipcMain, BrowserWindow, shell, app, dialog } from 'electron';
+import { consumeSubagentResults } from '../services/subagents/subagent-runtime';
+import type {
+AgentReactionMode, AppConnectorExtensionConfigInput,
+AppConnectorExtensionId,
+AppConnectorExtensionState, AuditEventCategory, AuditExportRequest,
+AuditGetRequest,
+AuditListRequest, AutomationDraftRequest, BuildBuildRequest, BuildProjectPresetInput,
+BuildQualityCheckKind,
+BuildQualityCheckRunRequest,
+BuildStartRequest, BuildTaskHistoryListInput,
+BuildTaskSessionArchiveInput,
+BuildTaskSessionCreateInput,
+BuildTaskSessionDeleteInput,
+BuildTaskSessionPinInput,
+BuildTaskSessionRenameInput,
+BuildTaskSessionUpdateInput, BuildWorkspaceBaselineDecision, ChatPostcardDraftGenerateRequest, ChatToolCompatibilityCheckResult, ChecklistListPromptGenerateRequest, ContextWindowEstimateResponse, DiscordConnectorConfig, ExecutionProfileCreateInput,
+ExecutionProfileUpdateInput, FolderConfig, FolderUpdateConfig, GatewayConfig,
+GatewayConnectorExtensionConfigInput,
+GatewayConnectorExtensionId,
+GatewayConnectorExtensionState, LocalSearchSource,
+MemoryChangeStatus,
+MemoryKind, OllamaConfig, PermissionPolicySettings, PermissionResponse, ScheduleConfig, SearchIndexRebuildRequest,
+SearchItemGetRequest,
+SearchQueryRequest, SelectedModel, TaskConfig, TelegramConnectorConfig, ToolsetId, UsageAssigneeInput,
+UsageAssigneeUpdate, UsageBudgetSettings, UsagePeriod, UsagePricingAutofillRequest, UsagePricingSettings, UsageProjectBudgetWindowInput,
+UsageProjectBudgetWindowUpdate, UsageProjectInput, UsageProjectKanbanColumnInput,
+UsageProjectKanbanColumnUpdate, UsageProjectUpdate,
+UsageProjectWorkItemInput,
+UsageProjectWorkItemUpdate, VoiceWakeConfig, WorkItemNotePromptGenerateRequest
+} from '@accomplish/shared';
+import {
+GATEWAY_CONNECTOR_EXTENSION_BINDING_PREFIX
+} from '@accomplish/shared';
 import { randomBytes, randomUUID } from 'crypto';
-import fs from 'fs';
-import path from 'path';
-import os from 'os';
 import type { IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, dialog, shell } from 'electron';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { URL } from 'url';
-import {
-  isOpenCodeCliInstalled,
-  getOpenCodeCliVersion,
-} from '../opencode/adapter';
-import { getOpenCodePermissionPreview } from '../opencode/config-generator';
-import {
-  cleanupDesktopEphemeralSessionFilesOnQuit,
-  ensureDesktopRuntimeServices,
-  dropAndCleanupDesktopBatcher,
-  markDesktopTaskIgnored,
-  maybeStartDesktopMockTask,
-  resumeDesktopSessionRequest,
-  resolveDesktopTaskWorkspaceRoot,
-  startDesktopTaskRequest,
-} from '../runtime/desktop-agent-engine';
-import {
-  cancelAgentEngineTask,
-  sendAgentEngineTaskResponse,
-  hasActiveAgentEngineTask,
-  stopAgentEngineTask,
-} from '../runtime/agent-engine';
-import { disposeTaskManager } from '../opencode/task-manager';
-import {
-  getTasks,
-  getTaskList,
-  getTask,
-  saveTask,
-  addTaskActivity,
-  updateTaskStatus,
-  updateTaskSessionFilePath,
-  deleteTask,
-  clearHistory,
-} from '../store/taskHistory';
-import {
-  createSavedPromptCategory,
-  deleteSavedPromptCategory,
-  listSavedPrompts,
-  listSavedPromptCategories,
-  renameSavedPromptCategory,
-  upsertSavedPrompt,
-  deleteSavedPrompt,
-} from '../store/savedPrompts';
-import {
-  getFoldersForAgent,
-  getFolder,
-  createFolder,
-  updateFolder,
-  deleteFolder as deleteFolderFromStore,
-  getTaskFolderAssignments,
-  setTaskFolder,
-} from '../store/folderStore';
-import {
-  assignUsageProjectToBuildSessionTasks,
-  assignUsageProjectToBuildPresetSessions,
-  assignUsageProjectToFolderTasks,
-  assignUsageProjectToTasks,
-} from '../services/usage-project-assignments';
-import type { FolderConfig, FolderUpdateConfig } from '@accomplish/shared';
-import {
-  applyStagedMemoryFileWrite,
-  deleteMemoryFile,
-  getMemoryState,
-  listMemoryChangeHistory,
-  readMemoryFile,
-  rollbackMemoryFileChange,
-  saveMemoryFile,
-  searchMemory,
-} from '../services/memory';
-import { planNextJobs } from '../services/proactive-planner';
-import { generateUserSkillFromTask, runPostTaskSkillAutomation } from '../services/skill-workflow-generator';
-import { listUserSkillCuratorHistory, runUserSkillCurator } from '../services/skill-curator';
-import { buildDevProcessManager } from '../services/build-mode/dev-process-manager';
-import {
-  captureWorkspaceBaseline,
-  createWorkspaceDirectory,
-  createWorkspaceFile,
-  deleteWorkspaceEntry,
-  exportWorkspaceZipToFile,
-  listWorkspaceTree,
-  pasteWorkspaceEntry,
-  readWorkspaceDiffFileContent,
-  readWorkspaceFile,
-  readWorkspaceFingerprint,
-  readWorkspaceGitDiff,
-  renameWorkspaceEntry,
-  resolveWorkspaceBaseline,
-  resolveAgentWorkspaceRoot,
-  resolvePathInWorkspace,
-  writeWorkspaceFile,
-} from '../services/build-mode/file-service';
-import { buildTerminalManager } from '../services/build-mode/terminal-manager';
-import { getLatestBuildQualityCheckRun, runBuildQualityChecks } from '../services/build-mode/quality-checks';
-import {
-  addBuildGitRemote,
-  applyBuildGitStash,
-  checkoutBuildGitRemoteBranch,
-  commitBuildGitChanges,
-  createBuildGitBranch,
-  createBuildGitPullRequest,
-  createBuildGitRemoteRepository,
-  createBuildGitStash,
-  discardBuildGitChanges,
-  dropBuildGitStash,
-  fetchBuildGitRemote,
-  finishBuildGitMerge,
-  initBuildGitRepository,
-  listBuildGitBackupBranches,
-  listBuildGitReflog,
-  listBuildGitStashes,
-  pullBuildGitBranch,
-  pushBuildGitBranch,
-  readBuildGitConflicts,
-  readBuildGitSummary,
-  readBuildGitMismatchSummary,
-  resolveBuildGitMismatch,
-  restoreBuildGitBackupBranch,
-  stageBuildGitFiles,
-  switchBuildGitBranch,
-  updateBuildGitRemote,
-} from '../services/build-mode/git-service';
-import {
-  deleteBuildModePreset,
-  listBuildModePresets,
-  setActiveBuildModePreset,
-  upsertBuildModePreset,
-} from '../store/buildModePresets';
-import {
-  archiveExecutionProfile,
-  assertExecutionProfileRunnable,
-  checkExecutionProfileHealth,
-  createExecutionProfile,
-  listExecutionProfiles,
-  updateExecutionProfile,
-} from '../store/executionProfiles';
-import {
-  archiveBuildTaskSession,
-  createBuildTaskSession,
-  deleteBuildTaskSession,
-  getBuildTaskSession,
-  listBuildTaskSessions,
-  renameBuildTaskSession,
-  setPinnedBuildTaskSession,
-  updateBuildTaskSession,
-} from '../store/buildTaskHistory';
-import {
-  archiveSubagentRun,
-  closeSubagentSession,
-  getActiveSubagentCount,
-  getSubagentRunForUi,
-  listSubagentRunsForParentTask,
-  listSubagentRunTreeForParentTask,
-  sendSubagentPrompt,
-  waitForSubagentRun,
-} from '../services/subagents/subagent-control';
-import {
-  getSubagentRun,
-  listSubagentRuns,
-  patchSubagentRun,
-} from '../store/subagentRegistry';
-import { preparePayloadForSend } from '../services/context/prepare-payload';
-import { getUsagePricingSettings, setUsagePricingSettings } from '../store/usagePricing';
-import { getUsageSummary } from '../services/usage-summary';
-import { listModelsUsed } from '../services/usage-models';
-import { suggestPricingFromInternet } from '../services/usage-pricing-autofill';
-import { getUsageBudgetSettings, getUsageBudgetStatus, setUsageBudgetSettings } from '../store/usageBudgets';
-import {
-  archiveUsageAssignee,
-  archiveUsageProjectWorkItem,
-  archiveUsageProject,
-  createUsageProjectKanbanColumn,
-  createUsageAssignee,
-  createUsageProject,
-  createUsageProjectBudgetWindow,
-  createUsageProjectWorkItem,
-  deleteUsageProjectKanbanColumn,
-  deleteUsageProjectBudgetWindow,
-  getUsageProject,
-  listUsageAssignees,
-  listUsageProjectKanbanColumns,
-  listUsageProjectBudgetWindows,
-  listUsageProjects,
-  listUsageProjectWorkItems,
-  updateUsageProjectKanbanColumn,
-  updateUsageAssignee,
-  updateUsageProject,
-  updateUsageProjectBudgetWindow,
-  updateUsageProjectWorkItem,
-} from '../store/usageProjects';
-import { getUsageProjectAnalytics, getUsageProjectBudgetStatus, getUsageProjectSummary } from '../services/usage-projects';
-import { draftAutomationFromText } from '../services/automation-draft';
+import { setRunInBackground as setBackgroundRunInBackground } from '../background';
 import { clearHookDiagnostics, listHookDiagnostics } from '../hooks/hook-diagnostics';
 import { readRuntimeHooksRegistryRaw, saveRuntimeHooksRegistryRaw } from '../hooks/hook-registry';
 import {
-  clearPermissionPolicyAuditEntries,
-  getPermissionPolicySettings,
-  listPermissionPolicyAuditEntries,
-  setPermissionPolicySettings,
+getOpenCodeCliVersion,
+isOpenCodeCliInstalled,
+} from '../opencode/adapter';
+import { getOpenCodePermissionPreview } from '../opencode/config-generator';
+import {
+applyAllowAllForFileRequest,
+isFilePermissionRequest,
+listPendingPermissionRequests,
+resolvePermission,
+} from '../permission-api';
+import {
+clearPermissionPolicyAuditEntries,
+getPermissionPolicySettings,
+listPermissionPolicyAuditEntries,
+setPermissionPolicySettings,
 } from '../permissions/policy-store';
 import {
-  clearPluginDiagnosticsHistory,
-  getPluginDiagnosticsState,
-  recordPluginRegistrationDiagnostics,
+clearPluginDiagnosticsHistory,
+getPluginDiagnosticsState,
+recordPluginRegistrationDiagnostics,
 } from '../plugins/plugin-diagnostics-store';
 import {
-  getManagedPluginsRootPath,
-  installManagedPluginFromDirectory,
-  listPluginRegistry,
-  setPluginEnabled,
-  uninstallManagedPlugin,
+getManagedPluginsRootPath,
+installManagedPluginFromDirectory,
+listPluginRegistry,
+setPluginEnabled,
+uninstallManagedPlugin,
 } from '../plugins/plugin-registry';
 import { listRegisteredPluginCommands } from '../plugins/plugin-runtime';
 import {
-  getLocalSearchItem,
-  queryLocalSearch,
-  rebuildLocalSearchIndex,
-} from '../services/local-search';
+cancelAgentEngineTask,
+hasActiveAgentEngineTask,
+sendAgentEngineTaskResponse,
+stopAgentEngineTask,
+} from '../runtime/agent-engine';
 import {
-  exportAuditEvents,
-  getAuditEvent,
-  listAuditEvents,
-  recordSystemAuditEvent,
-} from '../services/audit';
-import {
-  storeApiKey,
-  getApiKey,
-  deleteApiKey,
-  hasAnyApiKey,
-  listStoredCredentials,
-  storeDiscordToken,
-  deleteDiscordToken,
-  storeTelegramToken,
-  deleteTelegramToken,
-  storeVoiceWakeAccessKey,
-  deleteVoiceWakeAccessKey,
-  getVoiceWakeAccessKey,
-  storeGatewayToken,
-  deleteGatewayToken,
-  storeGatewayPassword,
-  deleteGatewayPassword,
-  storeGatewayConnectorSecret,
-  deleteGatewayConnectorSecret,
-  hasGatewayConnectorSecret,
-  storeAppConnectorSecret,
-  storeAppConnectorOAuthClientSecret,
-  deleteAppConnectorSecret,
-  deleteAppConnectorOAuthClientSecret,
-  hasAppConnectorSecret,
-  hasAppConnectorOAuthClientSecret,
-} from '../store/secureStorage';
-import {
-  getDebugMode,
-  setDebugMode,
-  getAppSettings,
-  getOnboardingComplete,
-  setOnboardingComplete,
-  getMobileNodesEnabled,
-  getMobileNodesMaxLivePreviews,
-  getMobileNodesDisplayName,
-  getWebhookBindMode,
-  setMobileNodesEnabled,
-  setMobileNodesMaxLivePreviews,
-  setMobileNodesDisplayName,
-  setWebhookBindMode,
-  setAgentSpeedMode,
-  setRunInBackground,
-  setLaunchAtLogin,
-  getBrowserProfile,
-  setBrowserProfile,
-  getWorkspaceRoot,
-  setWorkspaceRoot,
-  setActiveAgentId,
-  getSelectedModel,
-  getUserSkillAssistantModel,
-  setSelectedModel,
-  setUserSkillAssistantModel,
-  getOllamaConfig,
-  setOllamaConfig,
-  setBuildDiffEnforcementMode,
-} from '../store/appSettings';
-import { getModelLimitOverrides, setModelContextLimitOverride } from '../store/modelLimits';
-import { setRunInBackground as setBackgroundRunInBackground } from '../background';
-import { listSkillsStatus, installSkill, uninstallSkill, installAllSkills } from '../utils/skills';
-import {
-  createUserSkill,
-  deleteUserSkill,
-  buildUserSkillDependencyStatusReport,
-  cleanupUserSkillZipSession,
-  inspectUserSkillZip,
-  installUserSkillDependency,
-  installUserSkillFromZip,
-  listUserSkills,
-  recordUserSkillPerformance,
-  readUserSkillFile,
-  rollbackUserSkill,
-  runUserSkillTests,
-  setUserSkillSharing,
-  setUserSkillLifecycle,
-  writeUserSkillFile,
-} from '../services/user-skills';
-import { askUserSkillAssistant } from '../services/user-skill-assistant';
-import { generateChatPostcardDraft, generateChecklistListPrompt, generateWorkItemNotePrompt } from '../services/checklist-list-prompt-generator';
-import { getUserSkillConfig, setUserSkillConfig } from '../store/userSkillsConfig';
-import { buildAttachmentsPrefix } from '../utils/file-attachments';
-import { getDesktopConfig } from '../config';
-import {
-  resolvePermission,
-  isFilePermissionRequest,
-  applyAllowAllForFileRequest,
-  listPendingPermissionRequests,
-} from '../permission-api';
-import type {
-  Task,
-  TaskConfig,
-  PermissionResponse,
-  TaskStatus,
-  ContextWindowEstimateResponse,
-  UsagePeriod,
-  UsagePricingSettings,
-  UsagePricingAutofillRequest,
-  UsageBudgetSettings,
-  UsageAssigneeInput,
-  UsageAssigneeUpdate,
-  UsageProjectBudgetWindowInput,
-  UsageProjectBudgetWindowUpdate,
-  UsageProjectKanbanColumnInput,
-  UsageProjectKanbanColumnUpdate,
-  UsageProjectInput,
-  UsageProjectUpdate,
-  UsageProjectWorkItemInput,
-  UsageProjectWorkItemUpdate,
-  ChecklistListPromptGenerateRequest,
-  ChatPostcardDraftGenerateRequest,
-  WorkItemNotePromptGenerateRequest,
-  SelectedModel,
-  ProviderConfig,
-  ModelConfig,
-  OllamaConfig,
-  ScheduleConfig,
-  AutomationDraftRequest,
-  ChatToolCompatibilityCheckResult,
-  DiscordConnectorConfig,
-  TelegramConnectorConfig,
-  VoiceWakeConfig,
-  GatewayConfig,
-  GatewayConnectorExtensionConfigInput,
-  GatewayConnectorExtensionId,
-  GatewayConnectorExtensionState,
-  AppConnectorExtensionConfigInput,
-  AppConnectorExtensionId,
-  AppConnectorExtensionState,
-  BuildBuildRequest,
-  BuildTaskHistoryListInput,
-  BuildTaskSessionArchiveInput,
-  BuildTaskSessionCreateInput,
-  BuildTaskSessionDeleteInput,
-  BuildTaskSessionPinInput,
-  BuildTaskSessionRenameInput,
-  BuildTaskSessionUpdateInput,
-  BuildProjectPresetInput,
-  BuildQualityCheckKind,
-  BuildQualityCheckRunRequest,
-  BuildStartRequest,
-  BuildWorkspaceBaselineDecision,
-  ExecutionProfileCreateInput,
-  ExecutionProfileUpdateInput,
-  AuditExportRequest,
-  AuditGetRequest,
-  AuditListRequest,
-  AuditEventCategory,
-  LocalSearchSource,
-  MemoryChangeStatus,
-  MemoryKind,
-  SearchIndexRebuildRequest,
-  SearchItemGetRequest,
-  SearchQueryRequest,
-  PermissionPolicySettings,
-  ToolsetId,
-  AgentReactionMode,
-} from '@accomplish/shared';
-import {
-  DEFAULT_PROVIDERS,
-  GATEWAY_CONNECTOR_EXTENSION_BINDING_PREFIX,
-} from '@accomplish/shared';
-import {
-  normalizeIpcError,
-  permissionResponseSchema,
-  resumeSessionSchema,
-  taskConfigSchema,
-  validate,
-} from './validation';
-import { isMockTaskEventsEnabled } from '../test-utils/mock-task-flow';
-import { listSchedules } from '../store/schedules';
-import { upsertSchedule, removeSchedule, toggleSchedule, runScheduleNow } from '../services/scheduler';
-import {
-  WEBHOOK_PORT,
-  getGatewayRunStatus,
-  getGatewayRuntimeStatus,
-  getWebhookLanUrls,
-  getWebhookLocalUrl,
-  listGatewayRunStatuses,
-  refreshGatewayRuntimeConfig,
-} from '../services/webhook-server';
-import { listAgents, upsertAgent, deleteAgent, setDefaultAgentId, getDefaultAgentId, getAgent } from '../store/agents';
+cleanupDesktopEphemeralSessionFilesOnQuit,
+dropAndCleanupDesktopBatcher,
+ensureDesktopRuntimeServices,
+markDesktopTaskIgnored,
+maybeStartDesktopMockTask,
+resolveDesktopTaskWorkspaceRoot,
+resumeDesktopSessionRequest,
+startDesktopTaskRequest,
+} from '../runtime/desktop-agent-engine';
 import { composeAgentSystemPromptAppend, getAgentContext, resolveActiveAgentId } from '../services/agent-context';
-import { addDiscordDmAllowlistEntry, getDiscordConfig, setDiscordConfig } from '../store/discordConfig';
-import { getDiscordStatus, getDiscordTokenSet } from '../services/discord-connector';
-import { approveDiscordPairing, listDiscordPairingRequests } from '../store/discordPairing';
-import { addTelegramDmAllowlistEntry, getTelegramConfig, setTelegramConfig } from '../store/telegramConfig';
-import { getTelegramStatus, getTelegramTokenSet } from '../services/telegram-connector';
-import { approveTelegramPairing, listTelegramPairingRequests } from '../store/telegramPairing';
-import { getGatewayConfig, setGatewayConfig } from '../store/gatewayConfig';
 import {
-  getGatewayConnectorExtensionConfig,
-  getGatewayConnectorRuntimeKey,
-  isGatewayConnectorExtensionId,
-  createGatewayConnectorExtensionInstance,
-  deleteGatewayConnectorExtensionInstance,
-  listGatewayConnectorExtensionConfigs,
-  listGatewayConnectorExtensionDefinitions,
-  setGatewayConnectorExtensionConfig,
-} from '../store/gatewayConnectorExtensions';
-import {
-  createAppConnectorExtensionInstance,
-  deleteAppConnectorExtensionInstance,
-  getAppConnectorRuntimeKey,
-  isAppConnectorExtensionId,
-  listAppConnectorExtensionConfigs,
-  listAppConnectorExtensionDefinitions,
-  setAppConnectorExtensionConfig,
-} from '../store/appConnectorExtensions';
-import {
-  clearGatewayConnectorDiscovery,
-  listGatewayConnectorDiscovery,
-} from '../store/gatewayConnectorDiscovery';
-import {
-  listGatewayBindings,
-  removeGatewayBinding,
-  setGatewayBindings,
-  upsertGatewayBinding,
-  type GatewayRouteBinding,
-} from '../store/gatewayBindings';
-import {
-  deleteGatewaySession,
-  getGatewaySession,
-  listGatewaySessions,
-} from '../store/gatewaySessions';
-import { getVoiceWakeConfig, setVoiceWakeConfig } from '../store/voiceWake';
-import {
-  discoverGatewayConnectorRuntimeTargets,
-  listGatewayConnectorRuntimeStatuses,
-  restartGatewayConnectorRuntime,
-  testGatewayConnectorRuntime,
-} from '../services/gateway-connector-runtimes';
-import {
-  getAlwaysOnStatusSnapshot,
-  restartAgentAlwaysOnRuntime,
-  restartAlwaysOnRuntimeManager,
-  setAgentAlwaysOnEnabled,
-  startAlwaysOnRuntimeManager,
-  stopAlwaysOnRuntimeManager,
+getAlwaysOnStatusSnapshot,
+restartAgentAlwaysOnRuntime,
+restartAlwaysOnRuntimeManager,
+setAgentAlwaysOnEnabled,
+startAlwaysOnRuntimeManager,
+stopAlwaysOnRuntimeManager,
 } from '../services/always-on-status';
-import { listConnectorDeliveries } from '../store/connectorDeliveries';
 import {
-  executeAppConnectorAction,
-  listAppConnectorRuntimeStatuses,
-  testAppConnectorRuntime,
-} from '../services/app-connector-runtimes';
-import {
-  disconnectAppConnectorOAuth,
-  getAppConnectorOAuthFlowStatus,
-  handleAppConnectorOAuthCallback,
-  startAppConnectorOAuthFlow,
+disconnectAppConnectorOAuth,
+getAppConnectorOAuthFlowStatus,
+handleAppConnectorOAuthCallback,
+startAppConnectorOAuthFlow,
 } from '../services/app-connector-oauth';
 import {
-  deleteBuiltinProviderModel,
-  listCustomModelProviders,
-  listBuiltinProviderModelOverrides,
-  upsertCustomModelProvider,
-  upsertBuiltinProviderModel,
-  deleteCustomModelProvider,
-} from '../store/modelProviders';
-import { listModelProviders } from '../services/model-providers';
+executeAppConnectorAction,
+listAppConnectorRuntimeStatuses,
+testAppConnectorRuntime,
+} from '../services/app-connector-runtimes';
+import {
+exportAuditEvents,
+getAuditEvent,
+listAuditEvents,
+recordSystemAuditEvent,
+} from '../services/audit';
+import { draftAutomationFromText } from '../services/automation-draft';
+import { buildDevProcessManager } from '../services/build-mode/dev-process-manager';
+import {
+captureWorkspaceBaseline,
+createWorkspaceDirectory,
+createWorkspaceFile,
+deleteWorkspaceEntry,
+exportWorkspaceZipToFile,
+listWorkspaceTree,
+pasteWorkspaceEntry,
+readWorkspaceDiffFileContent,
+readWorkspaceFile,
+readWorkspaceFingerprint,
+readWorkspaceGitDiff,
+renameWorkspaceEntry,
+resolveAgentWorkspaceRoot,
+resolvePathInWorkspace,
+resolveWorkspaceBaseline,
+writeWorkspaceFile,
+} from '../services/build-mode/file-service';
+import {
+addBuildGitRemote,
+applyBuildGitStash,
+checkoutBuildGitRemoteBranch,
+commitBuildGitChanges,
+createBuildGitBranch,
+createBuildGitPullRequest,
+createBuildGitRemoteRepository,
+createBuildGitStash,
+discardBuildGitChanges,
+dropBuildGitStash,
+fetchBuildGitRemote,
+finishBuildGitMerge,
+initBuildGitRepository,
+listBuildGitBackupBranches,
+listBuildGitReflog,
+listBuildGitStashes,
+pullBuildGitBranch,
+pushBuildGitBranch,
+readBuildGitConflicts,
+readBuildGitMismatchSummary,
+readBuildGitSummary,
+resolveBuildGitMismatch,
+restoreBuildGitBackupBranch,
+stageBuildGitFiles,
+switchBuildGitBranch,
+updateBuildGitRemote,
+} from '../services/build-mode/git-service';
+import { getLatestBuildQualityCheckRun, runBuildQualityChecks } from '../services/build-mode/quality-checks';
+import { buildTerminalManager } from '../services/build-mode/terminal-manager';
 import { proveChatDeferredToolCompatibility } from '../services/chat-deferred-tool-compatibility';
+import { generateChatPostcardDraft, generateChecklistListPrompt, generateWorkItemNotePrompt } from '../services/checklist-list-prompt-generator';
+import { preparePayloadForSend } from '../services/context/prepare-payload';
+import { getDiscordStatus, getDiscordTokenSet } from '../services/discord-connector';
 import {
-  describeTool,
-  describeToolset,
-  enableTaskScopedTools,
-  listAvailableTools,
-  listAvailableToolsets,
-  listEnabledTaskTools,
-  sanitizeToolsetIds,
-  searchToolsetsAndTools,
-  setToolDiscoveryAuditHook,
-} from '../services/toolsets';
+discoverGatewayConnectorRuntimeTargets,
+listGatewayConnectorRuntimeStatuses,
+restartGatewayConnectorRuntime,
+testGatewayConnectorRuntime,
+} from '../services/gateway-connector-runtimes';
 import {
-  approveNodePairing,
-  listNodePairing,
-  rejectNodePairing,
-  removePairedNode,
-  updatePairedNodeDisplayName,
-  updatePairedNodeBadge,
-  updatePairedNodeAiAccess,
-} from '../store/nodePairing';
-import { invokeNodeCommand } from '../services/node-commands';
-import { getLatestNodeStreamChunk } from '../services/node-streams';
-import { getNodeCameraActive } from '../services/node-runtime';
-import { restartVoiceWakeService } from '../services/voice-wake';
-import { transcribeWithWhisper } from '../services/whisper';
-import {
-  getHelpAssetDataUrl,
-  listHelpDocs,
-  notifyHelpDocsChanged,
-  openHelpAssetExternally,
-  openHelpDocInEditor,
-  openHelpDocsFolder,
-  readHelpDoc,
-  searchHelpDocs,
+getHelpAssetDataUrl,
+listHelpDocs,
+notifyHelpDocsChanged,
+openHelpAssetExternally,
+openHelpDocInEditor,
+openHelpDocsFolder,
+readHelpDoc,
+searchHelpDocs,
 } from '../services/help-docs';
-
-const MAX_TEXT_LENGTH = 8000;
+import {
+getLocalSearchItem,
+queryLocalSearch,
+rebuildLocalSearchIndex,
+} from '../services/local-search';
+import {
+applyStagedMemoryFileWrite,
+deleteMemoryFile,
+getMemoryState,
+listMemoryChangeHistory,
+readMemoryFile,
+rollbackMemoryFileChange,
+saveMemoryFile,
+searchMemory,
+} from '../services/memory';
+import { invokeNodeCommand } from '../services/node-commands';
+import { getNodeCameraActive } from '../services/node-runtime';
+import { getLatestNodeStreamChunk } from '../services/node-streams';
+import { planNextJobs } from '../services/proactive-planner';
+import { removeSchedule, runScheduleNow, toggleSchedule, upsertSchedule } from '../services/scheduler';
+import { listUserSkillCuratorHistory, runUserSkillCurator } from '../services/skill-curator';
+import { generateUserSkillFromTask, runPostTaskSkillAutomation } from '../services/skill-workflow-generator';
+import {
+archiveSubagentRun,
+closeSubagentSession,
+getActiveSubagentCount,
+getSubagentRunForUi,
+listSubagentRunsForParentTask,
+listSubagentRunTreeForParentTask,
+sendSubagentPrompt,
+waitForSubagentRun,
+} from '../services/subagents/subagent-control';
+import { getTelegramStatus, getTelegramTokenSet } from '../services/telegram-connector';
+import {
+sanitizeToolsetIds,
+setToolDiscoveryAuditHook
+} from '../services/toolsets';
+import { listModelsUsed } from '../services/usage-models';
+import { suggestPricingFromInternet } from '../services/usage-pricing-autofill';
+import {
+assignUsageProjectToBuildPresetSessions,
+assignUsageProjectToBuildSessionTasks,
+assignUsageProjectToFolderTasks,
+assignUsageProjectToTasks,
+} from '../services/usage-project-assignments';
+import { getUsageProjectAnalytics, getUsageProjectBudgetStatus, getUsageProjectSummary } from '../services/usage-projects';
+import { getUsageSummary } from '../services/usage-summary';
+import { askUserSkillAssistant } from '../services/user-skill-assistant';
+import {
+buildUserSkillDependencyStatusReport,
+cleanupUserSkillZipSession,
+createUserSkill,
+deleteUserSkill,
+inspectUserSkillZip,
+installUserSkillDependency,
+installUserSkillFromZip,
+listUserSkills,
+readUserSkillFile,
+recordUserSkillPerformance,
+rollbackUserSkill,
+runUserSkillTests,
+setUserSkillLifecycle,
+setUserSkillSharing,
+writeUserSkillFile,
+} from '../services/user-skills';
+import { restartVoiceWakeService } from '../services/voice-wake';
+import {
+getGatewayRunStatus,
+getGatewayRuntimeStatus,
+getWebhookLanUrls,
+getWebhookLocalUrl,
+listGatewayRunStatuses,
+refreshGatewayRuntimeConfig,
+WEBHOOK_PORT,
+} from '../services/webhook-server';
+import { transcribeWithWhisper } from '../services/whisper';
+import { deleteAgent, getAgent, getDefaultAgentId, listAgents, setDefaultAgentId, upsertAgent } from '../store/agents';
+import {
+createAppConnectorExtensionInstance,
+deleteAppConnectorExtensionInstance,
+getAppConnectorRuntimeKey,
+isAppConnectorExtensionId,
+listAppConnectorExtensionConfigs,
+listAppConnectorExtensionDefinitions,
+setAppConnectorExtensionConfig,
+} from '../store/appConnectorExtensions';
+import {
+getAppSettings,
+getBrowserProfile,
+getDebugMode,
+getMobileNodesEnabled,
+getOllamaConfig,
+getOnboardingComplete,
+getSelectedModel,
+getUserSkillAssistantModel,
+getWebhookBindMode,
+getWorkspaceRoot,
+setActiveAgentId,
+setAgentSpeedMode,
+setBrowserProfile,
+setBuildDiffEnforcementMode,
+setDebugMode,
+setLaunchAtLogin,
+setMobileNodesDisplayName,
+setMobileNodesEnabled,
+setMobileNodesMaxLivePreviews,
+setOllamaConfig,
+setOnboardingComplete,
+setRunInBackground,
+setSelectedModel,
+setUserSkillAssistantModel,
+setWebhookBindMode,
+setWorkspaceRoot
+} from '../store/appSettings';
+import {
+deleteBuildModePreset,
+listBuildModePresets,
+setActiveBuildModePreset,
+upsertBuildModePreset,
+} from '../store/buildModePresets';
+import {
+archiveBuildTaskSession,
+createBuildTaskSession,
+deleteBuildTaskSession,
+getBuildTaskSession,
+listBuildTaskSessions,
+renameBuildTaskSession,
+setPinnedBuildTaskSession,
+updateBuildTaskSession,
+} from '../store/buildTaskHistory';
+import { listConnectorDeliveries } from '../store/connectorDeliveries';
+import { addDiscordDmAllowlistEntry, getDiscordConfig, setDiscordConfig } from '../store/discordConfig';
+import { approveDiscordPairing, listDiscordPairingRequests } from '../store/discordPairing';
+import {
+archiveExecutionProfile,
+assertExecutionProfileRunnable,
+checkExecutionProfileHealth,
+createExecutionProfile,
+listExecutionProfiles,
+updateExecutionProfile,
+} from '../store/executionProfiles';
+import {
+createFolder,
+deleteFolder as deleteFolderFromStore,
+getFolder,
+getFoldersForAgent,
+getTaskFolderAssignments,
+setTaskFolder,
+updateFolder,
+} from '../store/folderStore';
+import {
+listGatewayBindings,
+removeGatewayBinding,
+setGatewayBindings,
+upsertGatewayBinding,
+type GatewayRouteBinding,
+} from '../store/gatewayBindings';
+import { getGatewayConfig, setGatewayConfig } from '../store/gatewayConfig';
+import {
+clearGatewayConnectorDiscovery,
+listGatewayConnectorDiscovery,
+} from '../store/gatewayConnectorDiscovery';
+import {
+createGatewayConnectorExtensionInstance,
+deleteGatewayConnectorExtensionInstance,
+getGatewayConnectorExtensionConfig,
+getGatewayConnectorRuntimeKey,
+isGatewayConnectorExtensionId,
+listGatewayConnectorExtensionConfigs,
+listGatewayConnectorExtensionDefinitions,
+setGatewayConnectorExtensionConfig,
+} from '../store/gatewayConnectorExtensions';
+import {
+deleteGatewaySession,
+getGatewaySession,
+listGatewaySessions,
+} from '../store/gatewaySessions';
+import { getModelLimitOverrides, setModelContextLimitOverride } from '../store/modelLimits';
+import {
+approveNodePairing,
+listNodePairing,
+rejectNodePairing,
+removePairedNode,
+updatePairedNodeAiAccess,
+updatePairedNodeBadge
+} from '../store/nodePairing';
+import {
+createSavedPromptCategory,
+deleteSavedPrompt,
+deleteSavedPromptCategory,
+listSavedPromptCategories,
+listSavedPrompts,
+renameSavedPromptCategory,
+upsertSavedPrompt,
+} from '../store/savedPrompts';
+import { listSchedules } from '../store/schedules';
+import {
+deleteApiKey,
+deleteAppConnectorOAuthClientSecret,
+deleteAppConnectorSecret,
+deleteDiscordToken,
+deleteGatewayConnectorSecret,
+deleteGatewayPassword,
+deleteGatewayToken,
+deleteTelegramToken,
+deleteVoiceWakeAccessKey,
+getApiKey,
+getVoiceWakeAccessKey,
+hasAnyApiKey,
+hasAppConnectorOAuthClientSecret,
+hasAppConnectorSecret,
+hasGatewayConnectorSecret,
+listStoredCredentials,
+storeApiKey,
+storeAppConnectorOAuthClientSecret,
+storeAppConnectorSecret,
+storeDiscordToken,
+storeGatewayConnectorSecret,
+storeGatewayPassword,
+storeGatewayToken,
+storeTelegramToken,
+storeVoiceWakeAccessKey,
+} from '../store/secureStorage';
+import {
+getSubagentRun,
+listSubagentRuns,
+patchSubagentRun,
+} from '../store/subagentRegistry';
+import {
+addTaskActivity,
+clearHistory,
+deleteTask,
+getTask,
+getTaskList,
+getTasks,
+updateTaskStatus
+} from '../store/taskHistory';
+import { addTelegramDmAllowlistEntry, getTelegramConfig, setTelegramConfig } from '../store/telegramConfig';
+import { approveTelegramPairing, listTelegramPairingRequests } from '../store/telegramPairing';
+import { getUsageBudgetSettings, getUsageBudgetStatus, setUsageBudgetSettings } from '../store/usageBudgets';
+import { getUsagePricingSettings, setUsagePricingSettings } from '../store/usagePricing';
+import {
+archiveUsageAssignee,
+archiveUsageProject,
+archiveUsageProjectWorkItem,
+createUsageAssignee,
+createUsageProject,
+createUsageProjectBudgetWindow,
+createUsageProjectKanbanColumn,
+createUsageProjectWorkItem,
+deleteUsageProjectBudgetWindow,
+deleteUsageProjectKanbanColumn,
+getUsageProject,
+listUsageAssignees,
+listUsageProjectBudgetWindows,
+listUsageProjectKanbanColumns,
+listUsageProjects,
+listUsageProjectWorkItems,
+updateUsageAssignee,
+updateUsageProject,
+updateUsageProjectBudgetWindow,
+updateUsageProjectKanbanColumn,
+updateUsageProjectWorkItem,
+} from '../store/usageProjects';
+import { getUserSkillConfig, setUserSkillConfig } from '../store/userSkillsConfig';
+import { getVoiceWakeConfig, setVoiceWakeConfig } from '../store/voiceWake';
+import { isMockTaskEventsEnabled } from '../test-utils/mock-task-flow';
+import { buildAttachmentsPrefix } from '../utils/file-attachments';
+import { installAllSkills, installSkill, listSkillsStatus, uninstallSkill } from '../utils/skills';
+import { registerModelProviderHandlers } from './model-provider-handlers';
+import { handle } from './register-handler';
+import { MAX_TEXT_LENGTH, PROVIDER_ID_RE, sanitizeOptionalText, sanitizeProviderId, sanitizeString } from './sanitizers';
+import { registerToolDiscoveryHandlers } from './tool-discovery-handlers';
+import {
+permissionResponseSchema,
+validate
+} from './validation';
 const MAX_AVATAR_IMAGE_DATA_URL_LENGTH = 1_000_000;
 const AVATAR_IMAGE_DATA_URL_RE = /^data:image\/(?:png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=\r\n]+$/i;
 const ALLOWED_API_KEY_PROVIDERS = new Set(['anthropic', 'openai', 'google', 'xai', 'custom']);
@@ -562,7 +497,6 @@ const ALLOWED_AUDIT_CATEGORIES = new Set<AuditEventCategory>([
   'settings',
   'system',
 ]);
-const PROVIDER_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const API_KEY_VALIDATION_TIMEOUT_MS = 15000;
 app.once('before-quit', () => {
   cleanupDesktopEphemeralSessionFilesOnQuit();
@@ -814,31 +748,6 @@ function assertTrustedWindow(window: BrowserWindow | null): BrowserWindow {
   }
 
   return window;
-}
-
-function sanitizeString(input: unknown, field: string, maxLength = MAX_TEXT_LENGTH): string {
-  if (typeof input !== 'string') {
-    throw new Error(`${field} must be a string`);
-  }
-  const trimmed = input.trim();
-  if (!trimmed) {
-    throw new Error(`${field} is required`);
-  }
-  if (trimmed.length > maxLength) {
-    throw new Error(`${field} exceeds maximum length`);
-  }
-  return trimmed;
-}
-
-function sanitizeOptionalText(input: unknown, field: string, maxLength: number): string {
-  if (input === null || input === undefined) return '';
-  if (typeof input !== 'string') {
-    throw new Error(`${field} must be a string`);
-  }
-  if (input.length > maxLength) {
-    throw new Error(`${field} exceeds maximum length`);
-  }
-  return input;
 }
 
 function sanitizeOptionalAvatarImageDataUrl(input: unknown): string | undefined {
@@ -1316,17 +1225,6 @@ function sanitizeIntegerRange(
     throw new Error(`${field} must be between ${min} and ${max}`);
   }
   return rounded;
-}
-
-function sanitizeProviderId(input: unknown, field = 'provider'): string {
-  if (typeof input !== 'string') {
-    throw new Error(`${field} must be a string`);
-  }
-  const provider = input.trim().toLowerCase();
-  if (!PROVIDER_ID_RE.test(provider)) {
-    throw new Error(`${field} is invalid`);
-  }
-  return provider;
 }
 
 function sanitizeGatewayConnectorExtensionId(
@@ -1930,24 +1828,9 @@ function isE2ESkipAuthEnabled(): boolean {
   );
 }
 
-function handle<Args extends unknown[], ReturnType = unknown>(
-  channel: string,
-  handler: (event: IpcMainInvokeEvent, ...args: Args) => ReturnType
-): void {
-  ipcMain.handle(channel, async (event, ...args) => {
-    try {
-      return await handler(event, ...(args as Args));
-    } catch (error) {
-      console.error(`IPC handler ${channel} failed`, error);
-      throw normalizeIpcError(error);
-    }
-  });
-}
-
-/**
- * Register all IPC handlers
- */
 export function registerIPCHandlers(): void {
+  registerToolDiscoveryHandlers();
+  registerModelProviderHandlers();
   const resolveDesktopRuntimeWorkspaceRoot = (taskId: string) =>
     resolveDesktopTaskWorkspaceRoot(taskId, (agentId?: string) =>
       agentId ? (getAgentContext(agentId).workspaceRoot || '') : ''
@@ -2553,223 +2436,6 @@ export function registerIPCHandlers(): void {
   handle('user-skills:assistant:model:set', async (_event: IpcMainInvokeEvent, model: SelectedModel | null) => {
     if (!model) return setUserSkillAssistantModel(null);
     return setUserSkillAssistantModel(sanitizeSelectedModel(model, 'userSkillAssistantModel'));
-  });
-
-  // Model providers: merged list (built-ins + user custom)
-  handle('model-providers:list', async () => {
-    return listModelProviders();
-  });
-
-  // Toolsets/tools: formal registry discovery metadata.
-  handle('toolsets:list', async () => {
-    return listAvailableToolsets();
-  });
-
-  handle('toolsets:search', async (_event: IpcMainInvokeEvent, query?: unknown) => {
-    const sanitizedQuery = query == null ? '' : sanitizeOptionalText(query, 'query', 256);
-    return searchToolsetsAndTools(sanitizedQuery);
-  });
-
-  handle('toolsets:describe', async (_event: IpcMainInvokeEvent, toolsetId: unknown) => {
-    const id = sanitizeString(toolsetId, 'toolsetId', 64);
-    return describeToolset(id);
-  });
-
-  handle('tools:list', async (_event: IpcMainInvokeEvent, payload?: { toolsetIds?: unknown }) => {
-    const toolsetIds = payload && Object.prototype.hasOwnProperty.call(payload, 'toolsetIds')
-      ? sanitizeToolsetIds(payload.toolsetIds, 'toolsetIds')
-      : undefined;
-    return listAvailableTools(toolsetIds);
-  });
-
-  handle('tools:search', async (_event: IpcMainInvokeEvent, query?: unknown) => {
-    const sanitizedQuery = query == null ? '' : sanitizeOptionalText(query, 'query', 256);
-    return searchToolsetsAndTools(sanitizedQuery);
-  });
-
-  handle('tools:describe', async (_event: IpcMainInvokeEvent, toolName: unknown) => {
-    const name = sanitizeString(toolName, 'toolName', 128);
-    return describeTool(name);
-  });
-
-  handle('tools:enabled:list', async (_event: IpcMainInvokeEvent, payload?: {
-    agentId?: unknown;
-    taskId?: unknown;
-    deferredToolDiscoveryEnabled?: unknown;
-    requestedToolsetIds?: unknown;
-    initialToolsetIds?: unknown;
-  }) => {
-    const requestedToolsetIds = payload && Object.prototype.hasOwnProperty.call(payload, 'requestedToolsetIds')
-      ? sanitizeToolsetIds(payload.requestedToolsetIds, 'requestedToolsetIds')
-      : undefined;
-    const initialToolsetIds = payload && Object.prototype.hasOwnProperty.call(payload, 'initialToolsetIds')
-      ? sanitizeToolsetIds(payload.initialToolsetIds, 'initialToolsetIds')
-      : undefined;
-    return listEnabledTaskTools({
-      agentId: typeof payload?.agentId === 'string' && payload.agentId.trim() ? sanitizeString(payload.agentId, 'agentId', 64) : undefined,
-      taskId: typeof payload?.taskId === 'string' && payload.taskId.trim() ? sanitizeString(payload.taskId, 'taskId', 128) : undefined,
-      deferredToolDiscoveryEnabled: payload?.deferredToolDiscoveryEnabled === true,
-      requestedToolsetIds,
-      initialToolsetIds,
-    });
-  });
-
-  handle('tools:enable', async (_event: IpcMainInvokeEvent, payload?: {
-    request?: {
-      agentId?: unknown;
-      taskId?: unknown;
-      toolsetIds?: unknown;
-      capabilityNames?: unknown;
-      toolNames?: unknown;
-      reason?: unknown;
-    };
-    agentId?: unknown;
-    taskId?: unknown;
-    deferredToolDiscoveryEnabled?: unknown;
-    requestedToolsetIds?: unknown;
-    initialToolsetIds?: unknown;
-  }) => {
-    const request = payload?.request || {};
-    const requestedToolsetIds = payload && Object.prototype.hasOwnProperty.call(payload, 'requestedToolsetIds')
-      ? sanitizeToolsetIds(payload.requestedToolsetIds, 'requestedToolsetIds')
-      : undefined;
-    const initialToolsetIds = payload && Object.prototype.hasOwnProperty.call(payload, 'initialToolsetIds')
-      ? sanitizeToolsetIds(payload.initialToolsetIds, 'initialToolsetIds')
-      : undefined;
-    return enableTaskScopedTools({
-      request: {
-        agentId: typeof request.agentId === 'string' && request.agentId.trim() ? sanitizeString(request.agentId, 'request.agentId', 64) : undefined,
-        taskId: typeof request.taskId === 'string' && request.taskId.trim() ? sanitizeString(request.taskId, 'request.taskId', 128) : undefined,
-        toolsetIds: Array.isArray(request.toolsetIds)
-          ? request.toolsetIds.map((entry) => sanitizeString(entry, 'request.toolsetIds', 64))
-          : undefined,
-        capabilityNames: Array.isArray(request.capabilityNames)
-          ? request.capabilityNames.map((entry) => sanitizeString(entry, 'request.capabilityNames', 128))
-          : undefined,
-        toolNames: Array.isArray(request.toolNames)
-          ? request.toolNames.map((entry) => sanitizeString(entry, 'request.toolNames', 128))
-          : undefined,
-        reason: typeof request.reason === 'string' && request.reason.trim()
-          ? sanitizeOptionalText(request.reason, 'request.reason', 500)
-          : undefined,
-      },
-      agentId: typeof payload?.agentId === 'string' && payload.agentId.trim() ? sanitizeString(payload.agentId, 'agentId', 64) : undefined,
-      taskId: typeof payload?.taskId === 'string' && payload.taskId.trim() ? sanitizeString(payload.taskId, 'taskId', 128) : undefined,
-      deferredToolDiscoveryEnabled: payload?.deferredToolDiscoveryEnabled === true,
-      requestedToolsetIds,
-      initialToolsetIds,
-    });
-  });
-
-  // Model providers: custom providers only
-  handle('model-providers:custom:list', async () => {
-    return listCustomModelProviders();
-  });
-
-  // Model providers: user-added models for built-in providers such as Google/OpenAI/Anthropic/xAI.
-  handle('model-providers:builtin-models:list', async () => {
-    return listBuiltinProviderModelOverrides();
-  });
-
-  handle('model-providers:builtin-models:upsert', async (
-    _event: IpcMainInvokeEvent,
-    payload: { providerId: string; model: ModelConfig }
-  ) => {
-    const providerId = sanitizeProviderId(payload?.providerId, 'providerId');
-    const model = payload?.model;
-    if (!model || typeof model !== 'object') {
-      throw new Error('model is required');
-    }
-    const modelId = sanitizeString(model.id, 'model.id', 128);
-    const displayName = sanitizeString(model.displayName || modelId, 'model.displayName', 128);
-    const contextWindow = typeof model.contextWindow === 'number' && Number.isFinite(model.contextWindow)
-      ? Math.max(1, Math.floor(model.contextWindow))
-      : undefined;
-    const maxOutputTokens = typeof model.maxOutputTokens === 'number' && Number.isFinite(model.maxOutputTokens)
-      ? Math.max(1, Math.floor(model.maxOutputTokens))
-      : undefined;
-    const toolsetIds = model.toolsetIds !== undefined
-      ? sanitizeToolsetIds(model.toolsetIds, 'model.toolsetIds')
-      : undefined;
-    return upsertBuiltinProviderModel(providerId, {
-      id: modelId,
-      displayName,
-      provider: providerId,
-      fullId: `${providerId}/${modelId}`,
-      contextWindow,
-      maxOutputTokens,
-      supportsVision: model.supportsVision === true ? true : undefined,
-      toolsetIds,
-    });
-  });
-
-  handle('model-providers:builtin-models:delete', async (
-    _event: IpcMainInvokeEvent,
-    payload: { providerId: string; modelId: string }
-  ) => {
-    const providerId = sanitizeProviderId(payload?.providerId, 'providerId');
-    const modelId = sanitizeString(payload?.modelId, 'modelId', 256);
-    return { ok: deleteBuiltinProviderModel(providerId, modelId) };
-  });
-
-  // Model providers: create/update custom provider
-  handle('model-providers:upsert', async (_event: IpcMainInvokeEvent, config: ProviderConfig) => {
-    if (!config || typeof config !== 'object') {
-      throw new Error('Invalid provider configuration');
-    }
-
-    const providerId = sanitizeProviderId(config.id, 'provider.id');
-    const name = sanitizeString(config.name || providerId, 'provider.name', 128);
-    const requiresApiKey = config.requiresApiKey !== false;
-    const baseUrl = config.baseUrl ? sanitizeString(config.baseUrl, 'provider.baseUrl', 1024) : undefined;
-    const apiKeyEnvVar = config.apiKeyEnvVar ? sanitizeString(config.apiKeyEnvVar, 'provider.apiKeyEnvVar', 128) : undefined;
-
-    const models = Array.isArray(config.models) ? config.models : [];
-    if (models.length === 0) {
-      throw new Error('Provider must include at least one model');
-    }
-
-    const sanitizedModels: ModelConfig[] = models.map((model, index) => {
-      const modelId = sanitizeString(model?.id, `models[${index}].id`, 128);
-      const displayName = sanitizeString(model?.displayName || modelId, `models[${index}].displayName`, 128);
-      const fullId = model?.fullId
-        ? sanitizeString(model.fullId, `models[${index}].fullId`, 256)
-        : `${providerId}/${modelId}`;
-      const contextWindow = typeof model?.contextWindow === 'number' && Number.isFinite(model.contextWindow)
-        ? Math.max(1, Math.floor(model.contextWindow))
-        : undefined;
-      const maxOutputTokens = typeof model?.maxOutputTokens === 'number' && Number.isFinite(model.maxOutputTokens)
-        ? Math.max(1, Math.floor(model.maxOutputTokens))
-        : undefined;
-      const toolsetIds = model?.toolsetIds !== undefined
-        ? sanitizeToolsetIds(model.toolsetIds, `models[${index}].toolsetIds`)
-        : undefined;
-      return {
-        id: modelId,
-        displayName,
-        provider: providerId,
-        fullId,
-        contextWindow,
-        maxOutputTokens,
-        supportsVision: model?.supportsVision === true ? true : undefined,
-        toolsetIds,
-      };
-    });
-
-    return upsertCustomModelProvider({
-      id: providerId,
-      name,
-      requiresApiKey,
-      baseUrl,
-      apiKeyEnvVar,
-      models: sanitizedModels,
-    });
-  });
-
-  // Model providers: delete custom provider
-  handle('model-providers:delete', async (_event: IpcMainInvokeEvent, providerId: string) => {
-    const id = sanitizeProviderId(providerId, 'providerId');
-    return { ok: deleteCustomModelProvider(id) };
   });
 
   // Model: Context limit overrides (per model)
@@ -6681,6 +6347,18 @@ export function registerIPCHandlers(): void {
     return deleteBuildTaskSession({ sessionId });
   });
 
+  handle('subagents:policy', async (_event: IpcMainInvokeEvent, payload: { runId: string; maxCostUsd?: number; runTimeoutMs?: number; limitAction: 'notify' | 'stop' }) => {
+    const run = getSubagentRun(sanitizeString(payload.runId, 'runId', 128));
+    if (!run?.executionPolicy) throw new Error('Subagent run not found');
+    if (payload.maxCostUsd !== undefined && (!Number.isFinite(payload.maxCostUsd) || payload.maxCostUsd <= 0)) throw new Error('Enter a positive USD amount');
+    if (payload.runTimeoutMs !== undefined && (!Number.isFinite(payload.runTimeoutMs) || payload.runTimeoutMs < 15000 || payload.runTimeoutMs > 3600000)) throw new Error('Runtime limit must be between 15 and 3600 seconds');
+    patchSubagentRun(run.runId, { executionPolicy: { ...run.executionPolicy, runTimeoutMs: payload.runTimeoutMs ?? run.executionPolicy.runTimeoutMs, maxCostUsd: payload.maxCostUsd, limitAction: payload.limitAction === 'stop' ? 'stop' : 'notify' }, limitReached: undefined });
+  });
+  handle('subagents:consume', async (_event: IpcMainInvokeEvent, payload: { parentTaskId: string }) => {
+    const parentTaskId = sanitizeString(payload.parentTaskId, 'parentTaskId', 128);
+    for (const run of listSubagentRuns(parentTaskId)) if (run.resultDelivery?.state === 'ready' && run.resultDelivery.error) patchSubagentRun(run.runId, { resultDelivery: { state: 'ready', updatedAt: new Date().toISOString() } });
+    return consumeSubagentResults(parentTaskId);
+  });
   handle('subagents:list', async (_event: IpcMainInvokeEvent, payload: { parentTaskId?: unknown }) => {
     const parentTaskId = sanitizeString(payload?.parentTaskId, 'parentTaskId', 128);
     return {

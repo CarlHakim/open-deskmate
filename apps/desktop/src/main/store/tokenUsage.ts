@@ -33,6 +33,13 @@ const tokenUsageStore = new Store<TokenUsageSchema>({
 });
 
 const MAX_TURNS = 2000;
+export function getTaskCost(taskId: string): { costUsd: number; costIncomplete: boolean } {
+  const turns = (tokenUsageStore.get('turns') ?? []).filter(turn => turn.taskId === taskId);
+  return {
+    costUsd: turns.reduce((sum, turn) => sum + (turn.costUsd ?? 0), 0),
+    costIncomplete: turns.length === 0 || turns.some(turn => turn.costUsd === undefined),
+  };
+}
 
 export function addTurnLog(entry: TokenTurnLog): void {
   const turns = tokenUsageStore.get('turns') ?? [];

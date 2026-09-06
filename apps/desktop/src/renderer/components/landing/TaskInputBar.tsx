@@ -1,3 +1,5 @@
+import ComposerOptions from '../chat/ComposerOptions';
+import ActionShelf from '../chat/ActionShelf';
 'use client';
 
 import { useRef, useEffect, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react';
@@ -34,7 +36,6 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { useUsageProjectStore } from '@/stores/usageProjectStore';
 
-
 export interface TaskInputBarHandle {
   setValue: (text: string) => void;
   getValue: () => string;
@@ -59,6 +60,7 @@ interface TaskInputBarProps {
   large?: boolean;
   autoFocus?: boolean;
   defaultWorkingFolder?: string | null;
+  initialWorkingFolder?: string;
   onPlanNextJobs?: () => void | Promise<void>;
   planningJobs?: boolean;
   agentId?: string;
@@ -76,6 +78,7 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
   large = false,
   autoFocus = false,
   defaultWorkingFolder = null,
+  initialWorkingFolder,
   onPlanNextJobs,
   planningJobs = false,
   agentId,
@@ -128,7 +131,7 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
     { mode: 'chat', label: 'Chat prompt' },
     appendPromptText
   ), [appendPromptText]);
-  const [workingFolder, setWorkingFolder] = useState<string | null>(defaultWorkingFolder);
+  const [workingFolder, setWorkingFolder] = useState<string | null>(initialWorkingFolder || defaultWorkingFolder);
   const previousDefaultRef = useRef<string | null>(defaultWorkingFolder);
   const [showSavedPromptsDialog, setShowSavedPromptsDialog] = useState(false);
   const [savedPromptsMode, setSavedPromptsMode] = useState<'select' | 'manage'>('select');
@@ -641,16 +644,9 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
         )}
 
         {/* Action buttons row */}
-        <div className="mt-1.5 flex flex-wrap items-center gap-1.5 border-t border-border/30 pt-1.5">
-          <ContextWindowIndicator stats={contextStats} className="mb-0" />
-          <ContextInspector
-            stats={contextStats}
-            agentId={agentId}
-            workspace={workingFolder || defaultWorkingFolder}
-            attachedFiles={attachedFiles}
-            privacyMode={privacyMode}
-            usageProjectId={draftUsageProjectId}
-          />
+        <div className="mt-1.5 flex min-w-0 flex-nowrap items-center gap-1.5 overflow-x-auto border-t border-border/30 py-1.5">
+          <ContextWindowIndicator compact stats={contextStats} className="mb-0" />
+
           <UsageProjectSelector
             mode="chat"
             value={draftUsageProjectId}
@@ -660,7 +656,31 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
             persistSelection={false}
           />
           <UsageBudgetPill usageProjectId={draftUsageProjectId} label="Task budget" className="max-w-[220px]" />
-          {onPrivacyModeChange && (
+
+          <button
+            type="button"
+            onClick={handleSelectFolder}
+            disabled={isActionDisabled}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-background/85 text-xs font-medium text-foreground/80 shadow-sm backdrop-blur-sm transition-colors duration-150 hover:border-border hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            title="Select a working folder"
+            aria-label="Select a working folder"
+          >
+            <Folder className="h-3.5 w-3.5" />
+          </button>
+
+{privacyMode === 'incognito' && <span className="text-xs font-medium text-amber-700">Incognito</span>}
+          {(voiceEnabled || talkModeActive) && <span className="text-xs font-medium text-emerald-700" role="status">{talkModeActive ? 'Listening…' : 'Voice wake on'}</span>}
+          <div className="inline-flex min-w-[280px] flex-1 items-center gap-1.5">
+          <ComposerOptions activeCount={Number(privacyMode === 'incognito') + Number(voiceEnabled || talkModeActive)}>
+<ContextInspector
+            stats={contextStats}
+            agentId={agentId}
+            workspace={workingFolder || defaultWorkingFolder}
+            attachedFiles={attachedFiles}
+            privacyMode={privacyMode}
+            usageProjectId={draftUsageProjectId}
+          />
+{onPrivacyModeChange && (
             <button
               type="button"
               onClick={() => onPrivacyModeChange(privacyMode === 'incognito' ? 'normal' : 'incognito')}
@@ -672,21 +692,13 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
               }`}
               title="Toggle incognito mode for this task/session"
               aria-label="Toggle incognito mode for this task/session"
+              data-option-label="Incognito"
+              aria-pressed={privacyMode === 'incognito'}
             >
               <Shield className="h-3.5 w-3.5" />
             </button>
           )}
-          <button
-            type="button"
-            onClick={handleSelectFolder}
-            disabled={isActionDisabled}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-background/85 text-xs font-medium text-foreground/80 shadow-sm backdrop-blur-sm transition-colors duration-150 hover:border-border hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-            title="Select a working folder"
-            aria-label="Select a working folder"
-          >
-            <Folder className="h-3.5 w-3.5" />
-          </button>
-          <button
+<button
             type="button"
             onClick={() => {
               setSavedPromptsIncludeRecipes(true);
@@ -705,7 +717,7 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
               </span>
             )}
           </button>
-          <button
+<button
             type="button"
             onClick={() => {
               setSavedPromptsIncludeRecipes(true);
@@ -719,7 +731,7 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
           >
             <Settings className="h-3.5 w-3.5" />
           </button>
-          <button
+<button
             type="button"
             onClick={() => {
               setProjectWorkPopupOpen(true);
@@ -732,9 +744,9 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
           >
             <FolderOpen className="h-3.5 w-3.5" />
           </button>
-          <button
+<button
             type="button"
-            onClick={toggleVoiceWake}
+            data-option-label="Voice wake" aria-pressed={voiceEnabled} onClick={toggleVoiceWake}
             disabled={voiceToggleBusy || isActionDisabled || !voiceAccessKeySet || talkModeActive}
             className={`flex items-center gap-2 rounded-lg border border-border/70 px-2.5 py-1.5 text-xs font-medium shadow-sm backdrop-blur-sm transition-colors ${
               voiceEnabled ? 'bg-emerald-500/20 text-emerald-700' : 'bg-background/85 text-foreground/80'
@@ -781,7 +793,11 @@ const TaskInputBar = forwardRef<TaskInputBarHandle, TaskInputBarProps>(function 
               })()}
             </div>
           </button>
-        </div>
+</ComposerOptions>
+            <span aria-hidden="true" className="mx-1 h-5 w-px shrink-0 bg-border" />
+            <ActionShelf compact mode="chat" projectId={draftUsageProjectId} side="bottom" disabled={isInputDisabled} incognito={privacyMode === 'incognito'} getDraft={() => textRef.current} onInsert={appendPromptText} onManage={() => { setSavedPromptsMode('manage'); setShowSavedPromptsDialog(true); }} />
+          </div>
+</div>
 
         {(talkModeActive || talkModeError) && (
           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">

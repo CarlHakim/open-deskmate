@@ -1,13 +1,11 @@
+import { findReusableWarmSession } from './warm-session';
 import type { Task, TaskConfig } from '@accomplish/shared';
 import { updateTaskSessionMemorySaved } from '../store/taskHistory';
 import { saveSessionMemorySnapshot } from '../services/memory';
 import { buildAttachmentsPrefix } from '../utils/file-attachments';
 import { computeCompactionThresholds } from '../services/context/compaction-thresholds';
 import { getActiveAgentEngineTaskId } from './agent-engine';
-import { resolveSelectedModelForAgent } from '../services/agent-context';
-import { getMiniMaxHistoricalImageSessionResetReason } from '../services/context/image-history-policy';
 
-const WARM_SESSION_WINDOW_MS = Number(process.env.OPENDESKMATE_WARM_SESSION_WINDOW_MS || 5 * 60 * 1000);
 const AGENTIC_LOOP_DEFAULT_MAX_ITERATIONS = 4;
 const AGENTIC_LOOP_DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 const AGENTIC_LOOP_PROTOCOL_APPEND = [
@@ -103,36 +101,20 @@ export function maybeReuseWarmSession(params: {
   if (gatewaySessionKey || config.sessionId || !previousTask || previousTask.id === taskId || !previousTask.sessionId) {
     return;
   }
-  const terminalStatuses = new Set(['completed', 'interrupted', 'failed', 'cancelled']);
-  if (!terminalStatuses.has(previousTask.status)) {
-    return;
-  }
-  const completedAtMs = Date.parse(previousTask.completedAt || previousTask.createdAt || '');
-  if (!Number.isFinite(completedAtMs) || (Date.now() - completedAtMs) > WARM_SESSION_WINDOW_MS) {
-    return;
-  }
-  const agentId = params.agentId || config.agentId || previousTask.agentId;
-  const resetReason = getMiniMaxHistoricalImageSessionResetReason({
-    selectedModel: resolveSelectedModelForAgent(agentId),
+  const reusable = findReusableWarmSession({
+    taskId,
+    previousTask,
+    agentId: params.agentId || config.agentId,
     prompt: params.prompt || config.prompt,
-    currentAttachedFiles: config.attachedFiles,
-    sessionId: previousTask.sessionId,
-    sessionFilePath: previousTask.sessionFilePath,
-    task: previousTask,
+    attachedFiles: config.attachedFiles,
+    logPrefix: '[TaskDispatch]',
   });
-  if (resetReason) {
-    console.log('[TaskDispatch] Skipping warm MiniMax session reuse:', {
-      fromTaskId: previousTask.id,
-      sessionId: previousTask.sessionId,
-      reason: resetReason,
-    });
-    return;
-  }
-  config.sessionId = previousTask.sessionId;
+  if (!reusable) return;
+  config.sessionId = reusable.sessionId;
   console.log('[TaskDispatch] Reusing warm session', {
     fromTaskId: previousTask.id,
-    sessionId: previousTask.sessionId,
-    ageMs: Date.now() - completedAtMs,
+    sessionId: reusable.sessionId,
+    ageMs: reusable.ageMs,
   });
 }
 

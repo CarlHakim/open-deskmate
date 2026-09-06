@@ -3784,11 +3784,15 @@ export default function ProjectWorkboardTab({
   assignees,
   budgetWindows,
   sourceOptions,
+  initialItemId,
+  onInitialItemOpened,
 }: {
   project: UsageProject;
   assignees: UsageAssignee[];
   budgetWindows: UsageProjectBudgetWindow[];
   sourceOptions: WorkboardSourceOption[];
+  initialItemId?: string | null;
+  onInitialItemOpened?: () => void;
 }) {
   const [view, setView] = useState<WorkboardView>('kanban');
   const [items, setItems] = useState<UsageProjectWorkItem[]>([]);
@@ -3823,6 +3827,14 @@ export default function ProjectWorkboardTab({
   const documentPromptNoticeTimerRef = useRef<number | null>(null);
 
   const api = getAccomplish();
+
+  useEffect(() => {
+    if (!initialItemId) return;
+    const item = items.find(entry => entry.id === initialItemId && entry.usageProjectId === project.id);
+    if (!item) return;
+    setDraft(draftFromItem(item));
+    onInitialItemOpened?.();
+  }, [initialItemId, items, project.id, onInitialItemOpened]);
 
   const sortedColumns = useMemo(
     () => columns.slice().sort((a, b) => a.order - b.order || a.name.localeCompare(b.name)),

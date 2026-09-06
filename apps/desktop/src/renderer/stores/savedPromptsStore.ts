@@ -26,6 +26,7 @@ interface SavedPromptsState {
   categories: PromptCategory[];
   loadPrompts: () => void;
   savePrompt: (title: string, content: string, category?: PromptCategory, metadata?: SavedPromptMetadata) => SavedPrompt;
+  savePromptConfirmed: (title: string, content: string, category?: PromptCategory) => Promise<SavedPrompt>;
   updatePrompt: (id: string, title: string, content: string, category?: PromptCategory, metadata?: SavedPromptMetadata) => void;
   deletePrompt: (id: string) => void;
   createCategory: (name: string) => void;
@@ -221,6 +222,23 @@ export const useSavedPromptsStore = create<SavedPromptsState>((set, get) => ({
         console.warn('Failed to sync saved prompts with shared store:', error);
       }
     })();
+  },
+
+  savePromptConfirmed: async (title, content, category = DEFAULT_PROMPT_CATEGORY) => {
+    const api = getAccomplishSafe();
+    if (!api?.upsertSavedPrompt) throw new Error('The prompt library is unavailable. Please retry.');
+    const now = new Date().toISOString();
+    const input: SavedPrompt = { id: generateId(), title: title.trim(), content: content.trim(), category: normalizePromptCategory(category), createdAt: now, updatedAt: now };
+    const saved = normalizePrompt(await api.upsertSavedPrompt(input));
+    if (!saved) throw new Error('The prompt library returned an invalid result.');
+    // An earlier list request must not overwrite this confirmed save.
+    ++loadRequestCounter;
+    const prompts = sortPrompts([...get().prompts.filter(prompt => prompt.id !== saved.id), saved]);
+    const categories = mergePromptCategories(get().categories, [saved.category]);
+    saveToStorage(prompts);
+    saveCategoriesToStorage(categories);
+    set({ prompts, categories });
+    return saved;
   },
 
   savePrompt: (

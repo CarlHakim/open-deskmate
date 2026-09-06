@@ -31,3 +31,4 @@ export * from './usage-estimate';
 export * from './usage';
 export * from './voicewake';
 export * from './user-skills';
+export * from './interactive-answer';

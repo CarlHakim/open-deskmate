@@ -44,6 +44,8 @@ export type SubagentSupervisorRecommendedAction =
   | 'answer_now';
 
 export interface SubagentExecutionPolicy {
+  limitAction?: 'notify' | 'stop';
+  maxCostUsd?: number;
   inheritedFromAgentId: string;
   maxChildren: number;
   maxDepth: number;
@@ -206,6 +208,7 @@ export interface SubagentBuildHandoffGitSummary {
 }
 
 export interface SubagentBuildHandoffBundle {
+  unassignedChangedPaths?: string[];
   workspaceAgentId: string;
   workspaceRelativePath: string;
   baselineId?: string;
@@ -226,6 +229,18 @@ export interface SubagentBuildHandoffBundle {
 }
 
 export interface SubagentRunRecord {
+  /** Persisted deduplication and budget for automatic parent supervision turns. */
+  supervisionWake?: { key: string; attempts: number; requestedAt: string; error?: string };
+  worktree?: { path: string; branch: string; sourcePath: string; baseCommit: string };
+  lifecycle?: 'queued' | 'starting' | 'working' | 'finished';
+  startedAt?: string;
+  queuedAt?: string;
+  resultDelivery?: { state: 'ready' | 'received' | 'incorporated'; updatedAt: string; error?: string; reviewRequested?: boolean };
+  ownedPaths?: string[];
+  ownershipConflicts?: string[];
+  costUsd?: number;
+  costIncomplete?: boolean;
+  limitReached?: string;
   runId: string;
   childTaskId: string;
   childSessionKey: string;
@@ -279,6 +294,10 @@ export interface SubagentRunTreeNode extends SubagentRunDetail {
 }
 
 export interface SubagentSpawnRequest {
+  isolation?: 'shared' | 'worktree';
+  ownedPaths?: string[];
+  maxCostUsd?: number;
+  limitAction?: 'notify' | 'stop';
   targetAgentId?: string;
   task: string;
   label?: string;

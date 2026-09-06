@@ -505,6 +505,18 @@ describe('taskStore Integration', () => {
   });
 
   describe('addTaskUpdateBatch', () => {
+    it('updates replayed messages in place across single and batched IPC events', async () => {
+      const { useTaskStore } = await import('@/stores/taskStore');
+      const task = createMockTask('replayed', 'Subagent test', 'running');
+      useTaskStore.setState({ currentTask: task, tasks: [task] });
+      const message = createMockMessage('child-progress', 'tool', 'Starting child');
+      useTaskStore.getState().addTaskUpdate({ taskId: task.id, type: 'message', message });
+      useTaskStore.getState().addTaskUpdateBatch({ taskId: task.id, messages: [message, { ...message, content: 'Child finished' }, createMockMessage('answer', 'assistant', 'Final report')] });
+      const messages = useTaskStore.getState().currentTask!.messages;
+      expect(messages.map(entry => entry.id)).toEqual(['child-progress', 'answer']);
+      expect(messages[0].content).toBe('Child finished');
+      expect(message.content).toBe('Starting child');
+    });
     it('should add multiple messages in single update', async () => {
       // Arrange
       const { useTaskStore } = await import('@/stores/taskStore');

@@ -94,7 +94,7 @@ class MockPty extends EventEmitter {
 }
 
 // Mock node-pty
-const mockPtyInstance = new MockPty();
+let mockPtyInstance = new MockPty();
 const mockPtySpawn = vi.fn(() => mockPtyInstance);
 
 vi.mock('node-pty', () => ({
@@ -668,11 +668,111 @@ describe('OpenCode Adapter Module', () => {
         await adapter.startTask({ prompt: 'Test' });
 
         // Act
+        emitCliData(JSON.stringify({ type: 'text', part: {
+          id: 'reply', type: 'text', text: 'Done', sessionID: 'session-1', messageID: 'reply',
+        } }) + '\n');
         emitCliExit(0);
 
         // Assert
         expect(completeEvents.length).toBe(1);
         expect(completeEvents[0].status).toBe('success');
+      });
+
+      it('reports an empty fresh run as an error, not success', async () => {
+        const adapter = new OpenCodeAdapter();
+        const complete = vi.fn();
+        const error = vi.fn();
+        adapter.on('complete', complete);
+        adapter.on('error', error);
+        await adapter.startTask({ prompt: 'Hello' });
+        emitCliExit(0);
+        expect(complete).not.toHaveBeenCalled();
+        expect(error).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('without a reply') }));
+      });
+
+      it.each([false, true])('recovers an empty resumed run once with its context (empty recovery: %s)', async (emptyRecovery) => {
+        const adapter = new OpenCodeAdapter();
+        const complete = vi.fn();
+        const error = vi.fn();
+        const progress = vi.fn();
+        adapter.on('complete', complete);
+        adapter.on('error', error);
+        adapter.on('progress', progress);
+        const config = {
+          taskId: 'existing-build-task', prompt: 'Explain this project', sessionId: 'legacy-session',
+          systemPromptAppend: 'Recent conversation:\nuser: Preserve the calculator features.',
+          workingDirectory: '/calculator', agentId: 'builder', buildMode: true,
+          buildWorkspaceRelativePath: 'calculator', attachedFiles: ['/reference.txt'],
+        };
+        await adapter.startTask(config);
+        const start = vi.spyOn(adapter, 'startTask');
+        mockPtySpawn.mockImplementationOnce(() => {
+          mockPtyInstance = new MockPty();
+          return mockPtyInstance;
+        });
+        emitCliExit(0);
+        await vi.waitFor(() => expect(mockPtySpawn).toHaveBeenCalledTimes(2));
+        expect(start).toHaveBeenCalledExactlyOnceWith({ ...config, sessionId: undefined });
+        expect(progress).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('saved conversation context') }));
+        expect(complete).not.toHaveBeenCalled();
+        if (!emptyRecovery) {
+          emitCliData(JSON.stringify({ type: 'text', part: {
+            id: 'reply', type: 'text', text: 'Your project is a calculator.', sessionID: 'fresh-session', messageID: 'reply',
+          } }) + '\n');
+        }
+        emitCliExit(0);
+        expect(start).toHaveBeenCalledTimes(1);
+        if (emptyRecovery) {
+          expect(error).toHaveBeenCalledOnce();
+          expect(complete).not.toHaveBeenCalled();
+        } else {
+          expect(error).not.toHaveBeenCalled();
+          expect(complete).toHaveBeenCalledExactlyOnceWith({ status: 'success', sessionId: 'fresh-session' });
+        }
+      });
+
+      it('does not restart a resumed run after agent activity', async () => {
+        const adapter = new OpenCodeAdapter();
+        const error = vi.fn();
+        adapter.on('error', error);
+        await adapter.startTask({ prompt: 'Test', sessionId: 'old', systemPromptAppend: 'Recent conversation: Test' });
+        const start = vi.spyOn(adapter, 'startTask');
+        emitCliData(JSON.stringify({ type: 'step_start', part: {
+          id: 'step', type: 'step-start', sessionID: 'old', messageID: 'msg',
+        } }) + '\n');
+        emitCliExit(0);
+        expect(start).not.toHaveBeenCalled();
+        expect(error).toHaveBeenCalledOnce();
+      });
+
+      (isWin ? it : it.skip)('recovers through Windows stdout pipes and delivers the fresh reply', async () => {
+        vi.stubEnv('OPENDESKMATE_WINDOWS_FORCE_NO_PTY', '1');
+        vi.stubEnv('OPENDESKMATE_WINDOWS_FORCE_PTY', '0');
+        try {
+          const adapter = new OpenCodeAdapter();
+          const complete = vi.fn();
+          const error = vi.fn();
+          const message = vi.fn();
+          adapter.on('complete', complete);
+          adapter.on('error', error);
+          adapter.on('message', message);
+          await adapter.startTask({ prompt: 'Hello', sessionId: 'legacy', systemPromptAppend: 'Recent conversation: Hello' });
+          const replacementProcess = new MockChildProc();
+          mockSpawn.mockReturnValueOnce(replacementProcess);
+          mockChildProc.emit('close', 0, null);
+          await vi.waitFor(() => expect(mockSpawn).toHaveBeenCalledTimes(2));
+          const args = mockSpawn.mock.calls[1] as unknown as [string, string[]];
+          expect(args[1]).not.toContain('--session');
+          replacementProcess.stdout.emitData(JSON.stringify({ type: 'text', part: {
+            id: 'reply', type: 'text', text: 'Hello from the recovered agent.', sessionID: 'fresh', messageID: 'reply',
+          } }) + '\n');
+          replacementProcess.emit('close', 0, null);
+          expect(message).toHaveBeenCalledWith(expect.objectContaining({ type: 'text' }));
+          expect(complete).toHaveBeenCalledExactlyOnceWith({ status: 'success', sessionId: 'fresh' });
+          expect(error).not.toHaveBeenCalled();
+        } finally {
+          vi.unstubAllEnvs();
+        }
       });
 
       it('should emit error on non-zero exit code', async () => {

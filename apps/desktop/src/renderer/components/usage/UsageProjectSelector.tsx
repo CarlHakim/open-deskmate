@@ -1,7 +1,10 @@
-import { useEffect } from 'react';
-import { Folder } from 'lucide-react';
+import { useEffect, useId, useState } from 'react';
+import { BriefcaseBusiness } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUsageProjectStore } from '@/stores/usageProjectStore';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip';
+
+const projectHelp = 'Assign this task to a project for organisation, usage tracking, and project budgets. The separate working-folder button chooses the files the agent works with.';
 
 export function UsageProjectSelector({
   mode,
@@ -20,6 +23,8 @@ export function UsageProjectSelector({
   className?: string;
   persistSelection?: boolean;
 }) {
+  const [helpOpen, setHelpOpen] = useState(false);
+  const helpId = useId();
   const {
     projects,
     statuses,
@@ -45,38 +50,49 @@ export function UsageProjectSelector({
 
   return (
     <label className={cn('inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground', className)}>
-      <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-background/85 text-foreground/80 shadow-sm backdrop-blur-sm">
-        <Folder className="h-3.5 w-3.5" />
-      </span>
       {!compact && <span className="shrink-0">Project</span>}
-      <select
-        value={selected || ''}
-        disabled={disabled}
-        data-usage-project-selector={mode}
-        onChange={(event) => {
-          const next = event.target.value || null;
-          if (persistSelection) {
-            setSelectedProject(mode, next);
-          }
-          onChange?.(next);
-        }}
-        className={cn(
-          'h-8 rounded-md border border-border/70 bg-background px-2 text-xs text-foreground outline-none focus:ring-2 focus:ring-ring disabled:opacity-50',
-          compact ? 'min-w-[104px] max-w-[132px]' : 'min-w-[150px] max-w-[220px]'
-        )}
-        title="Assign this run to a usage project"
-      >
-        <option value="">No project</option>
-        {projects.map((project) => {
-          const status = statusByProject.get(project.id);
-          const suffix = status?.blocking ? ' (blocked)' : status?.exceeded ? ' (over)' : '';
-          return (
-            <option key={project.id} value={project.id}>
-              {project.name}{suffix}
-            </option>
-          );
-        })}
-      </select>
+      <TooltipProvider delayDuration={300}>
+        <Tooltip open={helpOpen} onOpenChange={setHelpOpen}>
+          <TooltipTrigger asChild>
+            <span className="relative inline-flex min-w-0" onMouseEnter={() => setHelpOpen(true)} onMouseLeave={() => setHelpOpen(false)} onFocus={() => setHelpOpen(true)} onBlur={() => setHelpOpen(false)}>
+              <BriefcaseBusiness aria-hidden="true" className="pointer-events-none absolute left-2 top-1/2 z-10 h-3.5 w-3.5 -translate-y-1/2 text-foreground/80" />
+              <select
+                aria-label="Task project"
+                aria-describedby={helpId}
+                value={selected || ''}
+                disabled={disabled}
+                data-usage-project-selector={mode}
+                onChange={(event) => {
+                  const next = event.target.value || null;
+                  if (persistSelection) {
+                    setSelectedProject(mode, next);
+                  }
+                  onChange?.(next);
+                }}
+                className={cn(
+                  'h-8 cursor-pointer rounded-md border border-border/70 bg-background pl-7 pr-2 text-xs text-foreground outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50',
+                  compact ? 'min-w-[132px] max-w-[160px]' : 'min-w-[178px] max-w-[248px]'
+                )}
+              >
+                <option value="">No project</option>
+                {projects.map((project) => {
+                  const status = statusByProject.get(project.id);
+                  const suffix = status?.blocking ? ' (blocked)' : status?.exceeded ? ' (over)' : '';
+                  return (
+                    <option key={project.id} value={project.id}>
+                      {project.name}{suffix}
+                    </option>
+                  );
+                })}
+              </select>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="max-w-64 text-xs leading-relaxed">
+            {projectHelp}
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+      <span id={helpId} className="sr-only">{projectHelp}</span>
     </label>
   );
 }

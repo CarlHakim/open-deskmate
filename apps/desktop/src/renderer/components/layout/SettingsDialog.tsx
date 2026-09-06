@@ -1,5 +1,7 @@
 'use client';
 
+import { ExperienceSettings } from '../chat/ExperienceSettings';
+
 import {
   useState,
   useEffect,
@@ -343,6 +345,7 @@ function getPresenceAnimationPreviewClass(animation: AgentPresenceAnimationOptio
 }
 
 const SETTINGS_SECTION_SEARCH_KEYWORDS: Record<string, string[]> = {
+  'Interaction appearance': ['calm', 'balanced', 'playful', 'motion', 'animation', 'sound', 'chime', 'celebration', 'journey'],
   'Model & API settings': [
     'ollama',
     'local model',
@@ -1797,6 +1800,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
   });
   const [settingsSectionQuery, setSettingsSectionQuery] = useState('');
   const activeSettingsSectionIdRef = useRef('');
+  const [settingsNavigationMode, setSettingsNavigationMode] = useState<'category' | 'all'>('category');
+  const [selectedSettingsSectionId, setSelectedSettingsSectionId] = useState<string | null>(null);
   const [settingsMode, setSettingsMode] = useState<'basic' | 'advanced'>(() => {
     if (typeof window === 'undefined') return 'basic';
     return window.localStorage.getItem('opendeskmate-settings-mode') === 'advanced' ? 'advanced' : 'basic';
@@ -11360,13 +11365,19 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     'Agents',
     'Execution Profiles',
     'Workspace Defaults',
+    'Interaction appearance',
     'API usage estimate',
     'Saved Prompts & Recipes',
     'Doctor',
     'About',
   ]);
   const isSettingsSectionExpandedByHeading = (heading: string): boolean =>
-    heading === 'About'
+    (settingsNavigationMode === 'category' && (
+      selectedSettingsSectionId === getSettingsSectionKey(heading)
+      || heading === 'Model & API settings'
+      || Boolean(deferredSettingsSectionQuery.trim())
+    ))
+    || heading === 'About'
     || (settingsMode === 'basic' && basicSettingsSectionHeadings.has(heading))
     || keepCollapsedContentMountedForTests
     || Boolean(expandedSettingsSections[getSettingsSectionKey(heading)]);
@@ -11442,7 +11453,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       });
     }
 
-    const visibleModeSections = settingsMode === 'basic'
+    const visibleModeSections = settingsMode === 'basic' && !deferredSettingsSectionQuery.trim()
       ? sections.filter((section) => basicSettingsSectionHeadings.has(section.headingText))
       : sections;
     const allSectionIds = visibleModeSections.map((section) => section.sectionId);
@@ -11460,7 +11471,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       && visibleModeSections.every((section) => (
         isNonCollapsibleSection(section) || isSettingsSectionExpandedByHeading(section.headingText)
       ));
-    const currentActiveSettingsSectionId = activeSettingsSectionIdRef.current;
+    const currentActiveSettingsSectionId = settingsNavigationMode === 'category' ? selectedSettingsSectionId : activeSettingsSectionIdRef.current;
     const effectiveActiveSectionId =
       currentActiveSettingsSectionId && filteredSections.some((section) => section.sectionId === currentActiveSettingsSectionId)
         ? currentActiveSettingsSectionId
@@ -11475,7 +11486,13 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
     ];
     const scrollToSettingsSection = (sectionId: string) => {
       if (!sectionId) return;
+      setSelectedSettingsSectionId(sectionId);
+      setExpandedSettingsSections(previous => ({ ...previous, [sectionId]: true }));
       markSettingsMenuSectionActive(sectionId);
+      if (settingsNavigationMode === 'category') {
+        settingsContentScrollRef.current?.scrollTo({ top: 0 });
+        return;
+      }
 
       const scrollNow = () => {
         const container = settingsContentScrollRef.current;
@@ -11505,7 +11522,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
               <span>{settingsMode === 'basic' ? 'Basic mode' : 'Advanced mode'}</span>
               <span aria-hidden="true">•</span>
               <span>
-                Showing {filteredSections.length} of {visibleModeSections.length} section{visibleModeSections.length === 1 ? '' : 's'}
+                {settingsNavigationMode === 'category' ? 'Browse' : 'Showing'} {filteredSections.length} of {visibleModeSections.length} section{visibleModeSections.length === 1 ? '' : 's'}
               </span>
             </div>
           </div>
@@ -11551,7 +11568,11 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                 />
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex gap-2" aria-label="Settings layout">
+                <Button size="sm" variant={settingsNavigationMode === 'category' ? 'default' : 'outline'} aria-pressed={settingsNavigationMode === 'category'} onClick={() => setSettingsNavigationMode('category')}>By category</Button>
+                <Button size="sm" variant={settingsNavigationMode === 'all' ? 'default' : 'outline'} aria-pressed={settingsNavigationMode === 'all'} onClick={() => setSettingsNavigationMode('all')}>All sections</Button>
+              </div>
+              <div className={settingsNavigationMode === 'all' ? 'flex items-center gap-2' : 'hidden'}>
                 <Button
                   type="button"
                   size="sm"
@@ -11580,10 +11601,8 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
             </div>
 
             {settingsMode === 'basic' ? (
-              <div className="border-b border-border p-3">
-                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Setup checklist
-                </div>
+              <details className="border-b border-border p-3">
+                <summary className="cursor-pointer text-sm font-medium">Setup checklist · {setupChecklistItems.filter(item => item.done).length}/{setupChecklistItems.length}</summary>
                 <div className="grid gap-1.5">
                   {setupChecklistItems.map((item) => (
                     <div key={item.label} className="flex items-center gap-2 rounded-md border border-border/60 bg-background/60 px-2.5 py-1.5 text-xs">
@@ -11596,7 +11615,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
                     </div>
                   ))}
                 </div>
-              </div>
+              </details>
             ) : null}
 
             <nav className="min-h-0 flex-1 overflow-y-auto p-2" aria-label="Settings sections">
@@ -11663,7 +11682,7 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
               )}
 
               {filteredSections.map((section) => {
-                const isForcedExpanded = isNonCollapsibleSection(section);
+                const isForcedExpanded = settingsNavigationMode === 'category' || isNonCollapsibleSection(section);
                 const isExpanded =
                   isForcedExpanded
                   || isSettingsSectionExpandedByHeading(section.headingText)
@@ -11674,12 +11693,13 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
 
                 return (
                   <section
+                    hidden={settingsNavigationMode === 'category' && section.sectionId !== effectiveActiveSectionId}
                     id={section.sectionId}
                     ref={(element) => {
                       settingsSectionRefs.current[section.sectionId] = element;
                     }}
                     key={section.key}
-                    className={['overflow-hidden rounded-xl border border-border bg-card shadow-md shadow-black/5 ring-1 ring-foreground/5', section.sectionClass]
+                    className={['overflow-hidden rounded-lg border border-border bg-card', section.sectionClass]
                       .filter(Boolean)
                       .join(' ')}
                   >
@@ -11745,6 +11765,10 @@ export default function SettingsDialog({ open, onOpenChange, onApiKeySaved, init
       >
         {renderCollapsibleSettingsSections(
           <>
+          <section>
+            <h2 className="mb-4 text-base font-medium text-foreground">Interaction appearance</h2>
+            <ExperienceSettings />
+          </section>
           <section>
             <h2 className="mb-4 text-base font-medium text-foreground">
               Model & API settings

@@ -1,4 +1,5 @@
 import { getAgentContext, resolveSelectedModelForAgent } from '../agent-context';
+import { INTERACTIVE_ANSWER_INSTRUCTIONS } from '@accomplish/shared';
 import { getOllamaConfig } from '../../store/appSettings';
 import { getApiKey } from '../../store/secureStorage';
 import type { ContextTokenEstimate, ContextWindowPrepareResult, ProviderType, SelectedModel, ToolsetId } from '@accomplish/shared';
@@ -172,6 +173,7 @@ export async function preparePayloadForSend(params: {
   });
   const skillsPrompt = skillsBundle.prompt;
   const baseAppend = [
+    params.baseSystemPromptAppend?.includes(INTERACTIVE_ANSWER_INSTRUCTIONS) ? '' : INTERACTIVE_ANSWER_INSTRUCTIONS,
     formalToolsetSummary,
     deferredToolDiscoverySummary,
     (params.baseSystemPromptAppend || '').trim(),

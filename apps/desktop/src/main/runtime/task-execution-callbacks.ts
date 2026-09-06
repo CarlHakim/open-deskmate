@@ -1,3 +1,4 @@
+import { markSubagentTaskStarted } from '../store/subagentRegistry';
 import type { OpenCodeMessage, TaskActivityEvent, TaskResult, TaskStatus } from '@accomplish/shared';
 import type { TaskCallbacks } from '../opencode/task-manager';
 import { enqueueWebPermissionRequest } from '../services/webhook-permissions';
@@ -175,6 +176,7 @@ export function createTaskExecutionCallbacks(params: {
       }
     },
     onStatusChange: (status: TaskStatus) => {
+      if (status === 'running') markSubagentTaskStarted(params.taskId);
       params.notifyStatusChange({
         taskId: params.taskId,
         status,

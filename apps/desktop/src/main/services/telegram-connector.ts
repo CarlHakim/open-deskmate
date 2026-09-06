@@ -1,4 +1,5 @@
 import { readFile } from 'fs/promises';
+import { startTypingIndicator } from './typing-indicator';
 import { createRequire } from 'module';
 import type { Bot, Context, BotError } from 'grammy';
 import type {
@@ -471,11 +472,6 @@ async function handleTelegramMessage(
     if (delivery.silenced) return;
     recordTelegramDeliveryStartMetadata(delivery.record.id, delivery.chunks, delivery.attachments);
     await sendConnectorDeliveryChunks(delivery.record.id, delivery.chunks, async (chunk) => {
-      try {
-        await ctx.replyWithChatAction('typing');
-      } catch {
-        // ignore
-      }
       await deliverTelegramRichText(chunk || 'Task completed.', delivery.record.id, async (message, parseMode) => {
         if (parseMode) {
           await ctx.reply(message, { parse_mode: parseMode });
@@ -486,12 +482,7 @@ async function handleTelegramMessage(
     });
   };
 
-  try {
-    await ctx.replyWithChatAction('typing');
-  } catch {
-    // ignore
-  }
-
+  const stopTyping = startTypingIndicator(() => ctx.replyWithChatAction('typing'));
   try {
     const prompt = content;
     const { completion } = await startAgentEngineTask(
@@ -531,6 +522,7 @@ async function handleTelegramMessage(
       // ignore
     }
   } finally {
+    stopTyping();
     inFlightTelegramMessages.delete(messageKey);
     const inFlightRouteAfterRun = inFlightTelegramRoutes.get(route.sessionKey);
     if (inFlightRouteAfterRun?.taskId === taskId) {
@@ -904,7 +896,7 @@ export async function sendTelegramOutboundMessage(params: {
 
   recordTelegramDeliveryStartMetadata(prepared.record.id, prepared.chunks, prepared.attachments);
   await sendConnectorDeliveryChunks(prepared.record.id, prepared.chunks, async (chunk) => {
-    await sendTelegramTyping(token, chatId);
+    void sendTelegramTyping(token, chatId);
     await deliverTelegramRichText(chunk || ' ', prepared.record.id, (message, parseMode) => (
       sendTelegramText(token, chatId, message, { parseMode })
     ));

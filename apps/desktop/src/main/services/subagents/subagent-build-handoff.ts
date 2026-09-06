@@ -7,6 +7,7 @@ import type {
 } from '@accomplish/shared';
 import { captureWorkspaceBaseline, readWorkspaceGitDiff } from '../build-mode/file-service';
 import { readBuildGitSummary } from '../build-mode/git-service';
+import { pathsOverlap } from './subagent-ownership';
 
 const HANDOFF_DIFF_MAX_CHARS = 160_000;
 const HANDOFF_PROMPT_PATCH_MAX_CHARS = 40_000;
@@ -157,7 +158,7 @@ export async function captureSubagentBuildHandoffBaseline(params: {
 }
 
 export async function generateSubagentBuildHandoffBundle(
-  run: Pick<SubagentRunRecord, 'buildHandoff' | 'parentAgentId'>,
+  run: Pick<SubagentRunRecord, 'buildHandoff' | 'parentAgentId' | 'ownedPaths'>,
   reason?: string
 ): Promise<SubagentBuildHandoffBundle | undefined> {
   const existing = run.buildHandoff;
@@ -194,6 +195,9 @@ export async function generateSubagentBuildHandoffBundle(
   }
 
   const changedFiles = mergeChangedFiles({ diff, gitSummary });
+  const unassignedChangedPaths = run.ownedPaths?.length
+    ? changedFiles.filter(file => !run.ownedPaths!.some(owned => pathsOverlap(owned, file.relativePath))).map(file => file.relativePath)
+    : [];
   const patch = truncateText(diff?.patch, HANDOFF_STORE_PATCH_MAX_CHARS);
   const generatedAt = new Date().toISOString();
 
@@ -207,6 +211,7 @@ export async function generateSubagentBuildHandoffBundle(
     diffAvailable: diff?.available,
     diffSummary: diff?.summary || summarizeFiles(changedFiles),
     changedFiles,
+    unassignedChangedPaths,
     patchExcerpt: patch.text,
     patchTruncated: Boolean(diff?.truncated || patch.truncated),
     gitSummary: mapGitSummary(gitSummary),
@@ -230,6 +235,8 @@ export function formatBuildHandoffForPrompt(bundle?: SubagentBuildHandoffBundle)
   const patch = truncateText(bundle.patchExcerpt, HANDOFF_PROMPT_PATCH_MAX_CHARS);
   return [
     'Build handoff from previous child run:',
+    'This diff covers the shared workspace and may include changes by the parent or other children. Verify authorship and tests before incorporating it.',
+    ...(bundle.unassignedChangedPaths?.length ? [`Changes outside this child assignment: ${bundle.unassignedChangedPaths.join(', ')}`] : []),
     `Workspace agent: ${bundle.workspaceAgentId}`,
     `Workspace relative path: ${bundle.workspaceRelativePath || '.'}`,
     bundle.baselineId

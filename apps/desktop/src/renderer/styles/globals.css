@@ -61,12 +61,12 @@
   --card-foreground: 215 45% 20%; /* #1e3a5f */
   --popover: 0 0% 100%; /* #ffffff */
   --popover-foreground: 215 45% 20%; /* #1e3a5f */
-  --primary: 174 42% 51%; /* #4db6ac - teal from cup handle */
+  --primary: 174 55% 32%; /* Deeper teal keeps white action labels readable. */
   --primary-foreground: 0 0% 100%; /* #ffffff */
   --secondary: 210 40% 94%; /* #e8f1fb - light blue tint */
   --secondary-foreground: 215 45% 25%; /* #243d5c */
   --muted: 210 25% 95%; /* #f1f5f9 - subtle blue-gray */
-  --muted-foreground: 215 20% 46%; /* #64748b */
+  --muted-foreground: 215 20% 39%; /* Readable supporting text on light surfaces. */
   --accent: 174 42% 94%; /* #e0f5f3 - light teal */
   --accent-foreground: 174 42% 30%; /* #2a7a73 */
   --destructive: 0 72% 51%; /* #ef4444 - modern red */
@@ -108,6 +108,16 @@
   --success: 158 64% 45%; /* #2eb888 - mint green */
   --warning: 45 93% 50%; /* #f59e0b - golden yellow */
   --info: 210 100% 60%; /* #5b9bf5 - bright blue */
+}
+
+/* Small scrapbook captions remain readable on dark cards and dialog surfaces. */
+.dark .project-scrapbook-surface {
+  --muted-foreground: 215 25% 73%;
+  color-scheme: dark;
+}
+
+.light .project-scrapbook-surface {
+  color-scheme: light;
 }
 
 /* Custom scrollbar */
@@ -487,6 +497,42 @@ textarea::placeholder {
   contain: layout paint;
 }
 
+@keyframes task-result-highlight {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  25%, 65% { box-shadow: 0 0 0 2px hsl(var(--primary) / 0.35), 0 0 18px hsl(var(--primary) / 0.10); }
+}
+@keyframes task-completion-nod {
+  0%, 100% { transform: rotate(0) scale(1); }
+  35% { transform: rotate(-8deg) scale(1.12); }
+  65% { transform: rotate(5deg) scale(1.05); }
+}
+@keyframes task-completion-sparkle {
+  0%, 100% { opacity: 0; transform: scale(0.8); }
+  40% { opacity: 1; transform: scale(1.2) rotate(12deg); }
+}
+.task-result-highlight { animation: task-result-highlight 1.8s ease-out; }
+.task-completion-avatar { display: inline-flex; animation: task-completion-nod 700ms ease-in-out; }
+.task-completion-sparkle { animation: task-completion-sparkle 1.4s ease-in-out; }
+
+/* Keep functional status visible while silencing decorative motion. */
+html[data-experience='calm'] .task-result-highlight,
+html[data-experience='calm'] .task-completion-avatar,
+html[data-experience='calm'] .task-completion-sparkle,
+html[data-experience='calm'] .chat-motion-fade-slide,
+html[data-experience='calm'] .chat-motion-pop,
+html[data-experience='calm'] .agent-tool-state-orb::before,
+html[data-experience='calm'] .agent-tool-state-orb::after,
+html[data-experience='calm'] .agent-tool-state-icon,
+html[data-experience='calm'] .agent-tool-step,
+html[data-experience='calm'] .typing-dots span {
+  animation: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .task-result-highlight, .task-completion-avatar, .task-completion-sparkle {
+    animation: none !important;
+  }
+}
+
 @keyframes agent-tool-pulse {
   0%, 100% {
     transform: scale(0.86);
@@ -738,4 +784,46 @@ textarea::placeholder {
 
 .help-markdown img {
   background: hsl(var(--card));
+}
+
+/* Focus is a presentation layer. Keep panels mounted and retain their saved layout. */
+[data-focus-scene="active"] [data-focus-secondary] {
+  display: none !important;
+}
+
+[data-focus-scene="active"] .focus-chat-scene {
+  width: 100%;
+  max-width: none;
+}
+
+[data-focus-scene="active"] .focus-content-width {
+  width: 100%;
+  /* Keep the scene full width, with a centred, readable conversation column. */
+  max-width: 60rem;
+  margin-inline: auto;
+}
+
+[data-focus-scene="active"] .focus-build-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(380px, 0.85fr) !important;
+}
+
+[data-focus-scene="active"] .focus-build-grid[data-focus-has-preview="false"] {
+  grid-template-columns: minmax(0, 1fr) !important;
+  width: 100%;
+  max-width: none;
+}
+
+[data-focus-scene="active"] .focus-build-operator {
+  background-color: hsl(var(--card) / 0.78);
+}
+
+[data-focus-scene="active"] .focus-preview-toolbar,
+[data-focus-scene="active"] .focus-preview-toolbar > div {
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+[data-focus-scene="active"] .focus-usage-summary {
+  flex: 1 0 auto;
+  max-width: 200px;
 }

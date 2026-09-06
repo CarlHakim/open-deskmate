@@ -714,6 +714,9 @@ interface AccomplishAPI {
   archiveBuildTaskHistorySession(payload: BuildTaskSessionArchiveInput): Promise<BuildTaskSession>;
   setBuildTaskHistorySessionPinned(payload: BuildTaskSessionPinInput): Promise<BuildTaskSession>;
   deleteBuildTaskHistorySession(payload: BuildTaskSessionDeleteInput): Promise<{ ok: boolean }>;
+  onSubagentsChanged(callback: (event: { parentTaskIds: string[] }) => void): () => void;
+  updateSubagentPolicy(payload: { runId: string; maxCostUsd?: number; runTimeoutMs?: number; limitAction: 'notify' | 'stop' }): Promise<void>;
+  consumeSubagentResults(payload: { parentTaskId: string }): Promise<boolean>;
   listSubagents(payload: { parentTaskId: string }): Promise<{ runs: SubagentRunDetail[]; tree: SubagentRunTreeNode[]; activeCount: number }>;
   listAllSubagents(payload?: { includeArchived?: boolean; query?: string; limit?: number }): Promise<{ runs: SubagentRunDetail[]; total?: number; truncated?: boolean }>;
   getSubagent(payload: { runId: string }): Promise<SubagentRunDetail | null>;

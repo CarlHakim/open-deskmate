@@ -1,124 +1,31 @@
+import { preserveEquivalentSubagentRunReferences, preserveEquivalentSubagentTreeReferences } from '../lib/subagent-presentation';
+import { AnswerActions, AnswerActionsProvider } from '../components/chat/AnswerActions';
+import { focusSceneBackground } from '../components/chat/FocusScene';
+import { useFocusSceneStore } from '../stores/focusSceneStore';
+import { getChatBackground, readChatBackgroundId } from '../lib/chat-backgrounds';
+import { AgentCharacterButton, AgentCharacterProvider } from '../components/agents/AgentCharacterCard';
+import { TaskJourney, AnswerHighlight } from '../components/chat/TaskJourney';
+import { GuidanceContext } from '../components/chat/GuidanceChoices';
+import BuildSubagentTreeList from '../components/subagents/SubagentTreeList';
+import { useSubagentRefresh } from '../hooks/useSubagentRefresh';
+import { isBuildTaskActive, useBuildTaskActivity } from '../hooks/useBuildTaskActivity';
+import { BuildTooltip, canonicalizeWorkspaceRelativePath, getFileExtension, getFileIcon, TreeNode, WorkspaceTreeClipboardEntry } from '../components/build/BuildFileTree';
+import { BuildPresetFieldHelp, BuildPromptComposer } from '../components/build/BuildPromptComposer';
+import { BuildTerminalPane } from '../components/build/BuildTerminalPane';
+import { useVisiblePolling } from '../hooks/useVisiblePolling';
+import { buildSubagentPartSignature, canRequestSubagentRecovery, compactSubagentTextSignature, formatSubagentElapsed, formatSubagentModeLabel, formatSubagentProgressEvent, formatSubagentRunStatus, formatSubagentUpdatedAge, getRelayedSubagentCompletionMeta, getSubagentBuildHandoffSignature, getSubagentBuildHandoffSummary, getSubagentInheritedContextSignature, getSubagentLatestActivitySummary, getSubagentProgressEventsSignature, getSubagentRecoveryHistorySignature, getSubagentRecoverySummary, getSubagentResultBundleSignature, getSubagentResultBundleSummary, getSubagentRunIndicators, getSubagentRunStatusClasses, getSubagentSharedContextSignature, getSubagentSupervisorSignature, hashForRenderVersion, isActiveSubagentRun, isRelayedSubagentCompletionMessage } from '../lib/subagent-presentation';
+import { normalizeFsPath, pathLeaf } from '../lib/workspace-paths';
 'use client';
 
-import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ComponentProps, MouseEvent as ReactMouseEvent, ReactElement, ReactNode, UIEvent as ReactUIEvent } from 'react';
-import { createPortal } from 'react-dom';
-import { useLocation, useNavigate } from 'react-router-dom';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
-import { Terminal as XTermTerminal } from 'xterm';
-import { FitAddon } from '@xterm/addon-fit';
-import 'xterm/css/xterm.css';
-import CodeMirror from '@uiw/react-codemirror';
-import type { Extension } from '@codemirror/state';
-import { EditorView } from '@codemirror/view';
-import { oneDark } from '@codemirror/theme-one-dark';
-import { javascript } from '@codemirror/lang-javascript';
-import { json } from '@codemirror/lang-json';
-import { html } from '@codemirror/lang-html';
-import { css } from '@codemirror/lang-css';
-import { markdown } from '@codemirror/lang-markdown';
-import { python } from '@codemirror/lang-python';
-import { sql } from '@codemirror/lang-sql';
-import type {
-  BuildEnvProfile,
-  BuildFileTreeNode,
-  BuildGitMismatchSummary,
-  BuildGitRemoteProvider,
-  BuildGitResolveMismatchAction,
-  BuildGitStashEntry,
-  BuildGitSummary,
-  BuildDiffEnforcementMode,
-  BuildGitConflictFile,
-  BuildLogEntry,
-  BuildProjectPreset,
-  BuildSessionSnapshot,
-  BuildStartEntry,
-  BuildTerminalEntry,
-  BuildTerminalSessionSummary,
-  BuildTerminalSnapshot,
-  BuildTaskSession,
-  BuildTaskSessionListItem,
-  BuildWorkspaceFingerprint,
-  BuildWorkspaceDiff,
-  BuildWorkspaceDiffFileContent,
-  BuildQualityCheckRun,
-  ContextWindowEstimateResponse,
-  ProviderConfig,
-  SelectedModel,
-  SubagentRunRecord,
-  SubagentRunTreeNode,
-  Task,
-  TaskStatus,
-  TaskMessage,
-  UsageProject,
-  UsageProjectWorkItem,
-  UsageProjectWorkItemDocumentLink,
-  UsageProjectWorkItemNote,
-} from '@accomplish/shared';
-import {
-  AlertCircle,
-  Archive,
-  ArrowRight,
-  Brain,
-  Check,
-  CheckCircle2,
-  ChevronDown,
-  ChevronLeft,
-  ChevronRight,
-  ChevronsUpDown,
-  Clipboard,
-  Circle,
-  Code,
-  Copy,
-  Download,
-  Edit3,
-  ExternalLink,
-  File,
-  FileCode,
-  FileDiff,
-  FilePlus,
-  FileText,
-  Folder,
-  FolderPlus,
-  FolderOpen,
-  GitBranch,
-  Github,
-  Eye,
-  Info,
-  Loader2,
-  Maximize2,
-  Minimize2,
-  Minus,
-  MousePointer2,
-  Paperclip,
-  Play,
-  Plus,
-  RefreshCw,
-  RotateCcw,
-  Save,
-  Scissors,
-  Search,
-  History,
-  ClipboardList,
-  GripVertical,
-  Star,
-  Square,
-  Terminal as TerminalIcon,
-  Trash2,
-  Triangle,
-  Type,
-  PanelBottomClose,
-  Lock,
-  UploadCloud,
-  Wrench,
-  X,
-  ZoomIn,
-  ZoomOut,
-  Redo2,
-  Undo2,
-} from 'lucide-react';
+import BuildProjectWorkPopup from '@/components/build/BuildProjectWorkPopup';
+import AgentToolStateIndicator, {
+getLatestToolPresenceFromMessages,
+getToolActivityStepsFromMessages,
+} from '@/components/chat/AgentToolStateIndicator';
+import PromptNavigator, { createPromptPreview, type PromptNavigatorEntry } from '@/components/chat/PromptNavigator';
+import { AgentAvatarIcon } from '@/components/layout/AgentAvatarPicker';
+import ModeSwitch from '@/components/layout/ModeSwitch';
+import SavedPromptsDialog from '@/components/layout/SavedPromptsDialog';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -126,50 +33,145 @@ import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { useTheme } from '@/contexts/ThemeContext';
+import { usePluginSlashCommands } from '@/hooks/usePluginSlashCommands';
+import { getAccomplish } from '@/lib/accomplish';
+import { isAgentCharacterAvatar } from '@/lib/agent-character-gallery';
+import { APP_COMMAND_EVENTS, createAppSlashCommands } from '@/lib/app-commands';
+import { buildAiTestsInstruction } from '@/lib/build-ai-tests-instruction';
+import {
+BUILD_RECIPE_CATEGORIES,
+BUILD_RECIPES,
+type BuildRecipeCategory,
+} from '@/lib/build-recipes';
+import { normalizeMarkdownTables } from '@/lib/markdown-tables';
+import { mergePromptCategories } from '@/lib/prompt-categories';
+import { buildWordFriendlyRtfWithRenderedIcons } from '@/lib/rich-text-export';
+import {
+normalizeSelectedModel,
+SELECTED_MODEL_CHANGED_EVENT,
+} from '@/lib/selected-model-events';
+import { type SlashCommandDefinition } from '@/lib/slash-commands';
 import { cn } from '@/lib/utils';
 import { useAgentStore } from '@/stores/agentStore';
-import { getAccomplish } from '@/lib/accomplish';
-import { registerPromptAttachmentTarget, registerPromptInsertionTarget } from '@/lib/prompt-insertion';
-import ModeSwitch from '@/components/layout/ModeSwitch';
-import SavedPromptsDialog from '@/components/layout/SavedPromptsDialog';
-import ContextWindowIndicator from '@/components/chat/ContextWindowIndicator';
-import ContextInspector from '@/components/chat/ContextInspector';
-import AgentToolStateIndicator, {
-  getLatestToolPresenceFromMessages,
-  getToolActivityStepsFromMessages,
-} from '@/components/chat/AgentToolStateIndicator';
-import { AgentAvatarIcon } from '@/components/layout/AgentAvatarPicker';
-import PromptNavigator, { createPromptPreview, type PromptNavigatorEntry } from '@/components/chat/PromptNavigator';
-import { UsageProjectSelector } from '@/components/usage/UsageProjectSelector';
-import BuildProjectWorkPopup from '@/components/build/BuildProjectWorkPopup';
 import { useSavedPromptsStore } from '@/stores/savedPromptsStore';
-import { useUsageProjectStore } from '@/stores/usageProjectStore';
-import { useTheme } from '@/contexts/ThemeContext';
-import InlineSlashCommandMenu from '@/components/commands/InlineSlashCommandMenu';
-import { filterSlashCommands, type SlashCommandDefinition } from '@/lib/slash-commands';
-import { APP_COMMAND_EVENTS, createAppSlashCommands } from '@/lib/app-commands';
-import { usePluginSlashCommands } from '@/hooks/usePluginSlashCommands';
-import {
-  addPromptHistoryEntry,
-  BUILD_PROMPT_HISTORY_STORAGE_KEY,
-  readPromptHistory,
-  shouldHandlePromptHistoryRecall,
-} from '@/lib/prompt-history';
-import { normalizeMarkdownTables } from '@/lib/markdown-tables';
-import { isAgentCharacterAvatar } from '@/lib/agent-character-gallery';
-import {
-  BUILD_RECIPE_CATEGORIES,
-  BUILD_RECIPES,
-  type BuildRecipeCategory,
-} from '@/lib/build-recipes';
-import { mergePromptCategories } from '@/lib/prompt-categories';
-import {
-  normalizeSelectedModel,
-  SELECTED_MODEL_CHANGED_EVENT,
-} from '@/lib/selected-model-events';
-import { buildAiTestsInstruction } from '@/lib/build-ai-tests-instruction';
-import { buildWordFriendlyRtfWithRenderedIcons } from '@/lib/rich-text-export';
 import { useTopBarControls } from '@/stores/topBarControlsStore';
+import { useUsageProjectStore } from '@/stores/usageProjectStore';
+import type {
+BuildDiffEnforcementMode,
+BuildEnvProfile,
+BuildFileTreeNode,
+BuildGitConflictFile,
+BuildGitMismatchSummary,
+BuildGitRemoteProvider,
+BuildGitResolveMismatchAction,
+BuildGitStashEntry,
+BuildGitSummary,
+BuildLogEntry,
+BuildProjectPreset,
+BuildQualityCheckRun,
+BuildSessionSnapshot,
+BuildStartEntry,
+BuildTaskSession,
+BuildTaskSessionListItem,
+BuildTerminalSessionSummary,
+BuildTerminalSnapshot,
+BuildWorkspaceDiff,
+BuildWorkspaceDiffFileContent,
+BuildWorkspaceFingerprint,
+ContextWindowEstimateResponse,
+ProviderConfig,
+SelectedModel,
+SubagentRunRecord,
+SubagentRunTreeNode,
+Task,
+TaskMessage,
+TaskStatus,
+UsageProject,
+UsageProjectWorkItem,
+UsageProjectWorkItemDocumentLink,
+UsageProjectWorkItemNote
+} from '@accomplish/shared';
+import { css } from '@codemirror/lang-css';
+import { html } from '@codemirror/lang-html';
+import { javascript } from '@codemirror/lang-javascript';
+import { json } from '@codemirror/lang-json';
+import { markdown } from '@codemirror/lang-markdown';
+import { python } from '@codemirror/lang-python';
+import { sql } from '@codemirror/lang-sql';
+import type { Extension } from '@codemirror/state';
+import { oneDark } from '@codemirror/theme-one-dark';
+import { EditorView } from '@codemirror/view';
+import CodeMirror from '@uiw/react-codemirror';
+import {
+AlertCircle,
+Archive,
+ArrowRight,
+Brain,
+Check,
+CheckCircle2,
+ChevronDown,
+ChevronRight,
+ChevronsUpDown,
+Circle,
+Clipboard,
+ClipboardList,
+Code,
+Copy,
+Download,
+Edit3,
+ExternalLink,
+Eye,
+FileDiff,
+FilePlus,
+FileText,
+Folder,
+FolderOpen,
+FolderPlus,
+GitBranch,
+Github,
+GripVertical,
+History,
+Info,
+Loader2,
+Lock,
+Maximize2,
+Minimize2,
+Minus,
+MousePointer2,
+PanelBottomClose,
+Paperclip,
+Play,
+Plus,
+Redo2,
+RefreshCw,
+RotateCcw,
+Save,
+Scissors,
+Search,
+Square,
+Star,
+Terminal as TerminalIcon,
+Trash2,
+Triangle,
+Type,
+Undo2,
+UploadCloud,
+Wrench,
+X,
+ZoomIn,
+ZoomOut
+} from 'lucide-react';
+import type { ComponentProps, ReactElement, MouseEvent as ReactMouseEvent, ReactNode, UIEvent as ReactUIEvent } from 'react';
+import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import ReactMarkdown from 'react-markdown';
+import { AnswerScope, interactiveMarkdownComponents } from '../components/chat/InteractiveAnswer';
+import PreviewComparison from '../components/build/PreviewComparison';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
+import remarkGfm from 'remark-gfm';
+import 'xterm/css/xterm.css';
 
 const TERMINAL_TASK_STATES = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
 const BUILD_PROMPT_NAVIGATOR_STORAGE_KEY = 'opendeskmate:prompt-navigator:build-visible';
@@ -181,13 +183,6 @@ const PROVIDER_LABELS: Record<string, string> = {
   xai: 'xAI',
   ollama: 'Ollama',
 };
-const CODE_FILE_EXTENSIONS = new Set([
-  'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'py', 'java', 'cs', 'go', 'rs', 'php', 'rb', 'swift', 'kt',
-  'html', 'css', 'scss', 'sass', 'less', 'sql', 'sh', 'ps1', 'c', 'cpp', 'h', 'hpp',
-]);
-const TEXT_FILE_EXTENSIONS = new Set(['md', 'txt', 'rtf', 'log']);
-const CONFIG_FILE_EXTENSIONS = new Set(['json', 'yaml', 'yml', 'toml', 'xml', 'ini', 'env', 'lock']);
-const ASSET_FILE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'avif', 'bmp', 'mp4', 'mp3', 'wav']);
 const BUILD_CENTER_PANEL_MIN_HEIGHT = 180;
 const BUILD_LOWER_PANEL_MIN_HEIGHT = 160;
 const BUILD_CENTER_PANEL_SPLITTER_HEIGHT = 8;
@@ -822,13 +817,6 @@ type PersistedBuildViewState = {
   hiddenSectionLocks?: BuildHiddenSectionLocks;
 };
 
-type WorkspaceTreeClipboardEntry = {
-  mode: 'cut' | 'copy';
-  relativePath: string;
-  workspaceRelativePath: string;
-  type: BuildFileTreeNode['type'];
-};
-
 type WorkspaceTreeContextMenuState = {
   node: BuildFileTreeNode;
   x: number;
@@ -876,15 +864,6 @@ type BuildPromptLibraryItem = {
   tags: string[];
 };
 
-type BuildTooltipProps = {
-  content: ReactNode;
-  children: ReactElement;
-  side?: ComponentProps<typeof TooltipContent>['side'];
-  align?: ComponentProps<typeof TooltipContent>['align'];
-  sideOffset?: ComponentProps<typeof TooltipContent>['sideOffset'];
-  className?: string;
-};
-
 const BUILD_EDITOR_LAYOUT_STORAGE_PREFIX = 'opendeskmate:build-editor-layout:v1';
 const BUILD_VIEW_STATE_STORAGE_PREFIX = 'opendeskmate:build-view-state:v1';
 const BUILD_ACTIVE_HISTORY_SESSION_STORAGE_PREFIX = 'opendeskmate:build-active-history-session:v1';
@@ -893,31 +872,6 @@ type PersistedBuildActiveHistorySessionState = {
   sessionId: string | null;
   historyDropdownOpen?: boolean;
 };
-
-function BuildTooltip({
-  content,
-  children,
-  side = 'top',
-  align = 'center',
-  sideOffset = 10,
-  className,
-}: BuildTooltipProps): ReactElement {
-  const tooltipKey = typeof content === 'string' ? content : undefined;
-  return (
-    <Tooltip key={tooltipKey}>
-      <TooltipTrigger asChild>{children}</TooltipTrigger>
-      <TooltipContent
-        side={side}
-        align={align}
-        sideOffset={sideOffset}
-        collisionPadding={12}
-        className={cn('max-w-xs whitespace-pre-line text-[11px] leading-relaxed', className)}
-      >
-        {content}
-      </TooltipContent>
-    </Tooltip>
-  );
-}
 
 function escapeClipboardHtml(value: string): string {
   return String(value || '')
@@ -1406,14 +1360,6 @@ function formatRuntimeStatus(status: BuildSessionSnapshot['runtime']['status']):
     case 'error': return 'Error';
     default: return 'Stopped';
   }
-}
-
-function hashForRenderVersion(value: string): string {
-  let hash = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    hash = ((hash << 5) - hash + value.charCodeAt(index)) | 0;
-  }
-  return `${value.length}:${hash}`;
 }
 
 function getTaskMessageRenderVersion(message: TaskMessage): string {
@@ -2703,691 +2649,17 @@ function formatStream(stream: BuildLogEntry['stream']): string {
   return 'SYS';
 }
 
-function formatSubagentRunStatus(status: SubagentRunRecord['status'], resultStatus?: SubagentRunRecord['resultStatus']): string {
-  if (status === 'done') {
-    if (resultStatus === 'interrupted') return 'Interrupted';
-    if (resultStatus === 'error') return 'Failed';
-    return 'Completed';
-  }
-  if (status === 'error') return 'Failed';
-  if (status === 'accepted') return 'Queued';
-  return 'Running';
-}
-
-function getSubagentRunStatusClasses(status: SubagentRunRecord['status'], resultStatus?: SubagentRunRecord['resultStatus']): string {
-  if (status === 'done' && resultStatus === 'success') return 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300';
-  if ((status === 'done' && resultStatus === 'interrupted') || status === 'accepted') return 'bg-amber-500/10 text-amber-700 dark:text-amber-300';
-  if (status === 'error' || (status === 'done' && resultStatus === 'error')) return 'bg-destructive/10 text-destructive';
-  return 'bg-sky-500/10 text-sky-700 dark:text-sky-300';
-}
-
-function formatSubagentModeLabel(run: Pick<SubagentRunRecord, 'mode' | 'sessionState' | 'reuseCount'> & { childTaskStatus?: string }): string {
-  const parts = [run.mode === 'session' ? 'Session mode' : 'Run mode'];
-  if (run.mode === 'session' && run.sessionState) {
-    parts.push(`session ${run.sessionState}`);
-  }
-  if (run.mode === 'run' && run.childTaskStatus) {
-    parts.push(`task ${run.childTaskStatus}`);
-  }
-  if (typeof run.reuseCount === 'number' && run.reuseCount > 0) {
-    parts.push(`reused ${run.reuseCount}x`);
-  }
-  return parts.join(' · ');
-}
-
-function isActiveSubagentRun(run: Pick<SubagentRunRecord, 'status'>): boolean {
-  return run.status === 'running' || run.status === 'accepted';
-}
-
-function formatSubagentShortDuration(ms: number): string {
-  if (!Number.isFinite(ms) || ms < 0) return 'n/a';
-  const minutes = Math.floor(ms / 60_000);
-  if (minutes < 1) return '<1m';
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ${minutes % 60}m`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ${hours % 24}h`;
-}
-
-function formatSubagentElapsed(run: Pick<SubagentRunRecord, 'createdAt' | 'updatedAt' | 'completedAt' | 'status'>): string {
-  const started = Date.parse(run.createdAt);
-  if (!Number.isFinite(started)) return 'n/a';
-  const updated = Date.parse(run.updatedAt);
-  const completed = run.completedAt ? Date.parse(run.completedAt) : Number.NaN;
-  const ended = Number.isFinite(completed)
-    ? completed
-    : isActiveSubagentRun(run)
-      ? Date.now()
-      : Number.isFinite(updated)
-        ? updated
-        : Date.now();
-  return formatSubagentShortDuration(ended - started);
-}
-
-function formatSubagentUpdatedAge(value?: string): string {
-  if (!value) return 'n/a';
-  const updated = Date.parse(value);
-  if (!Number.isFinite(updated)) return 'n/a';
-  return `${formatSubagentShortDuration(Date.now() - updated)} ago`;
-}
-
-function compactSubagentActivitySummary(value: string): string {
-  const normalized = String(value || '').replace(/\s+/g, ' ').trim();
-  if (normalized.length <= 420) return normalized;
-  return `${normalized.slice(0, 420).trimEnd()}...`;
-}
-
-function getSubagentLatestProgressEvent(run: Pick<SubagentRunRecord, 'progressEvents'>): NonNullable<SubagentRunRecord['progressEvents']>[number] | null {
-  const events = run.progressEvents || [];
-  if (events.length === 0) return null;
-  return events.reduce((latest, event) => {
-    const latestTime = Date.parse(latest.timestamp);
-    const eventTime = Date.parse(event.timestamp);
-    if (!Number.isFinite(eventTime)) return latest;
-    if (!Number.isFinite(latestTime) || eventTime >= latestTime) return event;
-    return latest;
-  }, events[0]);
-}
-
-function formatSubagentProgressEvent(run: Pick<SubagentRunRecord, 'progressEvents'>): string | null {
-  const event = getSubagentLatestProgressEvent(run);
-  if (!event) return null;
-  const parts = [
-    event.title || event.currentStep || event.type,
-    typeof event.percentage === 'number' ? `${Math.round(event.percentage)}%` : null,
-    typeof event.completedSteps === 'number' && typeof event.totalSteps === 'number'
-      ? `${event.completedSteps}/${event.totalSteps}`
-      : null,
-    event.detail,
-  ].filter(Boolean);
-  return compactSubagentActivitySummary(parts.join(' · '));
-}
-
-function getSubagentRecoverySummary(run: Pick<SubagentRunRecord, 'recoveryHistory'>): string | null {
-  const history = run.recoveryHistory || [];
-  if (history.length === 0) return null;
-  const latest = history[history.length - 1];
-  return `${history.length} recovery ${history.length === 1 ? 'attempt' : 'attempts'} · ${latest.action} ${latest.status}`;
-}
-
-function getSubagentResultBundleSummary(run: Pick<SubagentRunRecord, 'resultBundle'>): string | null {
-  const bundle = run.resultBundle;
-  if (!bundle) return null;
-  const itemCount = bundle.items?.length || 0;
-  const missingCount = bundle.missingExpectedOutputIds?.length || 0;
-  if (missingCount > 0) return `${itemCount} outputs · ${missingCount} missing`;
-  return `${itemCount} outputs`;
-}
-
-function getSubagentBuildHandoffSummary(run: Pick<SubagentRunRecord, 'buildHandoff'>): string | null {
-  const handoff = run.buildHandoff;
-  if (!handoff) return null;
-  const changedCount = handoff.changedFiles?.length ?? handoff.gitSummary?.changedFileCount ?? 0;
-  const stats = handoff.gitSummary
-    ? `+${handoff.gitSummary.totalAddedLines} -${handoff.gitSummary.totalDeletedLines}`
-    : null;
-  const mode = handoff.diffMode || (handoff.baselineId ? 'synthetic' : 'workspace');
-  const generated = handoff.generatedAt ? ` · refreshed ${new Date(handoff.generatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : '';
-  return `Build handoff: ${changedCount} file${changedCount === 1 ? '' : 's'}${stats ? ` · ${stats}` : ''} · ${mode}${generated}`;
-}
-
-function getSubagentRunIndicators(run: SubagentRunRecord): Array<{ label: string; title: string; className: string }> {
-  const latestProgress = getSubagentLatestProgressEvent(run);
-  const heartbeatAt = Date.parse(run.supervisor?.heartbeatAt || run.supervisor?.lastCheckedAt || run.updatedAt);
-  const latestProgressAt = latestProgress ? Date.parse(latestProgress.timestamp) : Number.NaN;
-  const latestActivityAt = Math.max(
-    Number.isFinite(heartbeatAt) ? heartbeatAt : 0,
-    Number.isFinite(latestProgressAt) ? latestProgressAt : 0
-  );
-  const stale = isActiveSubagentRun(run) && latestActivityAt > 0 && Date.now() - latestActivityAt > 10 * 60_000;
-  const stuck = Boolean(run.supervisor?.stallDetectedAt || run.supervisor?.stalledReason || latestProgress?.type === 'blocked');
-  const recovering = Boolean((run.recoveryHistory || []).some((entry) => entry.status === 'planned' || entry.status === 'running'));
-  const indicators: Array<{ label: string; title: string; className: string }> = [];
-  if (stale) {
-    indicators.push({
-      label: 'Stale',
-      title: `No heartbeat or progress for ${formatSubagentShortDuration(Date.now() - latestActivityAt)}`,
-      className: 'bg-amber-500/10 text-amber-700 dark:text-amber-300',
-    });
-  }
-  if (stuck) {
-    indicators.push({
-      label: 'Stuck',
-      title: run.supervisor?.stalledReason || latestProgress?.detail || 'Supervisor marked this run as blocked',
-      className: 'bg-destructive/10 text-destructive',
-    });
-  }
-  if (recovering) {
-    indicators.push({
-      label: 'Recovering',
-      title: getSubagentRecoverySummary(run) || 'Recovery is in progress',
-      className: 'bg-sky-500/10 text-sky-700 dark:text-sky-300',
-    });
-  }
-  if (run.replacesRunId) {
-    indicators.push({
-      label: `Replaces ${run.replacesRunId.slice(0, 8)}`,
-      title: `Replacement for run ${run.replacesRunId}`,
-      className: 'bg-violet-500/10 text-violet-700 dark:text-violet-300',
-    });
-  }
-  if (run.replacedByRunId) {
-    indicators.push({
-      label: `Replaced by ${run.replacedByRunId.slice(0, 8)}`,
-      title: `Superseded by run ${run.replacedByRunId}`,
-      className: 'bg-muted text-muted-foreground',
-    });
-  }
-  return indicators;
-}
-
-function canRequestSubagentRecovery(run: SubagentRunRecord): boolean {
-  const latestProgress = getSubagentLatestProgressEvent(run);
-  return isActiveSubagentRun(run) && Boolean(run.supervisor?.recoveryEligible || latestProgress?.recoverable || run.supervisor?.stallDetectedAt);
-}
-
-function getSubagentLatestActivitySummary(run: SubagentRunRecord & { childTaskSummary?: string; childTaskStatus?: string }): string | null {
-  const finalReport = run.finalReport?.trim();
-  if (finalReport) return compactSubagentActivitySummary(finalReport);
-  const progressSummary = formatSubagentProgressEvent(run);
-  if (progressSummary) return progressSummary;
-  const childSummary = run.childTaskSummary?.trim();
-  if (childSummary) return compactSubagentActivitySummary(childSummary);
-  const lastPrompt = run.lastPrompt?.trim();
-  if (lastPrompt && lastPrompt !== run.task.trim()) return `Latest prompt: ${lastPrompt}`;
-  if (run.childTaskStatus) return `Child task ${run.childTaskStatus}`;
-  return null;
-}
-
-type RelayedSubagentCompletionMeta = {
-  childAgentId: string;
-  label?: string;
-};
-
-function getRelayedSubagentCompletionMeta(message: Pick<TaskMessage, 'type' | 'content'>): RelayedSubagentCompletionMeta | null {
-  const content = String(message.content || '').trim();
-  if (
-    message.type !== 'assistant'
-    || !/\nStatus:\s*\S+/i.test(content)
-    || !/\nSession:\s*\S+/i.test(content)
-  ) {
-    return null;
-  }
-  const firstLine = content.split(/\r?\n/, 1)[0] || '';
-  const match = firstLine.match(/^Subagent\s+(.+?)\s+completed\./i);
-  if (!match) return null;
-  const rawChildLabel = match[1].trim();
-  const labelledChild = rawChildLabel.match(/^(.*?)\s+\((.*?)\)$/);
-  const childAgentId = (labelledChild?.[1] || rawChildLabel).trim();
-  if (!childAgentId) return null;
-  return {
-    childAgentId,
-    label: labelledChild?.[2]?.trim() || undefined,
-  };
-}
-
-function isRelayedSubagentCompletionMessage(message: Pick<TaskMessage, 'type' | 'content'>): boolean {
-  return Boolean(getRelayedSubagentCompletionMeta(message));
-}
-
 function isPictureAvatar(avatar: string | undefined, imageDataUrl: string | undefined): boolean {
   return Boolean(imageDataUrl || isAgentCharacterAvatar(avatar));
 }
 
-function compactSubagentTextSignature(value: string | undefined | null, maxInlineChars = 160): string {
-  if (!value) return '';
-  return value.length <= maxInlineChars ? value : hashForRenderVersion(value);
-}
 
-function buildSubagentPartSignature(parts: Array<string | number | boolean | null | undefined>): string {
-  return parts.map((part) => part ?? '').join('\u001f');
-}
 
-function getSubagentProgressEventsSignature(events: SubagentRunRecord['progressEvents']): string {
-  if (!events?.length) return '0';
-  const recentEvents = events.slice(-8).map((event) => buildSubagentPartSignature([
-    event.id,
-    event.type,
-    event.timestamp,
-    event.status,
-    event.toolName,
-    event.messageId,
-    event.percentage,
-    event.currentStep,
-    event.totalSteps,
-    event.completedSteps,
-    event.recoverable,
-    event.domain,
-    event.httpStatus,
-    event.failureKind,
-    compactSubagentTextSignature(event.title, 80),
-    compactSubagentTextSignature(event.detail, 80),
-    compactSubagentTextSignature(event.fallbackSuggested, 80),
-  ]));
-  return `${events.length}\u001e${recentEvents.join('\u001e')}`;
-}
 
-function getSubagentSupervisorSignature(supervisor: SubagentRunRecord['supervisor']): string {
-  if (!supervisor) return '';
-  return buildSubagentPartSignature([
-    supervisor.state,
-    supervisor.lastCheckedAt,
-    supervisor.nextCheckAt,
-    supervisor.heartbeatAt,
-    supervisor.lastProgressAt,
-    supervisor.lastMeaningfulProgressAt,
-    supervisor.stallDetectedAt,
-    supervisor.stalledReason,
-    supervisor.staleReason,
-    supervisor.stuckReason,
-    supervisor.blockedReason,
-    supervisor.repeatedToolName,
-    supervisor.repeatedToolCount,
-    supervisor.blockedSourceDomain,
-    supervisor.blockedSourceUrl,
-    supervisor.blockedHttpStatus,
-    supervisor.blockedFailureKind,
-    supervisor.blockedSourceCount,
-    supervisor.recommendedAction,
-    supervisor.recoveryEligible,
-    supervisor.recoveryAttempts,
-    compactSubagentTextSignature(supervisor.notes, 120),
-  ]);
-}
 
-function getSubagentResultBundleSignature(bundle: SubagentRunRecord['resultBundle']): string {
-  if (!bundle) return '';
-  const itemSignature = (bundle.items || []).map((item) => buildSubagentPartSignature([
-    item.id,
-    item.kind,
-    item.label,
-    item.path,
-    compactSubagentTextSignature(item.content, 120),
-  ])).join('\u001e');
-  return buildSubagentPartSignature([
-    bundle.generatedAt,
-    bundle.finalReportTruncated,
-    compactSubagentTextSignature(bundle.summary, 160),
-    compactSubagentTextSignature(bundle.partialReport, 160),
-    compactSubagentTextSignature(bundle.finalReport, 160),
-    bundle.missingExpectedOutputIds?.join(',') || '',
-    bundle.items?.length || 0,
-    itemSignature,
-  ]);
-}
 
-function getSubagentRecoveryHistorySignature(history: SubagentRunRecord['recoveryHistory']): string {
-  if (!history?.length) return '0';
-  return history.map((entry) => buildSubagentPartSignature([
-    entry.id,
-    entry.action,
-    entry.status,
-    entry.startedAt,
-    entry.completedAt,
-    entry.replacementRunId,
-    compactSubagentTextSignature(entry.reason, 100),
-    compactSubagentTextSignature(entry.error, 100),
-    compactSubagentTextSignature(entry.notes, 100),
-  ])).join('\u001e');
-}
 
-function getSubagentInheritedContextSignature(context: SubagentRunRecord['inheritedContext']): string {
-  if (!context) return '';
-  return buildSubagentPartSignature([
-    context.workingDirectory,
-    context.privacyMode,
-    context.buildMode,
-    context.buildWorkspaceRelativePath,
-    context.attachedFiles?.join(',') || '',
-    context.toolsetIds?.join(',') || '',
-    context.deferredToolDiscoveryEnabled,
-    context.enabledToolsetIds?.join(',') || '',
-    context.availableToolsetIds?.join(',') || '',
-    context.inheritedToolsetIds?.join(',') || '',
-  ]);
-}
 
-function getSubagentSharedContextSignature(context: SubagentRunRecord['sharedContext']): string {
-  if (!context) return '';
-  const blockedSources = (context.blockedSources || []).map((source) => buildSubagentPartSignature([
-    source.domain,
-    source.sourceUrl,
-    source.httpStatus,
-    source.failureKind,
-    source.count,
-    source.lastSeenAt,
-    compactSubagentTextSignature(source.example, 80),
-  ])).join('\u001e');
-  return buildSubagentPartSignature([
-    context.generatedAt,
-    blockedSources,
-    context.blockedTools?.join(',') || '',
-    context.successfulFallbacks?.join(',') || '',
-    context.confirmedFindings?.length || 0,
-    context.openGaps?.length || 0,
-  ]);
-}
-
-function getSubagentBuildHandoffSignature(handoff: SubagentRunRecord['buildHandoff']): string {
-  if (!handoff) return '';
-  const changedFiles = (handoff.changedFiles || []).slice(0, 80).map((file) => buildSubagentPartSignature([
-    file.relativePath,
-    file.changeType,
-    file.addedLines,
-    file.deletedLines,
-    file.beforeTruncated,
-    file.afterTruncated,
-  ])).join('\u001e');
-  return buildSubagentPartSignature([
-    handoff.workspaceAgentId,
-    handoff.workspaceRelativePath,
-    handoff.baselineId,
-    handoff.diffMode,
-    handoff.diffAvailable,
-    handoff.diffSummary,
-    handoff.changedFiles?.length || 0,
-    changedFiles,
-    handoff.patchTruncated,
-    compactSubagentTextSignature(handoff.patchExcerpt, 120),
-    handoff.gitSummary?.branch,
-    handoff.gitSummary?.dirty,
-    handoff.gitSummary?.changedFileCount,
-    handoff.gitSummary?.totalAddedLines,
-    handoff.gitSummary?.totalDeletedLines,
-    handoff.generatedAt,
-  ]);
-}
-
-function getSubagentRunSignature(run: SubagentRunRecord): string {
-  return buildSubagentPartSignature([
-    run.runId,
-    run.childTaskId,
-    run.childSessionKey,
-    run.sessionId,
-    run.sessionState,
-    run.parentTaskId,
-    run.parentRunId,
-    run.parentSessionKey,
-    run.parentAgentId,
-    run.childAgentId,
-    run.persistentKey,
-    run.label,
-    compactSubagentTextSignature(run.task, 160),
-    compactSubagentTextSignature(run.lastPrompt, 160),
-    run.depth,
-    run.mode,
-    run.reuseCount,
-    run.status,
-    run.resultStatus,
-    compactSubagentTextSignature(run.error, 160),
-    compactSubagentTextSignature(run.finalReport, 160),
-    run.finalReportTruncated,
-    getSubagentProgressEventsSignature(run.progressEvents),
-    getSubagentSupervisorSignature(run.supervisor),
-    run.expectedOutputs?.length || 0,
-    getSubagentResultBundleSignature(run.resultBundle),
-    getSubagentRecoveryHistorySignature(run.recoveryHistory),
-    run.replacesRunId,
-    run.replacedByRunId,
-    run.replacementReason,
-    run.model?.provider,
-    run.model?.model,
-    run.executionPolicy?.mode,
-    run.executionPolicy?.maxChildren,
-    run.executionPolicy?.maxDepth,
-    run.executionPolicy?.runTimeoutMs,
-    run.executionPolicy?.autoRelayCompletions,
-    getSubagentInheritedContextSignature(run.inheritedContext),
-    getSubagentSharedContextSignature(run.sharedContext),
-    getSubagentBuildHandoffSignature(run.buildHandoff),
-    run.createdAt,
-    run.updatedAt,
-    run.completedAt,
-    run.lastResumedAt,
-    run.archivedAt,
-    run.closedAt,
-  ]);
-}
-
-function preserveEquivalentSubagentRunReferences<T extends SubagentRunRecord>(current: T[], incoming: T[]): T[] {
-  if (incoming.length === 0) return current.length === 0 ? current : incoming;
-  const currentById = new Map(current.map((run) => [run.runId, run]));
-  let changed = incoming.length !== current.length;
-  const next = incoming.map((run, index) => {
-    const existing = currentById.get(run.runId);
-    if (existing && getSubagentRunSignature(existing) === getSubagentRunSignature(run)) {
-      if (current[index] !== existing) changed = true;
-      return existing as T;
-    }
-    changed = true;
-    return run;
-  });
-  return changed ? next : current;
-}
-
-function preserveEquivalentSubagentTreeReferences(current: SubagentRunTreeNode[], incoming: SubagentRunTreeNode[]): SubagentRunTreeNode[] {
-  if (incoming.length === 0) return current.length === 0 ? current : incoming;
-  const currentById = new Map(current.map((run) => [run.runId, run]));
-  let changed = incoming.length !== current.length;
-  const next = incoming.map((run, index) => {
-    const existing = currentById.get(run.runId);
-    const children = preserveEquivalentSubagentTreeReferences(existing?.children || [], run.children || []);
-    const sameRun = existing && getSubagentRunSignature(existing) === getSubagentRunSignature(run);
-    if (sameRun && children === existing.children) {
-      if (current[index] !== existing) changed = true;
-      return existing;
-    }
-    changed = true;
-    return children === run.children ? run : { ...run, children };
-  });
-  return changed ? next : current;
-}
-
-function BuildSubagentTreeList({
-  nodes,
-  level = 0,
-  stoppingSubagentRunId,
-  agentNames,
-  onOpen,
-  onInspect,
-  onStop,
-  onCloseSession,
-  onArchive,
-  onRecover,
-  onReplace,
-}: {
-  nodes: SubagentRunTreeNode[];
-  level?: number;
-  stoppingSubagentRunId: string | null;
-  agentNames: Map<string, string>;
-  onOpen: (run: SubagentRunRecord) => void;
-  onInspect: (run: SubagentRunRecord) => void;
-  onStop: (runId: string) => void;
-  onCloseSession: (runId: string) => void;
-  onArchive: (runId: string) => void;
-  onRecover: (run: SubagentRunRecord) => void;
-  onReplace: (run: SubagentRunRecord) => void;
-}): ReactElement | null {
-  if (nodes.length === 0) return null;
-  return (
-    <div className={cn('space-y-1.5', level > 0 ? 'ml-3 border-l border-border/50 pl-3 sm:ml-4' : '')}>
-      {nodes.map((run) => {
-        const stoppable = isActiveSubagentRun(run);
-        const childAgentName = agentNames.get(run.childAgentId) || run.childAgentId;
-        const activitySummary = getSubagentLatestActivitySummary(run);
-        const progressSummary = formatSubagentProgressEvent(run);
-        const recoverySummary = getSubagentRecoverySummary(run);
-        const resultBundleSummary = getSubagentResultBundleSummary(run);
-        const buildHandoffSummary = getSubagentBuildHandoffSummary(run);
-        const indicators = getSubagentRunIndicators(run);
-        const canRecover = canRequestSubagentRecovery(run);
-        const canReplace = canRecover && !run.replacedByRunId;
-        const relayEnabled = run.status === 'done' && run.executionPolicy?.autoRelayCompletions === true;
-        return (
-          <div key={run.runId} className="rounded-md border border-border/50 bg-card/70 px-2 py-1.5 shadow-sm backdrop-blur-sm">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-              <div className="min-w-0 flex-1">
-                <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                  <div className="truncate text-xs font-semibold text-foreground" title={run.label || run.task}>
-                    {run.label || run.childAgentId}
-                  </div>
-                  <span className={cn('rounded-full px-1.5 py-0.5 text-[10px] font-medium', getSubagentRunStatusClasses(run.status, run.resultStatus))}>
-                    {formatSubagentRunStatus(run.status, run.resultStatus)}
-                  </span>
-                  {relayEnabled ? (
-                    <span className="rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
-                      Relay enabled
-                    </span>
-                  ) : null}
-                  {indicators.map((indicator) => (
-                    <span
-                      key={`${run.runId}-${indicator.label}`}
-                      className={cn('rounded-full px-1.5 py-0.5 text-[10px] font-medium', indicator.className)}
-                      title={indicator.title}
-                    >
-                      {indicator.label}
-                    </span>
-                  ))}
-                </div>
-                <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
-                  <span className="truncate">Child: {childAgentName}</span>
-                  {run.model ? <span className="truncate">{run.model.provider}:{run.model.model}</span> : null}
-                  <span>{formatSubagentModeLabel(run)}</span>
-                  <span>Elapsed {formatSubagentElapsed(run)}</span>
-                  <span>Updated {formatSubagentUpdatedAge(run.updatedAt)}</span>
-                </div>
-                <div className="mt-1 truncate text-[10px] text-muted-foreground" title={run.task}>
-                  Goal: {run.task}
-                </div>
-                {activitySummary ? (
-                  <div className="mt-0.5 truncate text-[10px] text-muted-foreground" title={activitySummary}>
-                    Latest: {activitySummary}
-                  </div>
-                ) : null}
-                {progressSummary && progressSummary !== activitySummary ? (
-                  <div className="mt-0.5 truncate text-[10px] text-muted-foreground" title={progressSummary}>
-                    Progress: {progressSummary}
-                  </div>
-                ) : null}
-                {recoverySummary || resultBundleSummary ? (
-                  <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
-                    {recoverySummary ? <span className="truncate" title={recoverySummary}>{recoverySummary}</span> : null}
-                    {resultBundleSummary ? <span className="truncate" title={resultBundleSummary}>Results: {resultBundleSummary}</span> : null}
-                  </div>
-                ) : null}
-                {buildHandoffSummary ? (
-                  <div
-                    className="mt-1 rounded-md border border-amber-500/20 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-800 dark:text-amber-200"
-                    title={run.buildHandoff?.diffSummary || buildHandoffSummary}
-                  >
-                    {buildHandoffSummary}
-                  </div>
-                ) : null}
-              </div>
-              <div className="flex shrink-0 flex-wrap items-center gap-1 sm:justify-end">
-                {canRecover ? (
-                  <Button
-                    size="icon"
-                    variant="outline"
-                    className="h-6 w-6"
-                    onClick={() => onRecover(run)}
-                    title="Ask subagent to recover"
-                    aria-label="Ask subagent to recover"
-                  >
-                    <RefreshCw className="h-3.5 w-3.5" />
-                  </Button>
-                ) : null}
-                {canReplace ? (
-                  <Button
-                    size="icon"
-                    variant="outline"
-                    className="h-6 w-6"
-                    onClick={() => onReplace(run)}
-                    title="Ask subagent to prepare replacement handoff"
-                    aria-label="Ask subagent to prepare replacement handoff"
-                  >
-                    <Play className="h-3.5 w-3.5" />
-                  </Button>
-                ) : null}
-                <Button
-                  size="icon"
-                  variant="outline"
-                  className="h-6 w-6"
-                  onClick={() => onOpen(run)}
-                  title="Open subagent transcript"
-                  aria-label="Open subagent transcript"
-                >
-                  <Eye className="h-3.5 w-3.5" />
-                </Button>
-                <Button
-                  size="icon"
-                  variant="outline"
-                  className="h-6 w-6"
-                  onClick={() => onInspect(run)}
-                  title="Inspect in Subagents"
-                  aria-label="Inspect in Subagents"
-                >
-                  <ExternalLink className="h-3.5 w-3.5" />
-                </Button>
-                {stoppable ? (
-                  <Button
-                    size="icon"
-                    variant="outline"
-                    className="h-6 w-6"
-                    onClick={() => onStop(run.runId)}
-                    disabled={stoppingSubagentRunId === run.runId}
-                    title="Cancel child run"
-                    aria-label="Cancel child run"
-                  >
-                    {stoppingSubagentRunId === run.runId ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Square className="h-3.5 w-3.5" />}
-                  </Button>
-                ) : null}
-                <Button
-                  size="icon"
-                  variant="outline"
-                  className="h-6 w-6"
-                  onClick={() => onCloseSession(run.runId)}
-                  title="Close child session"
-                  aria-label="Close child session"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </Button>
-                <Button
-                  size="icon"
-                  variant="outline"
-                  className="h-6 w-6"
-                  onClick={() => onArchive(run.runId)}
-                  title="Archive subagent run"
-                  aria-label="Archive subagent run"
-                >
-                  <Archive className="h-3.5 w-3.5" />
-                </Button>
-              </div>
-            </div>
-            {run.children.length > 0 ? (
-              <div className="mt-2">
-                <BuildSubagentTreeList
-                  nodes={run.children}
-                  level={level + 1}
-                  stoppingSubagentRunId={stoppingSubagentRunId}
-                  agentNames={agentNames}
-                  onOpen={onOpen}
-                  onInspect={onInspect}
-                  onStop={onStop}
-                  onCloseSession={onCloseSession}
-                  onArchive={onArchive}
-                  onRecover={onRecover}
-                  onReplace={onReplace}
-                />
-              </div>
-            ) : null}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
 
 function isBuildModeGoalPanelMessage(message: TaskMessage): boolean {
   const content = String(message.content || '');
@@ -3846,17 +3118,6 @@ function formatTokensShort(value?: number): string {
   return String(value);
 }
 
-function normalizeFsPath(value: string): string {
-  return String(value || '').replace(/\\/g, '/').replace(/\/+$/g, '').trim();
-}
-
-function canonicalizeWorkspaceRelativePath(value: string | null | undefined): string {
-  const normalized = normalizeFsPath(value || '.');
-  if (!normalized || normalized === '.') return '.';
-  const withoutLeadingDot = normalized.replace(/^\.\/+/, '');
-  return withoutLeadingDot || '.';
-}
-
 function normalizeWorkspacePathKey(value: string | null | undefined): string {
   return canonicalizeWorkspaceRelativePath(value).toLowerCase();
 }
@@ -3912,46 +3173,6 @@ type BuildPresetInputWithHelpProps = ComponentProps<typeof Input> & {
   optional?: boolean;
 };
 
-type BuildPresetFieldHelpProps = {
-  helpTitle: string;
-  helpDescription: string;
-  optional?: boolean;
-  children: ReactNode;
-};
-
-function BuildPresetFieldHelp({
-  helpTitle,
-  helpDescription,
-  optional = false,
-  children,
-}: BuildPresetFieldHelpProps) {
-  const [open, setOpen] = useState(false);
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <div
-          onMouseEnter={() => setOpen(true)}
-          onMouseLeave={() => setOpen(false)}
-          onFocusCapture={() => setOpen(true)}
-          onBlurCapture={() => setOpen(false)}
-        >
-          {children}
-        </div>
-      </PopoverTrigger>
-      <PopoverContent className="max-w-xs text-xs leading-relaxed text-foreground" align="start">
-        <div className="space-y-1">
-          <div className="font-medium text-foreground">
-            {helpTitle}
-            {optional ? <span className="ml-1 text-muted-foreground">(optional)</span> : null}
-          </div>
-          <div className="text-muted-foreground">{helpDescription}</div>
-        </div>
-      </PopoverContent>
-    </Popover>
-  );
-}
-
 function BuildPresetInputWithHelp({
   helpTitle,
   helpDescription,
@@ -3964,13 +3185,6 @@ function BuildPresetInputWithHelp({
       <Input placeholder={placeholder} {...props} />
     </BuildPresetFieldHelp>
   );
-}
-
-function pathLeaf(value: string): string {
-  const normalized = normalizeFsPath(value);
-  if (!normalized || normalized === '.') return 'workspace root';
-  const parts = normalized.split('/').filter(Boolean);
-  return parts[parts.length - 1] || normalized;
 }
 
 function resolveLocalhostPreviewUrl(snapshot: BuildSessionSnapshot | null): string | null {
@@ -4013,31 +3227,6 @@ function formatSelectedModelBadgeLabel(model: SelectedModel | null | undefined):
 
   const providerLabel = PROVIDER_LABELS[providerId.toLowerCase()] || providerId;
   return providerLabel ? `${providerLabel}: ${modelName}` : modelName;
-}
-
-interface TreeNodeProps {
-  node: BuildFileTreeNode;
-  selectedPath: string | null;
-  onSelect: (node: BuildFileTreeNode) => void;
-  depth?: number;
-  collapseToken?: number;
-  pendingCreateType?: 'file' | 'folder' | null;
-  pendingCreateName?: string;
-  pendingCreateParentPath?: string | null;
-  onPendingCreateNameChange?: (value: string) => void;
-  onCommitPendingCreate?: () => void;
-  onCancelPendingCreate?: () => void;
-  onDirectoryInteract?: (node: BuildFileTreeNode) => void;
-  pendingCreateInputRef?: React.RefObject<HTMLInputElement | null>;
-  pendingRenamePath?: string | null;
-  pendingRenameName?: string;
-  onPendingRenameNameChange?: (value: string) => void;
-  onCommitPendingRename?: () => void;
-  onCancelPendingRename?: () => void;
-  pendingRenameInputRef?: React.RefObject<HTMLInputElement | null>;
-  onContextMenu?: (event: ReactMouseEvent<HTMLButtonElement>, node: BuildFileTreeNode) => void;
-  clipboardEntry?: WorkspaceTreeClipboardEntry | null;
-  currentWorkspaceRelativePath?: string;
 }
 
 interface ParsedPlanItem {
@@ -4158,12 +3347,6 @@ function formatPlanStatusLabel(status?: string): string {
   return status.replace(/_/g, ' ');
 }
 
-function getFileExtension(fileName: string): string {
-  const dotIndex = fileName.lastIndexOf('.');
-  if (dotIndex <= 0 || dotIndex === fileName.length - 1) return '';
-  return fileName.slice(dotIndex + 1).toLowerCase();
-}
-
 function getEditorLanguageExtensions(filePath: string | null | undefined): Extension[] {
   const ext = getFileExtension(filePath || '');
   if (['ts', 'tsx'].includes(ext)) return [javascript({ typescript: true, jsx: true })];
@@ -4176,265 +3359,6 @@ function getEditorLanguageExtensions(filePath: string | null | undefined): Exten
   if (ext === 'sql') return [sql()];
   return [];
 }
-
-function getFileIcon(name: string, isSelected: boolean) {
-  const ext = getFileExtension(name);
-  const selectedClass = isSelected ? 'text-primary' : '';
-
-  if (CODE_FILE_EXTENSIONS.has(ext)) {
-    return <FileCode className={cn('h-3.5 w-3.5 shrink-0 text-[#519aba] dark:text-[#519aba]', selectedClass)} />;
-  }
-  if (TEXT_FILE_EXTENSIONS.has(ext)) {
-    return <FileText className={cn('h-3.5 w-3.5 shrink-0 text-[#89d185] dark:text-[#89d185]', selectedClass)} />;
-  }
-  if (CONFIG_FILE_EXTENSIONS.has(ext)) {
-    return <File className={cn('h-3.5 w-3.5 shrink-0 text-[#d19a66] dark:text-[#d19a66]', selectedClass)} />;
-  }
-  if (ASSET_FILE_EXTENSIONS.has(ext)) {
-    return <File className={cn('h-3.5 w-3.5 shrink-0 text-[#c586c0] dark:text-[#c586c0]', selectedClass)} />;
-  }
-  return <File className={cn('h-3.5 w-3.5 shrink-0 text-[#9aa0a6] dark:text-[#9aa0a6]', selectedClass)} />;
-}
-
-function TreeNode({
-  node,
-  selectedPath,
-  onSelect,
-  depth = 0,
-  collapseToken = 0,
-  pendingCreateType = null,
-  pendingCreateName = '',
-  pendingCreateParentPath = null,
-  onPendingCreateNameChange,
-  onCommitPendingCreate,
-  onCancelPendingCreate,
-  onDirectoryInteract,
-  pendingCreateInputRef,
-  pendingRenamePath = null,
-  pendingRenameName = '',
-  onPendingRenameNameChange,
-  onCommitPendingRename,
-  onCancelPendingRename,
-  pendingRenameInputRef,
-  onContextMenu,
-  clipboardEntry = null,
-  currentWorkspaceRelativePath = '.',
-}: TreeNodeProps) {
-  const [open, setOpen] = useState(depth < 2);
-  const isDir = node.type === 'directory';
-  const isSelected = selectedPath === node.relativePath;
-  const isPendingRename = pendingRenamePath === node.relativePath;
-  const isCutEntry = clipboardEntry?.mode === 'cut'
-    && clipboardEntry.relativePath === node.relativePath
-    && canonicalizeWorkspaceRelativePath(clipboardEntry.workspaceRelativePath) === canonicalizeWorkspaceRelativePath(currentWorkspaceRelativePath);
-  const sortedChildren = useMemo(() => {
-    if (!Array.isArray(node.children)) return [];
-    return [...node.children].sort((a, b) => {
-      if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
-      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
-    });
-  }, [node.children]);
-
-  useEffect(() => {
-    if (!isDir) return;
-    setOpen(depth < 1);
-  }, [collapseToken, depth, isDir]);
-
-  useEffect(() => {
-    if (!isDir) return;
-    if (pendingCreateParentPath === node.relativePath) {
-      setOpen(true);
-    }
-  }, [isDir, node.relativePath, pendingCreateParentPath]);
-
-  const directoryChildren = sortedChildren.filter((child) => child.type === 'directory');
-  const fileChildren = sortedChildren.filter((child) => child.type === 'file');
-  const shouldRenderInlineCreate = isDir && open && pendingCreateType && pendingCreateParentPath === node.relativePath;
-  const rowPaddingLeft = `${6 + depth * 12}px`;
-  const childPaddingLeft = `${6 + (depth + 1) * 12}px`;
-  const rowIcon = isDir ? (
-    open ? (
-      <FolderOpen className={cn('h-3.5 w-3.5 shrink-0 text-[#dcb67a] dark:text-[#dcb67a]', isSelected ? 'text-primary' : '')} />
-    ) : (
-      <Folder className={cn('h-3.5 w-3.5 shrink-0 text-[#dcb67a] dark:text-[#dcb67a]', isSelected ? 'text-primary' : '')} />
-    )
-  ) : (
-    getFileIcon(node.name, isSelected)
-  );
-
-  return (
-    <div>
-      {isPendingRename ? (
-        <div
-          className={cn(
-            'flex items-center gap-1 rounded-md py-0.5 pr-2 text-xs',
-            isSelected ? 'bg-primary/15 text-primary' : 'text-foreground'
-          )}
-          style={{ paddingLeft: rowPaddingLeft }}
-        >
-          <span className="inline-flex h-3.5 w-3.5 items-center justify-center text-muted-foreground/80">
-            {isDir ? (
-              open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />
-            ) : null}
-          </span>
-          {rowIcon}
-          <Input
-            ref={pendingRenameInputRef}
-            value={pendingRenameName}
-            onChange={(event) => onPendingRenameNameChange?.(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                event.preventDefault();
-                onCommitPendingRename?.();
-              }
-              if (event.key === 'Escape') {
-                event.preventDefault();
-                onCancelPendingRename?.();
-              }
-            }}
-            className="h-7 text-xs"
-          />
-        </div>
-      ) : (
-        <BuildTooltip content={isDir ? `Toggle folder: ${node.relativePath}` : `Open file: ${node.relativePath}`} side="right" align="start">
-          <button
-            type="button"
-            onClick={() => {
-              if (pendingCreateType) {
-                onCancelPendingCreate?.();
-              }
-              if (isDir) {
-                onDirectoryInteract?.(node);
-                setOpen((value) => !value);
-              } else {
-                onSelect(node);
-              }
-            }}
-            onContextMenu={(event) => {
-              if (pendingCreateType) {
-                onCancelPendingCreate?.();
-              }
-              onContextMenu?.(event, node);
-            }}
-            className={cn(
-              'w-full rounded-md py-0.5 pr-2 text-left text-xs transition-colors',
-              isSelected ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground',
-              isCutEntry ? 'opacity-60' : null
-            )}
-            style={{ paddingLeft: rowPaddingLeft }}
-          >
-            <span className="inline-flex min-w-0 items-center gap-1.5">
-              <span className="inline-flex h-3.5 w-3.5 items-center justify-center text-muted-foreground/80">
-                {isDir ? (
-                  open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />
-                ) : null}
-              </span>
-              {rowIcon}
-              <span className="truncate">{node.name}</span>
-            </span>
-          </button>
-        </BuildTooltip>
-      )}
-      {isDir && open ? (
-        <div className="ml-2 border-l border-border/50">
-          {directoryChildren.map((child) => (
-            <TreeNode
-              key={child.relativePath}
-              node={child}
-              selectedPath={selectedPath}
-              onSelect={onSelect}
-              depth={depth + 1}
-              collapseToken={collapseToken}
-              pendingCreateType={pendingCreateType}
-              pendingCreateName={pendingCreateName}
-              pendingCreateParentPath={pendingCreateParentPath}
-              onPendingCreateNameChange={onPendingCreateNameChange}
-              onCommitPendingCreate={onCommitPendingCreate}
-              onCancelPendingCreate={onCancelPendingCreate}
-              onDirectoryInteract={onDirectoryInteract}
-              pendingCreateInputRef={pendingCreateInputRef}
-              pendingRenamePath={pendingRenamePath}
-              pendingRenameName={pendingRenameName}
-              onPendingRenameNameChange={onPendingRenameNameChange}
-              onCommitPendingRename={onCommitPendingRename}
-              onCancelPendingRename={onCancelPendingRename}
-              pendingRenameInputRef={pendingRenameInputRef}
-              onContextMenu={onContextMenu}
-              clipboardEntry={clipboardEntry}
-              currentWorkspaceRelativePath={currentWorkspaceRelativePath}
-            />
-          ))}
-          {shouldRenderInlineCreate ? (
-            <div className="flex items-center gap-1 py-1 pr-2" style={{ paddingLeft: childPaddingLeft }}>
-              {pendingCreateType === 'file' ? (
-                <FilePlus className="h-3.5 w-3.5 shrink-0 text-primary" />
-              ) : (
-                <FolderPlus className="h-3.5 w-3.5 shrink-0 text-primary" />
-              )}
-              <Input
-                ref={pendingCreateInputRef}
-                value={pendingCreateName}
-                onChange={(event) => onPendingCreateNameChange?.(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    event.preventDefault();
-                    onCommitPendingCreate?.();
-                  }
-                  if (event.key === 'Escape') {
-                    event.preventDefault();
-                    onCancelPendingCreate?.();
-                  }
-                }}
-                placeholder={pendingCreateType === 'file' ? 'filename.tsx' : 'new-folder'}
-                className="h-7 text-xs"
-              />
-            </div>
-          ) : null}
-          {fileChildren.map((child) => (
-            <TreeNode
-              key={child.relativePath}
-              node={child}
-              selectedPath={selectedPath}
-              onSelect={onSelect}
-              depth={depth + 1}
-              collapseToken={collapseToken}
-              pendingCreateType={pendingCreateType}
-              pendingCreateName={pendingCreateName}
-              pendingCreateParentPath={pendingCreateParentPath}
-              onPendingCreateNameChange={onPendingCreateNameChange}
-              onCommitPendingCreate={onCommitPendingCreate}
-              onCancelPendingCreate={onCancelPendingCreate}
-              onDirectoryInteract={onDirectoryInteract}
-              pendingCreateInputRef={pendingCreateInputRef}
-              pendingRenamePath={pendingRenamePath}
-              pendingRenameName={pendingRenameName}
-              onPendingRenameNameChange={onPendingRenameNameChange}
-              onCommitPendingRename={onCommitPendingRename}
-              onCancelPendingRename={onCancelPendingRename}
-              pendingRenameInputRef={pendingRenameInputRef}
-              onContextMenu={onContextMenu}
-              clipboardEntry={clipboardEntry}
-              currentWorkspaceRelativePath={currentWorkspaceRelativePath}
-            />
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-type BuildTerminalPaneProps = {
-  accomplish: ReturnType<typeof getAccomplish>;
-  agentId: string | null;
-  session: BuildTerminalSessionSummary;
-  layoutHeightToken: number;
-  isActive: boolean;
-  onActivate: () => void;
-  onNewTerminal: () => void;
-  onSplitTerminal: () => void;
-  onClearTerminal: () => void;
-  onInterruptTerminal: () => void;
-};
 
 type BuildAssistantMessageItemProps = {
   message: TaskMessage;
@@ -4461,307 +3385,6 @@ type BuildAssistantMessageItemProps = {
 type BuildRuntimeLogRowProps = {
   entry: BuildLogEntry;
 };
-
-type BuildPromptComposerProps = {
-  resetKey: number;
-  initialValue: string;
-  attachedFiles: string[];
-  aiBusy: boolean;
-  interruptingAiTask: boolean;
-  autoRepairBusy: boolean;
-  contextStats: ContextWindowEstimateResponse | null;
-  agentId?: string | null;
-  workspace?: string | null;
-  usageProjectId?: string | null;
-  askAiToRunTests: boolean;
-  showWorkingFolder?: boolean;
-  showProposedDiffPopupButton?: boolean;
-  promptsCount: number;
-  onDraftChange?: (value: string) => void;
-  onUsageProjectChange?: (projectId: string | null) => void;
-  onAskAiToRunTestsChange: (enabled: boolean) => void;
-  onRun: (value: string) => void;
-  onStop: () => void;
-  onAttachFiles: () => void;
-  onAddAttachedFiles: (files: string[]) => void;
-  onRemoveFile: (filePath: string) => void;
-  onOpenSavedPrompts: (mode: 'select' | 'manage') => void;
-  onSaveCurrentPrompt: (value: string) => void;
-  onOpenProjectWork: () => void;
-  onOpenProposedDiffPopup?: () => void;
-  slashCommands: SlashCommandDefinition[];
-};
-
-const BuildTerminalPane = memo(function BuildTerminalPane({
-  accomplish,
-  agentId,
-  session,
-  layoutHeightToken,
-  isActive,
-  onActivate,
-  onNewTerminal,
-  onSplitTerminal,
-  onClearTerminal,
-  onInterruptTerminal,
-}: BuildTerminalPaneProps) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const xtermRef = useRef<XTermTerminal | null>(null);
-  const fitAddonRef = useRef<FitAddon | null>(null);
-  const resizeToContainerRef = useRef<(() => void) | null>(null);
-  const renderedSeqRef = useRef(0);
-  const outputCursorRef = useRef(0);
-  const followOutputRef = useRef(true);
-  const onNewTerminalRef = useRef(onNewTerminal);
-  const onSplitTerminalRef = useRef(onSplitTerminal);
-  const onClearTerminalRef = useRef(onClearTerminal);
-  const onInterruptTerminalRef = useRef(onInterruptTerminal);
-
-  useEffect(() => {
-    onNewTerminalRef.current = onNewTerminal;
-  }, [onNewTerminal]);
-
-  useEffect(() => {
-    onSplitTerminalRef.current = onSplitTerminal;
-  }, [onSplitTerminal]);
-
-  useEffect(() => {
-    onClearTerminalRef.current = onClearTerminal;
-  }, [onClearTerminal]);
-
-  useEffect(() => {
-    onInterruptTerminalRef.current = onInterruptTerminal;
-  }, [onInterruptTerminal]);
-
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-
-    const terminal = new XTermTerminal({
-      allowTransparency: true,
-      cursorBlink: true,
-      convertEol: false,
-      cursorStyle: 'bar',
-      fontFamily: 'Consolas, "SFMono-Regular", Menlo, Monaco, "Liberation Mono", monospace',
-      fontSize: 11,
-      lineHeight: 1.35,
-      scrollback: 5000,
-      theme: {
-        background: '#0b1220',
-        foreground: '#f4f4f5',
-        cursor: '#5eead4',
-        cursorAccent: '#0b1220',
-        selectionBackground: 'rgba(148, 163, 184, 0.28)',
-      },
-    });
-    const fitAddon = new FitAddon();
-    terminal.loadAddon(fitAddon);
-    terminal.open(container);
-    xtermRef.current = terminal;
-    fitAddonRef.current = fitAddon;
-    renderedSeqRef.current = 0;
-
-    const resizeToContainer = () => {
-      fitAddon.fit();
-      if (!agentId) return;
-      void accomplish.resizeBuildTerminalSession({
-        agentId,
-        sessionId: session.id,
-        cols: terminal.cols,
-        rows: terminal.rows,
-      });
-    };
-    resizeToContainerRef.current = resizeToContainer;
-
-    const dataDisposable = terminal.onData((data) => {
-      if (!agentId) return;
-      followOutputRef.current = true;
-      void accomplish.writeBuildTerminalInput({
-        agentId,
-        sessionId: session.id,
-        input: data,
-      });
-    });
-
-    terminal.attachCustomKeyEventHandler((event) => {
-      if (event.type !== 'keydown') return true;
-      const key = event.key.toLowerCase();
-      if ((event.ctrlKey || event.metaKey) && event.shiftKey && key === 't') {
-        event.preventDefault();
-        void onNewTerminalRef.current();
-        return false;
-      }
-      if ((event.ctrlKey || event.metaKey) && event.shiftKey && key === 'd') {
-        event.preventDefault();
-        void onSplitTerminalRef.current();
-        return false;
-      }
-      if ((event.ctrlKey || event.metaKey) && key === 'l') {
-        event.preventDefault();
-        void onClearTerminalRef.current();
-        return false;
-      }
-      if ((event.ctrlKey || event.metaKey) && key === 'c' && !terminal.hasSelection()) {
-        event.preventDefault();
-        void onInterruptTerminalRef.current();
-        return false;
-      }
-      return true;
-    });
-
-    const scrollDisposable = terminal.onScroll(() => {
-      followOutputRef.current = isTerminalNearBottom(terminal);
-    });
-
-    const resizeObserver = new ResizeObserver(() => {
-      scheduleTerminalRefit(resizeToContainer, terminal, followOutputRef.current);
-    });
-    resizeObserver.observe(container);
-    window.setTimeout(() => {
-      scheduleTerminalRefit(resizeToContainer, terminal, followOutputRef.current);
-    }, 0);
-    if (typeof document !== 'undefined' && 'fonts' in document) {
-      void (document as Document & { fonts?: { ready?: Promise<unknown> } }).fonts?.ready?.then(() => {
-        if (!xtermRef.current) return;
-        scheduleTerminalRefit(resizeToContainer, terminal, followOutputRef.current);
-      });
-    }
-
-    return () => {
-      resizeObserver.disconnect();
-      dataDisposable.dispose();
-      scrollDisposable.dispose();
-      fitAddonRef.current = null;
-      resizeToContainerRef.current = null;
-      xtermRef.current = null;
-      outputCursorRef.current = 0;
-      terminal.dispose();
-    };
-  }, [accomplish, agentId, session.id]);
-
-  useEffect(() => {
-    const terminal = xtermRef.current;
-    if (!terminal || !agentId) return;
-
-    let cancelled = false;
-
-    const appendEntries = (incomingEntries: BuildTerminalEntry[], reset = false) => {
-      const instance = xtermRef.current;
-      if (!instance) return;
-      const hasIncomingEntries = incomingEntries.length > 0;
-      const lastSeq = incomingEntries[incomingEntries.length - 1]?.seq || 0;
-      const shouldReplayReset = reset && renderedSeqRef.current === 0 && hasIncomingEntries;
-      const shouldSeqReset = hasIncomingEntries && lastSeq < renderedSeqRef.current;
-      if (shouldReplayReset || shouldSeqReset) {
-        instance.reset();
-        renderedSeqRef.current = 0;
-        outputCursorRef.current = 0;
-      }
-      const pendingEntries = incomingEntries.filter((entry) => entry.seq > renderedSeqRef.current);
-      if (pendingEntries.length === 0) return;
-      const shouldFollowOutput = followOutputRef.current || isTerminalNearBottom(instance);
-      const pendingText = pendingEntries.map((entry) => entry.text).join('');
-      renderedSeqRef.current = pendingEntries[pendingEntries.length - 1]?.seq || renderedSeqRef.current;
-      outputCursorRef.current = renderedSeqRef.current;
-      instance.write(pendingText, () => {
-        if (shouldFollowOutput) {
-          followOutputRef.current = true;
-          scheduleTerminalScrollToBottom(instance);
-        }
-      });
-    };
-
-    const syncOutput = async (reset = false) => {
-      try {
-        const response = await accomplish.getBuildTerminalOutput({
-          agentId,
-          sessionId: session.id,
-          cursor: reset ? 0 : outputCursorRef.current,
-          limit: 800,
-        });
-        if (cancelled) return;
-        appendEntries(response.entries, reset);
-        outputCursorRef.current = Math.max(outputCursorRef.current, response.nextCursor);
-      } catch {
-        // Ignore transient terminal sync errors.
-      }
-    };
-
-    const unsubscribe = accomplish.onBuildTerminalEntry((payload) => {
-      if (payload.agentId !== agentId || payload.sessionId !== session.id) return;
-      appendEntries([payload.entry]);
-      outputCursorRef.current = Math.max(outputCursorRef.current, payload.entry.seq);
-    });
-
-    void syncOutput(true);
-
-    const interval = window.setInterval(() => {
-      void syncOutput(false);
-    }, 2500);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-      unsubscribe();
-    };
-  }, [accomplish, agentId, session.id]);
-
-  useEffect(() => {
-    const resizeToContainer = resizeToContainerRef.current;
-    const terminal = xtermRef.current;
-    if (!resizeToContainer || !terminal) return;
-    const timeout = window.setTimeout(() => {
-      scheduleTerminalRefit(resizeToContainer, terminal, followOutputRef.current);
-    }, 0);
-    return () => window.clearTimeout(timeout);
-  }, [layoutHeightToken]);
-
-  useEffect(() => {
-    if (!isActive) return;
-    const terminal = xtermRef.current;
-    const resizeToContainer = resizeToContainerRef.current;
-    if (!terminal || !resizeToContainer) return;
-    scheduleTerminalRefit(resizeToContainer, terminal, followOutputRef.current);
-    terminal.focus();
-  }, [isActive]);
-
-  return (
-    <div
-      className={cn(
-        'flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[#0b1220]',
-        isActive ? 'ring-1 ring-emerald-400/30' : 'ring-1 ring-transparent'
-      )}
-      onMouseDown={onActivate}
-    >
-      <div className={cn(
-        'flex items-center justify-between border-b px-2 py-1 text-[11px]',
-        isActive ? 'border-emerald-400/20 bg-emerald-400/5 text-foreground' : 'border-border/40 bg-background/5 text-muted-foreground'
-      )}>
-        <span className="truncate">{session.title}</span>
-        <span className="truncate text-[10px] opacity-80">{pathLeaf(session.cwd)}</span>
-      </div>
-      <div
-        ref={containerRef}
-        className="relative h-full min-h-0 flex-1 overflow-hidden pl-2 pt-1"
-        onClick={() => {
-          onActivate();
-          xtermRef.current?.focus();
-        }}
-      />
-    </div>
-  );
-}, (prev, next) => (
-  prev.accomplish === next.accomplish
-  && prev.agentId === next.agentId
-  && prev.layoutHeightToken === next.layoutHeightToken
-  && prev.isActive === next.isActive
-  && prev.session.id === next.session.id
-  && prev.session.title === next.session.title
-  && prev.session.shellLabel === next.session.shellLabel
-  && prev.session.cwd === next.session.cwd
-  && prev.session.workspaceRelativePath === next.session.workspaceRelativePath
-  && prev.session.running === next.session.running
-  && prev.session.pid === next.session.pid
-));
 
 const BuildAssistantMessageItem = memo(function BuildAssistantMessageItem({
   message,
@@ -4900,9 +3523,9 @@ const BuildAssistantMessageItem = memo(function BuildAssistantMessageItem({
               : null
           )}
         >
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+          <AnswerScope.Provider value={message.id}><AnswerHighlight messageId={message.id}><ReactMarkdown remarkPlugins={[remarkGfm]} components={isToolMessage ? undefined : interactiveMarkdownComponents}>
             {normalizeMarkdownTables(content)}
-          </ReactMarkdown>
+          </ReactMarkdown></AnswerHighlight></AnswerScope.Provider>
           {canExpandToolMessage ? (
             <div className="mt-2">
               <button
@@ -4976,13 +3599,12 @@ const BuildAssistantMessageItem = memo(function BuildAssistantMessageItem({
       </div>
       {isRelayedSubagentCompletion ? (
         <div className="mb-2 flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-background/75 px-2.5 py-2 text-card-foreground">
-          <div
+          <AgentCharacterButton target={{ ...relayedSubagentMeta!, messageId: message.id }} aria-label={`Open agent card for ${relayedSubagentAgentName || relayedSubagentMeta?.childAgentId || 'Subagent'}`}
             className={cn(
               'flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden border border-border/70 bg-muted/70',
               relayedSubagentFrameClass
             )}
             style={{ backgroundColor: relayedSubagentAgentAvatarColor ? `${relayedSubagentAgentAvatarColor}18` : undefined }}
-            aria-hidden="true"
           >
             <AgentAvatarIcon
               avatar={relayedSubagentAgentAvatar}
@@ -4990,7 +3612,7 @@ const BuildAssistantMessageItem = memo(function BuildAssistantMessageItem({
               imageDataUrl={relayedSubagentAgentAvatarImageDataUrl}
               className={isPictureAvatar(relayedSubagentAgentAvatar, relayedSubagentAgentAvatarImageDataUrl) ? 'h-full w-full' : 'h-5 w-5'}
             />
-          </div>
+          </AgentCharacterButton>
           <div className="min-w-0">
             <div className="truncate text-sm font-semibold text-foreground">
               {relayedSubagentAgentName || relayedSubagentMeta?.childAgentId || 'Subagent'}
@@ -5002,6 +3624,7 @@ const BuildAssistantMessageItem = memo(function BuildAssistantMessageItem({
         </div>
       ) : null}
       {renderPlanOrMarkdown(content, items, attachContentRef, muted)}
+      {isAssistantMessage && !muted && <AnswerActions messageId={message.id} content={content} />}
     </div>
   );
 
@@ -5107,9 +3730,9 @@ const BuildAssistantMessageItem = memo(function BuildAssistantMessageItem({
                   'text-sm leading-relaxed prose-p:my-2 prose-li:my-1 prose-code:text-xs'
                 )}
               >
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                <AnswerScope.Provider value={message.id}><AnswerHighlight messageId={message.id}><ReactMarkdown remarkPlugins={[remarkGfm]} components={interactiveMarkdownComponents}>
                   {normalizeMarkdownTables(assistantAnswerContent)}
-                </ReactMarkdown>
+                </ReactMarkdown></AnswerHighlight></AnswerScope.Provider>
               </div>
             )}
           </div>
@@ -5171,523 +3794,6 @@ const BuildRuntimeLogRow = memo(function BuildRuntimeLogRow({ entry }: BuildRunt
     </div>
   );
 }, (prev, next) => prev.entry === next.entry);
-
-const BuildPromptComposer = memo(function BuildPromptComposer({
-  resetKey,
-  initialValue,
-  attachedFiles,
-  aiBusy,
-  interruptingAiTask,
-  autoRepairBusy,
-  contextStats,
-  agentId,
-  workspace,
-  usageProjectId,
-  askAiToRunTests,
-  showWorkingFolder = false,
-  showProposedDiffPopupButton = false,
-  promptsCount,
-  onDraftChange,
-  onUsageProjectChange,
-  onAskAiToRunTestsChange,
-  onRun,
-  onStop,
-  onAttachFiles,
-  onAddAttachedFiles,
-  onRemoveFile,
-  onOpenSavedPrompts,
-  onSaveCurrentPrompt,
-  onOpenProjectWork,
-  onOpenProposedDiffPopup,
-  slashCommands,
-}: BuildPromptComposerProps) {
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const draftRef = useRef(initialValue);
-  const promptHistoryEntriesRef = useRef<string[]>([]);
-  const promptHistoryCursorRef = useRef<number | null>(null);
-  const promptHistoryDraftRef = useRef('');
-  const [slashCommandInput, setSlashCommandInput] = useState(
-    initialValue.startsWith('/') ? initialValue : ''
-  );
-  const [canRun, setCanRun] = useState(Boolean(initialValue.trim()));
-  const [selectedSlashIndex, setSelectedSlashIndex] = useState(0);
-  const [savedPromptFlash, setSavedPromptFlash] = useState(false);
-  const workingFolderLabel = useMemo(() => {
-    const value = workspace?.trim();
-    if (!value) return '';
-    return pathLeaf(value) || value;
-  }, [workspace]);
-
-  useEffect(() => {
-    draftRef.current = initialValue;
-    onDraftChange?.(initialValue);
-    setSlashCommandInput(initialValue.startsWith('/') ? initialValue : '');
-    setCanRun(Boolean(initialValue.trim()));
-    if (textareaRef.current && textareaRef.current.value !== initialValue) {
-      textareaRef.current.value = initialValue;
-    }
-  }, [initialValue, onDraftChange, resetKey]);
-
-  useEffect(() => {
-    promptHistoryEntriesRef.current = readPromptHistory(BUILD_PROMPT_HISTORY_STORAGE_KEY);
-  }, []);
-
-  const resetPromptHistoryNavigation = useCallback(() => {
-    promptHistoryCursorRef.current = null;
-    promptHistoryDraftRef.current = '';
-  }, []);
-
-  const setDraftValue = useCallback((value: string) => {
-    draftRef.current = value;
-    onDraftChange?.(value);
-    setSlashCommandInput(value.startsWith('/') ? value : '');
-    setCanRun(Boolean(value.trim()));
-    if (textareaRef.current) {
-      textareaRef.current.value = value;
-      textareaRef.current.focus();
-      const cursor = value.length;
-      textareaRef.current.setSelectionRange(cursor, cursor);
-    }
-  }, [onDraftChange]);
-
-  useEffect(() => registerPromptInsertionTarget(
-    { mode: 'build', label: 'Build prompt' },
-    (text) => {
-      const insertion = text.trim();
-      if (!insertion) return;
-      resetPromptHistoryNavigation();
-      const current = (textareaRef.current?.value ?? draftRef.current).trim();
-      setDraftValue(current ? `${current}\n\n${insertion}` : insertion);
-    }
-  ), [resetPromptHistoryNavigation, setDraftValue]);
-
-  useEffect(() => registerPromptAttachmentTarget(
-    { mode: 'build', label: 'Build prompt' },
-    onAddAttachedFiles
-  ), [onAddAttachedFiles]);
-
-  const recallPromptHistory = useCallback((direction: 'older' | 'newer') => {
-    const entries = promptHistoryEntriesRef.current;
-    if (entries.length === 0) return;
-
-    const currentCursor = promptHistoryCursorRef.current;
-    if (direction === 'older') {
-      if (currentCursor === null) {
-        promptHistoryDraftRef.current = textareaRef.current?.value ?? draftRef.current;
-        promptHistoryCursorRef.current = entries.length - 1;
-      } else {
-        promptHistoryCursorRef.current = Math.max(0, currentCursor - 1);
-      }
-    } else if (currentCursor !== null) {
-      if (currentCursor >= entries.length - 1) {
-        promptHistoryCursorRef.current = null;
-        setDraftValue(promptHistoryDraftRef.current);
-        return;
-      }
-      promptHistoryCursorRef.current = currentCursor + 1;
-    }
-
-    const nextCursor = promptHistoryCursorRef.current;
-    if (nextCursor !== null) {
-      setDraftValue(entries[nextCursor] ?? '');
-    }
-  }, [setDraftValue]);
-
-  const filteredSlashCommands = useMemo(
-    () => filterSlashCommands(slashCommandInput, slashCommands),
-    [slashCommandInput, slashCommands]
-  );
-
-  useEffect(() => {
-    setSelectedSlashIndex((current) => {
-      if (filteredSlashCommands.length === 0) return 0;
-      return Math.min(current, filteredSlashCommands.length - 1);
-    });
-  }, [filteredSlashCommands]);
-
-  const handleChange = useCallback((event: { target: HTMLTextAreaElement }) => {
-    const next = event.target.value;
-    resetPromptHistoryNavigation();
-    draftRef.current = next;
-    onDraftChange?.(next);
-    setSlashCommandInput((current) => {
-      const nextSlashInput = next.startsWith('/') ? next : '';
-      return current === nextSlashInput ? current : nextSlashInput;
-    });
-    setCanRun(Boolean(next.trim()));
-  }, [onDraftChange, resetPromptHistoryNavigation]);
-
-  const handleRun = useCallback(() => {
-    const rawValue = textareaRef.current?.value ?? draftRef.current;
-    const next = rawValue.trim();
-    if (!next || aiBusy) return;
-    onRun(next);
-    promptHistoryEntriesRef.current = addPromptHistoryEntry(
-      BUILD_PROMPT_HISTORY_STORAGE_KEY,
-      next,
-      promptHistoryEntriesRef.current
-    );
-    resetPromptHistoryNavigation();
-    draftRef.current = '';
-    onDraftChange?.('');
-    setSlashCommandInput('');
-    if (textareaRef.current) {
-      textareaRef.current.value = '';
-    }
-    setCanRun(false);
-  }, [aiBusy, onDraftChange, onRun, resetPromptHistoryNavigation]);
-
-  const handleExecuteSlashCommand = useCallback(async (command: SlashCommandDefinition) => {
-    await command.execute();
-    resetPromptHistoryNavigation();
-    draftRef.current = '';
-    onDraftChange?.('');
-    setSlashCommandInput('');
-    if (textareaRef.current) {
-      textareaRef.current.value = '';
-    }
-    setCanRun(false);
-    setSelectedSlashIndex(0);
-  }, [onDraftChange, resetPromptHistoryNavigation]);
-
-  return (
-    <div className="space-y-2">
-      <div className="relative">
-        <Textarea
-          ref={textareaRef}
-          defaultValue={initialValue}
-          onChange={handleChange}
-          onKeyDown={(event) => {
-            if (filteredSlashCommands.length > 0) {
-              if (event.key === 'ArrowDown') {
-                event.preventDefault();
-                setSelectedSlashIndex((current) => (
-                  current >= filteredSlashCommands.length - 1 ? 0 : current + 1
-                ));
-                return;
-              }
-              if (event.key === 'ArrowUp') {
-                event.preventDefault();
-                setSelectedSlashIndex((current) => (
-                  current <= 0 ? filteredSlashCommands.length - 1 : current - 1
-                ));
-                return;
-              }
-              if ((event.key === 'Enter' && !event.shiftKey) || event.key === 'Tab') {
-                event.preventDefault();
-                const selected = filteredSlashCommands[selectedSlashIndex] || filteredSlashCommands[0];
-                if (selected) {
-                  void handleExecuteSlashCommand(selected);
-                }
-                return;
-              }
-              if (event.key === 'Escape') {
-                event.preventDefault();
-                resetPromptHistoryNavigation();
-                draftRef.current = '';
-                setSlashCommandInput('');
-                if (textareaRef.current) {
-                  textareaRef.current.value = '';
-                }
-                setCanRun(false);
-                setSelectedSlashIndex(0);
-              }
-            }
-            if (event.key === 'ArrowUp') {
-              const shouldRecall = shouldHandlePromptHistoryRecall({
-                key: event.key,
-                altKey: event.altKey,
-                ctrlKey: event.ctrlKey,
-                metaKey: event.metaKey,
-                shiftKey: event.shiftKey,
-                isComposing: event.nativeEvent.isComposing,
-                currentTarget: event.currentTarget,
-              }, 'older', promptHistoryCursorRef.current !== null);
-              if (shouldRecall) {
-                event.preventDefault();
-                recallPromptHistory('older');
-                return;
-              }
-            }
-            if (event.key === 'ArrowDown') {
-              const shouldRecall = shouldHandlePromptHistoryRecall({
-                key: event.key,
-                altKey: event.altKey,
-                ctrlKey: event.ctrlKey,
-                metaKey: event.metaKey,
-                shiftKey: event.shiftKey,
-                isComposing: event.nativeEvent.isComposing,
-                currentTarget: event.currentTarget,
-              }, 'newer', promptHistoryCursorRef.current !== null);
-              if (shouldRecall) {
-                event.preventDefault();
-                recallPromptHistory('newer');
-                return;
-              }
-            }
-          }}
-          placeholder="Describe the software task at a high level. AI will plan, edit files, run checks, and iterate."
-          className="h-[112px] resize-none overflow-y-auto pb-10 text-sm bg-background field-sizing-fixed dark:bg-input/15"
-        />
-        <InlineSlashCommandMenu
-          commands={filteredSlashCommands}
-          selectedIndex={selectedSlashIndex}
-          placement="top"
-          onSelect={(command, index) => {
-            setSelectedSlashIndex(index);
-            void handleExecuteSlashCommand(command);
-          }}
-        />
-        <button
-          type="button"
-          onClick={onAttachFiles}
-          className="absolute bottom-2 left-2 inline-flex h-7 w-7 items-center justify-center rounded-md border border-border/60 bg-background/90 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          title="Attach files to this build prompt."
-        >
-          <Plus className="h-3.5 w-3.5" />
-        </button>
-        {attachedFiles.length > 0 ? (
-          <span className="absolute bottom-1.5 left-8 rounded-full border border-primary/30 bg-primary/15 px-1.5 py-0.5 text-[10px] text-primary">
-            {attachedFiles.length}
-          </span>
-        ) : null}
-      </div>
-      {attachedFiles.length > 0 ? (
-        <div className="flex flex-wrap gap-2">
-          {attachedFiles.map((filePath) => (
-            <div
-              key={filePath}
-              className="flex items-center gap-1.5 rounded-lg border border-primary/20 bg-primary/10 px-2.5 py-1 text-xs text-foreground"
-            >
-              <FileText className="h-3 w-3 shrink-0 text-primary" />
-              <span className="max-w-[260px] truncate" title={filePath}>
-                {filePath.split(/[\\/]/).pop() || filePath}
-              </span>
-              <button
-                type="button"
-                onClick={() => onRemoveFile(filePath)}
-                className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                title="Remove file"
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </div>
-          ))}
-        </div>
-      ) : null}
-      <div className="flex flex-wrap items-center gap-2">
-        <BuildPresetFieldHelp
-          helpTitle="Ask AI to run tests"
-          helpDescription="When on, Build mode adds one instruction to the AI prompt asking it to add or update tests for code changes, run relevant checks, and fix issues until they pass. When off, no extra testing instruction is added."
-        >
-          <label className="inline-flex h-9 items-center gap-2 rounded-md border border-border/70 bg-background px-2 text-xs font-medium text-foreground">
-            <input
-              type="checkbox"
-              checked={askAiToRunTests}
-              onChange={(event) => onAskAiToRunTestsChange(event.target.checked)}
-              disabled={aiBusy}
-              aria-label="Ask AI to run tests"
-            />
-            <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-primary" />
-            <span>Ask AI to run tests</span>
-          </label>
-        </BuildPresetFieldHelp>
-        <Button
-          onClick={handleRun}
-          disabled={aiBusy || !canRun}
-          title={aiBusy ? 'AI is currently executing the active build task.' : 'Run an AI build task using your goal prompt.'}
-          aria-label={aiBusy ? 'AI is currently working' : 'Run AI task'}
-        >
-          {aiBusy ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Wrench className="h-4 w-4 mr-1.5" />}
-          {aiBusy ? 'AI Working' : 'Run AI Task'}
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          size="icon-sm"
-          onClick={() => onOpenSavedPrompts('select')}
-          disabled={aiBusy || promptsCount === 0}
-          className="relative"
-          title={promptsCount === 0 ? 'No saved prompts or recipes yet.' : 'Insert a saved prompt or recipe into this Build task.'}
-          aria-label="Use saved prompt"
-        >
-          <FileText className="h-4 w-4" />
-          {promptsCount > 0 ? (
-            <span className="absolute -right-1 -top-1 min-w-4 rounded-full border border-background bg-primary px-1 py-0.5 text-[9px] leading-none text-primary-foreground">
-              {promptsCount}
-            </span>
-          ) : null}
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          size="icon-sm"
-          onClick={() => onOpenSavedPrompts('manage')}
-          disabled={aiBusy}
-          title="Create, edit, and delete saved prompts."
-          aria-label="Manage saved prompts"
-        >
-          <ClipboardList className="h-4 w-4" />
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          size="icon-sm"
-          onClick={() => {
-            const value = (textareaRef.current?.value ?? draftRef.current).trim();
-            if (value) {
-              onSaveCurrentPrompt(value);
-              setSavedPromptFlash(true);
-              window.setTimeout(() => setSavedPromptFlash(false), 1600);
-            }
-          }}
-          disabled={aiBusy || !canRun}
-          title="Save the current Build prompt for reuse."
-          aria-label="Save current Build prompt"
-        >
-          <Save className="h-4 w-4" />
-        </Button>
-        <BuildTooltip content="Open project work linked to this preset." side="top" align="center">
-          <Button
-            type="button"
-            variant="outline"
-            size="icon-sm"
-            onClick={onOpenProjectWork}
-            aria-label="Open project work linked to this preset"
-          >
-            <FolderOpen className="h-4 w-4" />
-          </Button>
-        </BuildTooltip>
-        <UsageProjectSelector
-          mode="build"
-          value={usageProjectId ?? null}
-          onChange={onUsageProjectChange}
-          compact
-          disabled={aiBusy}
-          className="shrink-0"
-        />
-        <ContextInspector
-          stats={contextStats}
-          agentId={agentId}
-          workspace={workspace}
-          attachedFiles={attachedFiles}
-          usageProjectId={usageProjectId}
-        />
-        {showWorkingFolder && workingFolderLabel ? (
-          <div
-            className="ml-1 flex min-w-0 max-w-[min(520px,45vw)] items-center gap-1.5 rounded-md border border-border/60 bg-muted/20 px-2 py-1 text-xs text-muted-foreground"
-            title={workspace || workingFolderLabel}
-          >
-            <Folder className="h-3.5 w-3.5 shrink-0" />
-            <span className="shrink-0">Working in</span>
-            <span className="min-w-0 truncate font-medium text-foreground">{workingFolderLabel}</span>
-          </div>
-        ) : null}
-        {showProposedDiffPopupButton ? (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-8 gap-1.5 px-2 text-[11px]"
-            onClick={onOpenProposedDiffPopup}
-            title="Open Changes & Git in a larger review popup."
-            aria-label="Open Changes & Git popup"
-          >
-            <FileDiff className="h-3.5 w-3.5" />
-            Changes & Git
-          </Button>
-        ) : null}
-        {aiBusy ? (
-          <Button
-            variant="outline"
-            size="icon-sm"
-            onClick={onStop}
-            disabled={interruptingAiTask}
-            title={interruptingAiTask ? 'Stopping the current build task…' : 'Stop the current build task.'}
-            className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
-            aria-label={interruptingAiTask ? 'Stopping current build task' : 'Stop current build task'}
-          >
-            {interruptingAiTask ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-4 w-4 fill-current" />}
-          </Button>
-        ) : null}
-      </div>
-      <div className="flex flex-wrap items-start gap-2">
-        <ContextWindowIndicator stats={contextStats} className="mb-0" />
-        {autoRepairBusy ? <span className="pt-1 text-xs text-muted-foreground">Auto-repair queued…</span> : null}
-        {savedPromptFlash ? <span className="pt-1 text-xs text-emerald-600 dark:text-emerald-300">Saved prompt</span> : null}
-      </div>
-    </div>
-  );
-}, (prev, next) => (
-  prev.resetKey === next.resetKey
-  && prev.initialValue === next.initialValue
-  && prev.aiBusy === next.aiBusy
-  && prev.interruptingAiTask === next.interruptingAiTask
-  && prev.autoRepairBusy === next.autoRepairBusy
-  && prev.contextStats === next.contextStats
-  && prev.agentId === next.agentId
-  && prev.workspace === next.workspace
-  && prev.usageProjectId === next.usageProjectId
-  && prev.askAiToRunTests === next.askAiToRunTests
-  && prev.showWorkingFolder === next.showWorkingFolder
-  && prev.showProposedDiffPopupButton === next.showProposedDiffPopupButton
-  && prev.promptsCount === next.promptsCount
-  && prev.onRun === next.onRun
-  && prev.onStop === next.onStop
-  && prev.onAttachFiles === next.onAttachFiles
-  && prev.onAddAttachedFiles === next.onAddAttachedFiles
-  && prev.onRemoveFile === next.onRemoveFile
-  && prev.onOpenSavedPrompts === next.onOpenSavedPrompts
-  && prev.onSaveCurrentPrompt === next.onSaveCurrentPrompt
-  && prev.onOpenProjectWork === next.onOpenProjectWork
-  && prev.onOpenProposedDiffPopup === next.onOpenProposedDiffPopup
-  && prev.onDraftChange === next.onDraftChange
-  && prev.onUsageProjectChange === next.onUsageProjectChange
-  && prev.onAskAiToRunTestsChange === next.onAskAiToRunTestsChange
-  && prev.slashCommands === next.slashCommands
-  && prev.attachedFiles.length === next.attachedFiles.length
-  && prev.attachedFiles.every((entry, index) => entry === next.attachedFiles[index])
-));
-
-function isTerminalNearBottom(terminal: XTermTerminal): boolean {
-  const buffer = terminal.buffer.active;
-  return (buffer.baseY - buffer.viewportY) <= 1;
-}
-
-function scheduleTerminalScrollToBottom(terminal: XTermTerminal): void {
-  const syncViewport = () => {
-    terminal.scrollToBottom();
-    const viewport = terminal.element?.querySelector('.xterm-viewport') as HTMLElement | null | undefined;
-    if (viewport) {
-      viewport.scrollTop = viewport.scrollHeight;
-    }
-  };
-  syncViewport();
-  window.requestAnimationFrame(() => {
-    syncViewport();
-    window.setTimeout(() => {
-      syncViewport();
-    }, 0);
-  });
-}
-
-function scheduleTerminalRefit(
-  resizeToContainer: () => void,
-  terminal: XTermTerminal,
-  shouldFollowOutput: boolean,
-): void {
-  const run = () => {
-    resizeToContainer();
-    if (shouldFollowOutput) {
-      scheduleTerminalScrollToBottom(terminal);
-    }
-  };
-  run();
-  window.requestAnimationFrame(() => {
-    run();
-    window.setTimeout(run, 80);
-  });
-}
 
 function areBuildStartEntriesEqual(a: BuildStartEntry[] | undefined, b: BuildStartEntry[] | undefined): boolean {
   if (a === b) return true;
@@ -5858,6 +3964,7 @@ function areBuildTerminalSnapshotsEquivalent(a: BuildTerminalSnapshot | null, b:
 }
 
 export default function BuildPage() {
+  const focusScene = useFocusSceneStore(state => state.active);
   const accomplish = getAccomplish();
   const navigate = useNavigate();
   const location = useLocation();
@@ -5871,6 +3978,7 @@ export default function BuildPage() {
   const loadUsageProjects = useUsageProjectStore((state) => state.loadProjects);
   const createUsageProject = useUsageProjectStore((state) => state.createProject);
   const activeAgent = agents.find((agent) => agent.id === activeAgentId);
+  const focusBackground = focusScene ? getChatBackground(activeAgent?.appearance?.chatBackgroundId ?? readChatBackgroundId()) : null;
 
   const [workspaceRelativePath, setWorkspaceRelativePath] = useState('.');
   const [agentWorkspaceRoot, setAgentWorkspaceRoot] = useState<string | null>(null);
@@ -6017,6 +4125,7 @@ export default function BuildPage() {
   const [buildHistorySessionStateReady, setBuildHistorySessionStateReady] = useState(false);
   const [aiTaskId, setAiTaskId] = useState<string | null>(null);
   const [aiMessages, setAiMessages] = useState<TaskMessage[]>([]);
+  const [journeyTask, setJourneyTask] = useState<Task | null>(null);
   const [activeBuildPromptNavigatorId, setActiveBuildPromptNavigatorId] = useState<string | null>(null);
   const [qualityCheckRun, setQualityCheckRun] = useState<BuildQualityCheckRun | null>(null);
   const [qualityChecksBusy, setQualityChecksBusy] = useState(false);
@@ -6212,6 +4321,8 @@ export default function BuildPage() {
   const runtimeLogsPanelWidthRef = useRef(runtimeLogsPanelWidth);
   const aiBusyRef = useRef(aiBusy);
   const aiTaskIdRef = useRef<string | null>(aiTaskId);
+  const buildActivityVersionRef = useRef(0);
+  const submittingBuildPromptRef = useRef(false);
   const goalPromptDraftRef = useRef('');
   const aiMessagesRef = useRef<TaskMessage[]>([]);
   const restoreHistorySessionRef = useRef<(sessionId: string) => Promise<void>>(async () => {});
@@ -6389,16 +4500,11 @@ export default function BuildPage() {
   }, [assistantMessages]);
 
   useEffect(() => {
-    if (buildPromptNavigatorEntries.length === 0) {
-      setActiveBuildPromptNavigatorId(null);
-      return;
-    }
-    setActiveBuildPromptNavigatorId((current) => (
-      current && buildPromptNavigatorEntries.some((entry) => entry.id === current)
-        ? current
-        : buildPromptNavigatorEntries[0]?.id ?? null
-    ));
-  }, [buildPromptNavigatorEntries]);
+    const next = activeBuildPromptNavigatorId && buildPromptNavigatorEntries.some(entry => entry.id === activeBuildPromptNavigatorId)
+      ? activeBuildPromptNavigatorId
+      : buildPromptNavigatorEntries[0]?.id ?? null;
+    if (next !== activeBuildPromptNavigatorId) setActiveBuildPromptNavigatorId(next);
+  }, [activeBuildPromptNavigatorId, buildPromptNavigatorEntries]);
 
   const handleBuildPromptNavigatorRangeChanged = useCallback((range: { startIndex: number; endIndex: number }) => {
     if (buildPromptNavigatorEntries.length === 0) return;
@@ -6432,8 +4538,10 @@ export default function BuildPage() {
       align: 'end',
       behavior,
     });
-    assistantNearBottomRef.current = true;
-    setAssistantNearBottom(true);
+    if (!assistantNearBottomRef.current) {
+      assistantNearBottomRef.current = true;
+      setAssistantNearBottom(true);
+    }
   }, [assistantMessages.length]);
 
   const currentWorkspacePathKey = useMemo(
@@ -7763,6 +5871,9 @@ export default function BuildPage() {
 
   const subagentParentTaskId = aiTaskId || activeHistoryRunTaskId;
 
+  const subagentRefreshParentRef = useRef(subagentParentTaskId);
+  subagentRefreshParentRef.current = subagentParentTaskId;
+  const subagentRefreshSequence = useRef(0);
   const refreshSubagentRuns = useCallback(async (showLoading = false) => {
     if (!subagentParentTaskId) {
       setSubagentRuns([]);
@@ -7774,7 +5885,10 @@ export default function BuildPage() {
       setSubagentRunsLoading(true);
     }
     try {
+      const requestedParent = subagentParentTaskId;
+      const sequence = ++subagentRefreshSequence.current;
       const result = await accomplish.listSubagents({ parentTaskId: subagentParentTaskId });
+      if (subagentRefreshParentRef.current !== requestedParent || sequence !== subagentRefreshSequence.current) return;
       setSubagentRuns((current) => preserveEquivalentSubagentRunReferences(current, result.runs || []));
       setSubagentTree((current) => preserveEquivalentSubagentTreeReferences(current, result.tree || []));
     } catch (err) {
@@ -7786,18 +5900,7 @@ export default function BuildPage() {
     }
   }, [accomplish, subagentParentTaskId]);
 
-  useEffect(() => {
-    if (!subagentParentTaskId) {
-      setSubagentRuns([]);
-      setSubagentTree([]);
-      return;
-    }
-    void refreshSubagentRuns(subagentRuns.length === 0);
-    const timer = window.setInterval(() => {
-      void refreshSubagentRuns();
-    }, 2000);
-    return () => window.clearInterval(timer);
-  }, [refreshSubagentRuns, subagentParentTaskId, subagentRuns.length]);
+  useSubagentRefresh(refreshSubagentRuns, subagentParentTaskId);
 
   const exportRuntimeLogs = useCallback(() => {
     if (logs.length === 0) return;
@@ -7830,6 +5933,9 @@ export default function BuildPage() {
     }
   }, [accomplish, refreshSubagentRuns]);
 
+  const subagentDetailRequestRef = useRef(0);
+  const subagentDetailIdRef = useRef(subagentDetailRun?.runId);
+  subagentDetailIdRef.current = subagentDetailRun?.runId;
   const loadSubagentDetail = useCallback(async (run: SubagentRunRecord, options?: { showLoading?: boolean; replaceRun?: boolean }) => {
     if (options?.replaceRun !== false) {
       setSubagentDetailRun(run);
@@ -7838,7 +5944,9 @@ export default function BuildPage() {
       setSubagentDetailLoading(true);
     }
     try {
+      const requestId = ++subagentDetailRequestRef.current;
       const task = await accomplish.getTask(run.childTaskId, run.childAgentId);
+      if (subagentDetailIdRef.current !== run.runId || requestId !== subagentDetailRequestRef.current) return;
       setSubagentDetailTask(task);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -7857,11 +5965,9 @@ export default function BuildPage() {
       return;
     }
     void loadSubagentDetail(subagentDetailRun, { showLoading: true, replaceRun: false });
-    const timer = window.setInterval(() => {
-      void loadSubagentDetail(subagentDetailRun, { showLoading: false, replaceRun: false });
-    }, 2000);
-    return () => window.clearInterval(timer);
+
   }, [loadSubagentDetail, subagentDetailRun?.runId]);
+  useSubagentRefresh(async () => { if (subagentDetailRun) await loadSubagentDetail(subagentDetailRun, { showLoading: false, replaceRun: false }); }, subagentDetailRun?.runId);
 
   const sendSubagentFollowUp = useCallback(async () => {
     const prompt = subagentDetailPrompt.trim();
@@ -8037,18 +6143,17 @@ export default function BuildPage() {
       const runs = [...(session.runs || [])].sort(
         (a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime()
       );
-      const latestRun = runs[0];
+      const latestRun = runs.find(run => run.id === session.activeRunId) || runs[0];
       let latestRunTask: Task | null = null;
       let restoredMessages = session.messages || [];
-      const sessionHasVisibleMessages = collectAssistantMessages(restoredMessages).length > 0;
-      if (!sessionHasVisibleMessages && latestRun?.taskId) {
+      if (latestRun?.taskId) {
         try {
           latestRunTask = await accomplish.getTask(latestRun.taskId, session.agentId || activeAgentId);
         } catch {
           latestRunTask = null;
         }
         const taskMessages = latestRunTask?.messages || [];
-        if (collectAssistantMessages(taskMessages).length > 0) {
+        if (taskMessages.length > 0) {
           restoredMessages = mergeIncomingWithLocalBuildGoalMessages(restoredMessages, taskMessages);
           void accomplish.updateBuildTaskHistorySession({
             sessionId: session.id,
@@ -8111,6 +6216,10 @@ export default function BuildPage() {
       setActiveHistoryRunTaskId(latestRun?.taskId || null);
       activeRunSummaryIdRef.current = latestRun?.id || null;
       setActiveHistorySessionToken(latestRunTask?.sessionId || latestRun?.sessionId || null);
+      setJourneyTask(latestRunTask || (latestRun?.taskId ? {
+        id: latestRun.taskId, status: latestRun.status, messages: restoredMessages,
+        prompt: session.execution.goalPrompt || '', createdAt: latestRun.startedAt,
+      } : null));
       const latestRunStatus = latestRunTask?.status || latestRun?.status;
       if (latestRun?.taskId && latestRunStatus && !TERMINAL_TASK_STATES.has(latestRunStatus)) {
         setAiTaskId(latestRun.taskId);
@@ -8396,21 +6505,27 @@ export default function BuildPage() {
 
   useEffect(() => {
     if (!activeAgentId) return;
-    if (!presetsLoaded || !workspacePathReady) return;
+    if (!presetsLoaded || !workspacePathReady || terminalSectionHidden) return;
     let cancelled = false;
-
-    void (async () => {
-      const next = await refreshTerminalSnapshot();
-      if (cancelled) return;
-      if (!next || next.sessions.length === 0) {
-        await ensureBuildTerminalSession();
-      }
-    })();
-
+    let secondFrame = 0;
+    // Let the workspace paint before starting a native shell process.
+    const firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(() => {
+        void (async () => {
+          const next = await refreshTerminalSnapshot();
+          if (cancelled) return;
+          if (!next || next.sessions.length === 0) {
+            await ensureBuildTerminalSession();
+          }
+        })();
+      });
+    });
     return () => {
       cancelled = true;
+      cancelAnimationFrame(firstFrame);
+      cancelAnimationFrame(secondFrame);
     };
-  }, [activeAgentId, ensureBuildTerminalSession, presetsLoaded, refreshTerminalSnapshot, workspacePathReady, workspaceRelativePath]);
+  }, [activeAgentId, ensureBuildTerminalSession, presetsLoaded, refreshTerminalSnapshot, terminalSectionHidden, workspacePathReady, workspaceRelativePath]);
 
   useEffect(() => {
     let cancelled = false;
@@ -8483,9 +6598,10 @@ export default function BuildPage() {
     setHiddenSectionLocks({});
     setLeftPanelCollapsed(false);
     setRuntimePreviewSectionHidden(false);
-    setTerminalSectionHidden(false);
-    setRuntimeLogsSectionHidden(false);
-    setDiffSectionHidden(false);
+    const firstVisit = !buildViewStateStorageKey || !window.localStorage.getItem(buildViewStateStorageKey);
+    setTerminalSectionHidden(firstVisit);
+    setRuntimeLogsSectionHidden(firstVisit);
+    setDiffSectionHidden(firstVisit);
     let cancelled = false;
 
     void (async () => {
@@ -8928,22 +7044,9 @@ export default function BuildPage() {
     window.localStorage.setItem(buildEditorLayoutStorageKey, JSON.stringify(payload));
   }, [activeEditorTabKey, buildEditorLayoutStorageKey, centerPanelView, editorTabs]);
 
-  useEffect(() => {
-    const runtimeInterval = setInterval(() => {
-      void refreshSnapshot();
-    }, 2000);
-    const logInterval = setInterval(() => {
-      void refreshLogs();
-    }, 1000);
-    const terminalSnapshotInterval = setInterval(() => {
-      void refreshTerminalSnapshot();
-    }, 2000);
-    return () => {
-      clearInterval(runtimeInterval);
-      clearInterval(logInterval);
-      clearInterval(terminalSnapshotInterval);
-    };
-  }, [refreshLogs, refreshSnapshot, refreshTerminalSnapshot]);
+  useVisiblePolling(refreshSnapshot, 2000);
+  useVisiblePolling(refreshLogs, 1000, !runtimeLogsSectionHidden);
+  useVisiblePolling(refreshTerminalSnapshot, 2000, !terminalSectionHidden);
 
   useEffect(() => {
     const sessions = terminalSnapshot?.sessions || [];
@@ -9037,14 +7140,32 @@ export default function BuildPage() {
   useEffect(() => {
     if (!aiBusy) return;
     if (!assistantNearBottom) return;
-    scrollAssistantMessagesToBottom('auto');
+    // Wait for the restored list to commit before asking Virtuoso to measure and
+    // scroll. Synchronous scroll updates can repeatedly interrupt its restoration.
+    const frame = requestAnimationFrame(() => scrollAssistantMessagesToBottom('auto'));
+    return () => cancelAnimationFrame(frame);
   }, [assistantMessages, aiBusy, assistantNearBottom, scrollAssistantMessagesToBottom]);
 
   useEffect(() => {
-    if (!pendingHistoryRestoreScrollRef.current) return;
-    scrollAssistantMessagesToBottom('auto');
-    pendingHistoryRestoreScrollRef.current = false;
+    if (!pendingHistoryRestoreScrollRef.current || assistantMessages.length === 0) return;
+    const frame = requestAnimationFrame(() => {
+      scrollAssistantMessagesToBottom('auto');
+      pendingHistoryRestoreScrollRef.current = false;
+    });
+    return () => cancelAnimationFrame(frame);
   }, [assistantMessages, scrollAssistantMessagesToBottom]);
+
+  useBuildTaskActivity(aiTaskId || activeHistoryRunTaskId, activeAgentId, (task) => {
+    const taskId = task?.id || aiTaskId || activeHistoryRunTaskId;
+    if (!taskId) return;
+    if (task) setJourneyTask(task);
+    buildActivityVersionRef.current += 1;
+    aiBusyRef.current = true;
+    aiTaskIdRef.current = taskId;
+    setAiTaskId(taskId);
+    setAiBusy(true);
+    if (task?.sessionId) setActiveHistorySessionToken(task.sessionId);
+  });
 
   useEffect(() => {
     if (!aiTaskId || !aiBusy) return;
@@ -9055,8 +7176,10 @@ export default function BuildPage() {
       pollInFlight = true;
       void (async () => {
         try {
+          const activityVersion = buildActivityVersionRef.current;
           const task = await accomplish.getTask(aiTaskId, activeAgentId);
           if (!task || cancelled) return;
+          setJourneyTask(task);
           let mergedMessages: TaskMessage[] = [];
           setAiMessages((current) => {
             mergedMessages = mergeIncomingWithLocalBuildGoalMessages(current, task.messages || []);
@@ -9104,6 +7227,10 @@ export default function BuildPage() {
               }),
             ]);
             if (cancelled) return;
+            // A child completion can wake the parent while final diff reads run.
+            // Do not let the previous turn's completion hide that new activity.
+            const currentTask = await accomplish.getTask(aiTaskId, activeAgentId);
+            if (cancelled || activityVersion !== buildActivityVersionRef.current || (currentTask && isBuildTaskActive(currentTask))) return;
             const finalDiff = finalDiffResult.status === 'fulfilled' ? finalDiffResult.value : null;
             const finalGitSummary = finalGitSummaryResult.status === 'fulfilled' ? finalGitSummaryResult.value : null;
             if (finalDiff) {
@@ -9522,6 +7649,12 @@ export default function BuildPage() {
     const current = (goalPromptDraftRef.current || goalPrompt || '').trim();
     replacePromptComposerValue(current ? `${current}\n\n${insertion}` : insertion);
   }, [goalPrompt, replacePromptComposerValue]);
+
+  const guidance = useMemo(() => ({
+    messageId: [...aiMessages].reverse().find(message => message.type === 'assistant')?.id,
+    disabled: aiBusy || autoRepairBusy || journeyTask?.status !== 'completed',
+    onChoose: insertTextIntoBuildPrompt,
+  }), [aiMessages, aiBusy, autoRepairBusy, journeyTask?.status, insertTextIntoBuildPrompt]);
 
   const scanWorkspaceSetup = useCallback(async () => {
     if (!activeAgentId) return;
@@ -11141,19 +9274,32 @@ export default function BuildPage() {
   const runAiGoal = useCallback(async (promptOverride?: string) => {
     const currentPromptValue = promptOverride ?? goalPromptDraftRef.current ?? goalPrompt;
     if (!activeAgentId || !snapshot || !currentPromptValue.trim()) return;
+    if (submittingBuildPromptRef.current || aiBusyRef.current) return;
     if (buildDiffEnforcementMode === 'approval' && pendingDiffBaselineId && (diff?.needsApproval || (diff?.files || []).length > 0)) {
       setError('Resolve pending changes in Changes & Git first (Approve or Reject) before starting a new AI task.');
       return;
     }
 
     setError(null);
+    submittingBuildPromptRef.current = true;
+    aiBusyRef.current = true;
     setAiBusy(true);
-    activeRunDiffBaselineIdRef.current = null;
-    lastRunningGitSummaryRefreshAtRef.current = 0;
-    runningChangeRefreshInFlightRef.current = false;
-    setDiff(null);
-    setSelectedDiffFilePath(null);
     try {
+      // Recheck the parent before changing history or capturing a new baseline.
+      // It may have resumed between rendering the idle controls and this click.
+      if (activeHistoryRunTaskId) {
+        const currentTask = await accomplish.getTask(activeHistoryRunTaskId, activeAgentId);
+        if (currentTask && isBuildTaskActive(currentTask)) {
+          setAiTaskId(currentTask.id);
+          if (currentTask.sessionId) setActiveHistorySessionToken(currentTask.sessionId);
+          return; // Keep the user's draft ready for the next turn.
+        }
+      }
+      activeRunDiffBaselineIdRef.current = null;
+      lastRunningGitSummaryRefreshAtRef.current = 0;
+      runningChangeRefreshInFlightRef.current = false;
+      setDiff(null);
+      setSelectedDiffFilePath(null);
       const userGoalPrompt = currentPromptValue.trim();
       syncGoalPromptState(userGoalPrompt, { immediate: true });
       const localGoalMessage: TaskMessage = {
@@ -11260,6 +9406,7 @@ export default function BuildPage() {
         });
       }
 
+      setJourneyTask(task);
       setAiTaskId(task.id);
       setGoalPrompt('');
       goalPromptDraftRef.current = '';
@@ -11291,8 +9438,16 @@ export default function BuildPage() {
         });
       }
     } catch (err) {
-      setAiBusy(false);
+      const currentTask = activeHistoryRunTaskId
+        ? await accomplish.getTask(activeHistoryRunTaskId, activeAgentId).catch(() => null)
+        : null;
+      const stillActive = Boolean(currentTask && isBuildTaskActive(currentTask));
+      aiBusyRef.current = stillActive;
+      setAiBusy(stillActive);
+      if (stillActive && currentTask) setAiTaskId(currentTask.id);
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      submittingBuildPromptRef.current = false;
     }
   }, [
     accomplish,
@@ -12439,6 +10594,7 @@ export default function BuildPage() {
     setAiTaskId(null);
     setAiBusy(false);
     setAiMessages([]);
+    setJourneyTask(null);
     setQualityCheckRun(null);
     setGoalPrompt('');
     goalPromptDraftRef.current = '';
@@ -14087,6 +12243,7 @@ export default function BuildPage() {
           </div>
         ) : null}
 
+        <div className="contents" data-focus-secondary="build-toolbar">
         <div className="h-5 w-px shrink-0 bg-border/70" />
 
         <BuildTooltip
@@ -14123,7 +12280,10 @@ export default function BuildPage() {
             {workspaceSetupScanning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
           </Button>
         </BuildTooltip>
-        <Popover open={sectionsDropdownOpen} onOpenChange={setSectionsDropdownOpen}>
+        <Button size="sm" variant="outline" className="h-8 gap-1 px-2 text-xs" onClick={() => {
+              setTerminalSectionHidden(false); setRuntimeLogsSectionHidden(false); setDiffSectionHidden(false);
+            }}>Show tools</Button>
+            <Popover open={sectionsDropdownOpen} onOpenChange={setSectionsDropdownOpen}>
           <BuildTooltip
             content={hiddenBuildSections.length > 0
               ? `Closed sections: ${hiddenBuildSections.join(', ')}`
@@ -14338,16 +12498,17 @@ export default function BuildPage() {
             <Wrench className="h-3.5 w-3.5" />
           </Button>
         </BuildTooltip>
+        </div>
         <BuildTooltip content="Start the current project runtime (dev/server process)." side="bottom" align="end">
           <Button
             size="sm"
             variant="outline"
             className="h-8 gap-0 px-2 2xl:gap-1.5"
-            onClick={() => void runRuntimeAction('start')}
+            aria-label="Start preview" onClick={() => void runRuntimeAction('start')}
             disabled={busyAction !== null}
           >
             <Play className="h-4 w-4" />
-            <span className="hidden 2xl:inline">Start</span>
+            <span className="hidden 2xl:inline">Start preview</span>
           </Button>
         </BuildTooltip>
         <BuildTooltip content="Stop the currently running project runtime." side="bottom" align="end">
@@ -14355,7 +12516,7 @@ export default function BuildPage() {
             size="sm"
             variant="outline"
             className="h-8 gap-0 px-2 2xl:gap-1.5"
-            onClick={() => void runRuntimeAction('stop')}
+            aria-label="Stop preview" onClick={() => void runRuntimeAction('stop')}
             disabled={busyAction !== null}
           >
             <Square className="h-4 w-4" />
@@ -14367,7 +12528,7 @@ export default function BuildPage() {
             size="sm"
             variant="outline"
             className="h-8 gap-0 px-2 2xl:gap-1.5"
-            onClick={() => void runRuntimeAction('restart')}
+            aria-label="Restart preview" onClick={() => void runRuntimeAction('restart')}
             disabled={busyAction !== null}
           >
             <RefreshCw className="h-4 w-4" />
@@ -14379,11 +12540,11 @@ export default function BuildPage() {
             size="sm"
             variant="outline"
             className="h-8 gap-0 px-2 2xl:gap-1.5"
-            onClick={() => void runRuntimeAction('build')}
+            aria-label="Build project" onClick={() => void runRuntimeAction('build')}
             disabled={busyAction !== null}
           >
             <Wrench className="h-4 w-4" />
-            <span className="hidden 2xl:inline">Build</span>
+            <span className="hidden 2xl:inline">Build project</span>
           </Button>
         </BuildTooltip>
       </div>
@@ -14432,8 +12593,21 @@ export default function BuildPage() {
   const activeSubagentCount = subagentRuns.filter(isActiveSubagentRun).length;
 
   return (
+    <AgentCharacterProvider agentId={activeAgentId || undefined} taskId={subagentParentTaskId || ''}
+      status={aiBusy ? 'running' : journeyTask?.status} messages={aiMessages} runs={subagentRuns}
+      onOpenRun={run => void loadSubagentDetail(run)}
+      onGuideParent={() => buildPageRef.current?.querySelector<HTMLTextAreaElement>('[aria-label="Build prompt"]')?.focus()}
+      onOpenMessage={id => {
+        const index = assistantMessages.findIndex(message => message.id === id);
+        if (index >= 0) assistantMessagesVirtuosoRef.current?.scrollToIndex({ index, align: 'center', behavior: 'auto' });
+      }}>
+    <AnswerActionsProvider taskId={subagentParentTaskId || ''} messages={aiMessages} canDraft={!aiBusy && !autoRepairBusy}
+      buildSessionId={activeHistorySessionId}
+      incognito={journeyTask?.privacyMode === 'incognito'} mode="build" onDraft={insertTextIntoBuildPrompt}>
+    <GuidanceContext.Provider value={guidance}>
     <TooltipProvider delayDuration={250}>
-    <div ref={buildPageRef} className="h-full flex flex-col bg-background">
+    <div ref={buildPageRef} className="focus-build-scene h-full flex flex-col bg-background"
+      style={focusBackground ? focusSceneBackground(focusBackground.src) : undefined}>
       <Dialog
         open={Boolean(workspacePathBlockedDialog)}
         onOpenChange={(open) => {
@@ -15988,6 +14162,9 @@ export default function BuildPage() {
                 {workspaceSetupScanning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
               </Button>
             </BuildTooltip>
+            <Button size="sm" variant="outline" className="h-8 gap-1 px-2 text-xs" onClick={() => {
+              setTerminalSectionHidden(false); setRuntimeLogsSectionHidden(false); setDiffSectionHidden(false);
+            }}>Show tools</Button>
             <Popover open={sectionsDropdownOpen} onOpenChange={setSectionsDropdownOpen}>
               <BuildTooltip
                 content={hiddenBuildSections.length > 0
@@ -16203,18 +14380,18 @@ export default function BuildPage() {
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => void runRuntimeAction('start')}
+                aria-label="Start preview" onClick={() => void runRuntimeAction('start')}
                 disabled={busyAction !== null}
               >
                 <Play className="h-4 w-4 mr-1.5" />
-                Start
+                Start preview
               </Button>
             </BuildTooltip>
             <BuildTooltip content="Stop the currently running project runtime." side="bottom" align="end">
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => void runRuntimeAction('stop')}
+                aria-label="Stop preview" onClick={() => void runRuntimeAction('stop')}
                 disabled={busyAction !== null}
               >
                 <Square className="h-4 w-4 mr-1.5" />
@@ -16225,7 +14402,7 @@ export default function BuildPage() {
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => void runRuntimeAction('restart')}
+                aria-label="Restart preview" onClick={() => void runRuntimeAction('restart')}
                 disabled={busyAction !== null}
               >
                 <RefreshCw className="h-4 w-4 mr-1.5" />
@@ -16236,11 +14413,11 @@ export default function BuildPage() {
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => void runRuntimeAction('build')}
+                aria-label="Build project" onClick={() => void runRuntimeAction('build')}
                 disabled={busyAction !== null}
               >
                 <Wrench className="h-4 w-4 mr-1.5" />
-                Build
+                Build project
               </Button>
             </BuildTooltip>
           </div>
@@ -16258,11 +14435,12 @@ export default function BuildPage() {
             </Card>
           ) : null}
           <div
-            className="grid min-h-0 flex-1 grid-cols-1 gap-3"
+            className="focus-build-grid grid min-h-0 flex-1 grid-cols-1 gap-3"
+            data-focus-has-preview={!runtimePreviewSectionHidden}
             style={{ gridTemplateColumns: buildMainGridTemplate }}
           >
             {!leftPanelCollapsed ? (
-            <Card ref={workspacePanelCardRef} className="relative min-h-0 flex flex-col p-3 gap-1">
+            <Card data-focus-secondary="workspace" ref={workspacePanelCardRef} className="relative min-h-0 flex flex-col p-3 gap-1">
               <div
                 className="absolute right-0 top-0 z-20 h-full w-1 cursor-col-resize"
                 onMouseDown={handleWorkspacePanelResizeStart}
@@ -16271,6 +14449,10 @@ export default function BuildPage() {
                 aria-orientation="vertical"
                 aria-label="Resize Project & Workspace"
               />
+              <div className="mb-2 rounded-md bg-muted/50 p-2 text-xs leading-relaxed text-muted-foreground">
+                Build has its own working folder. Chat can use a different folder.
+                <button type="button" className="mt-1 block font-medium text-primary underline underline-offset-2" disabled={!snapshot?.workspaceRoot} onClick={() => navigate('/', { state: { buildWorkspace: snapshot?.workspaceRoot } })}>Use this folder in Chat</button>
+              </div>
               <div className="flex items-start justify-between">
                 <div className="text-sm font-medium">Project & Workspace</div>
                 <Button
@@ -16285,7 +14467,7 @@ export default function BuildPage() {
               </div>
               <div>
                 <div className="mb-0.5 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                  <span>Workspace path</span>
+                  <span>Build workspace</span>
                   <Popover>
                     <PopoverTrigger asChild>
                       <button
@@ -16297,8 +14479,7 @@ export default function BuildPage() {
                       </button>
                     </PopoverTrigger>
                     <PopoverContent side="top" align="start" className="max-w-xs text-[11px] leading-relaxed text-muted-foreground">
-                      Select a folder inside this agent's workspace root. The selected folder becomes the active build workspace.
-                      Runtime commands run from this folder.
+                      Build uses a dedicated workspace root, separate from the folder selected in Chat. Select a folder inside this root. All project commands and Build agent changes use the selected Build folder.
                     </PopoverContent>
                   </Popover>
                 </div>
@@ -16471,7 +14652,7 @@ export default function BuildPage() {
                   </div>
                 )}
               </div>
-              <div className="mt-1 space-y-2 rounded-md border border-border/60 px-2 pt-2 pb-1 max-h-[320px] overflow-y-auto">
+              <details className="mt-2 rounded-lg border border-border bg-background"><summary className="cursor-pointer px-3 py-2 text-sm font-medium">Project settings &amp; presets</summary><div className="mt-1 space-y-2 rounded-md border border-border/60 px-2 pt-2 pb-1 max-h-[320px] overflow-y-auto">
                 <div className="text-xs font-semibold text-muted-foreground">Project Preset</div>
                 <BuildPresetInputWithHelp
                   value={presetNameInput}
@@ -16753,15 +14934,15 @@ export default function BuildPage() {
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
                 </div>
-              </div>
+              </div></details>
             </Card>
             ) : null}
 
             {hasVisibleBuildCenterArea ? (
-            <div ref={centerColumnRef} className="min-h-0 flex flex-col gap-0">
+            <div ref={centerColumnRef} className="focus-build-center min-h-0 flex flex-col gap-0" data-focus-secondary={runtimePreviewSectionHidden ? 'center-tools' : undefined}>
               {!runtimePreviewSectionHidden ? (
               <Card className="min-h-0 flex flex-1 flex-col gap-1 px-1.5 pt-2 pb-1.5">
-                <div className="flex items-center justify-between">
+                <div className="focus-preview-toolbar flex items-center justify-between">
                   <div className="inline-flex items-center gap-1 rounded-lg border border-border/60 bg-muted/30 p-1">
                     <Button
                       size="sm"
@@ -16796,6 +14977,11 @@ export default function BuildPage() {
                     <div className="text-xs text-muted-foreground">
                       {snapshot?.detection.projectType || 'unknown'} · {snapshot?.detection.previewStrategy || 'logs-only'}
                     </div>
+                    <PreviewComparison key={`${activeAgentId}:${workspaceRelativePath}`} available={runtimeScreenshotAvailable}
+                      capture={async () => {
+                        if (!snapshot?.runtime.previewUrl) throw new Error('Start the runtime preview first.');
+                        return accomplish.captureRuntimePreviewFullPage(snapshot.runtime.previewUrl);
+                      }} />
                     <Popover
                       open={runtimeScreenshotCaptureMenuOpen}
                       onOpenChange={(open) => {
@@ -16872,13 +15058,14 @@ export default function BuildPage() {
                       variant="ghost"
                       className="h-7 w-7 ml-1 border border-dashed border-muted-foreground/30 hover:border-amber-400/60 hover:bg-amber-500/10 hover:text-amber-600 dark:hover:text-amber-400"
                       title="Hide Runtime Preview section."
+                      data-focus-secondary="preview-layout-control"
                       onClick={() => setRuntimePreviewSectionHidden(true)}
                     >
                       <PanelBottomClose className="h-3.5 w-3.5" />
                     </Button>
                   </div>
                 </div>
-                <div className="my-1 rounded-md border border-border/60 bg-muted/20 px-2 py-1">
+                <div data-focus-secondary="fingerprint" className="my-1 rounded-md border border-border/60 bg-muted/20 px-2 py-1">
                   <div className="flex min-w-0 items-center justify-between gap-2">
                     <div className="shrink-0 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Build Fingerprint</div>
                     <div className="flex shrink-0 items-center gap-1">
@@ -17082,19 +15269,26 @@ export default function BuildPage() {
                   ) : (
                     <>
                       {snapshot?.runtime.status === 'stopped' ? (
-                        <div className="h-full flex flex-col items-center justify-center p-6 text-center text-sm text-muted-foreground gap-2">
+                        <div className="h-full overflow-auto"><div className="min-h-full flex flex-col items-center justify-center p-6 text-center text-sm text-muted-foreground gap-2 [&>*]:shrink-0">
                           <TerminalIcon className="h-6 w-6" />
-                          <div className="font-medium text-foreground">Runtime stopped</div>
+                          <div className="text-xl font-semibold text-foreground">Ready to work on your project</div>
+                          <ol className="my-3 max-w-md space-y-3 text-left text-sm text-foreground">
+                            <li><strong>1. Choose your folder.</strong> {focusScene ? 'Use Exit Focus to choose or change the Build workspace.' : 'Confirm the Build workspace on the left.'}</li>
+                            <li><strong>2. Describe the task.</strong> Tell the agent what to create or change in the task panel.</li>
+                            <li><strong>3. Review the result.</strong> Start the preview, inspect changed files, and run checks.</li>
+                          </ol>
+                          <div className="mb-2 text-xs">The project preview is currently stopped. Tools, logs, Git, and preset settings remain available.</div>
                           <Button
                             size="sm"
                             variant="outline"
-                            onClick={() => void runRuntimeAction('start')}
+                            aria-label="Start preview" onClick={() => void runRuntimeAction('start')}
                             disabled={busyAction !== null}
-                            title="Start runtime"
+                            title="Start preview"
                           >
                             <Play className="h-4 w-4 mr-1.5" />
-                            Start
+                            Start preview
                           </Button>
+                        </div>
                         </div>
                       ) : null}
 
@@ -17176,6 +15370,7 @@ export default function BuildPage() {
                 <>
                   {!runtimePreviewSectionHidden ? (
                   <div
+                    data-focus-secondary="panel-resizer"
                     className="flex h-3 shrink-0 cursor-row-resize select-none touch-none items-center justify-center"
                     onMouseDown={handleBuildCenterPanelResizeStart}
                     title="Drag to resize Runtime Preview and the lower Build panels."
@@ -17188,6 +15383,7 @@ export default function BuildPage() {
                   ) : null}
                   <div
                     ref={lowerPanelsGridRef}
+                    data-focus-secondary="build-tools"
                     className={cn(
                       'grid min-h-0 gap-3',
                       runtimePreviewSectionHidden ? 'flex-1' : ''
@@ -17450,8 +15646,9 @@ export default function BuildPage() {
             </div>
             ) : null}
 
-            <Card className="relative min-h-0 flex flex-col p-3 gap-3">
+            <Card className="focus-build-operator relative min-h-0 flex flex-col p-3 gap-3">
               <div
+                data-focus-secondary="operator-resizer"
                 className="absolute left-0 top-0 z-20 h-full w-1 cursor-col-resize"
                 onMouseDown={handleOperatorPanelResizeStart}
                 title="Drag to resize AI Build Operator."
@@ -17461,7 +15658,7 @@ export default function BuildPage() {
               />
               <div
                 className={cn(
-                  'min-h-0 flex flex-1 flex-col gap-3',
+                  'focus-content-width min-h-0 flex flex-1 flex-col gap-3',
                   !hasVisibleBuildCenterArea ? 'mx-auto w-full max-w-5xl' : ''
                 )}
               >
@@ -17632,6 +15829,13 @@ export default function BuildPage() {
                 </div>
               </div>
 
+              {subagentParentTaskId && <TaskJourney key={subagentParentTaskId} taskId={subagentParentTaskId}
+                status={aiBusy ? (journeyTask?.status === 'waiting_permission' || journeyTask?.status === 'queued' ? journeyTask.status : 'running') : journeyTask?.status}
+                messages={aiMessages} activity={journeyTask?.activity} agent={activeAgent}
+                onOpenMessage={id => {
+                  const index = assistantMessages.findIndex(message => message.id === id);
+                  if (index >= 0) assistantMessagesVirtuosoRef.current?.scrollToIndex({ index, align: 'center', behavior: 'auto' });
+                }} />}
               {subagentParentTaskId ? (
                 <div
                   className={cn(
@@ -17712,7 +15916,6 @@ export default function BuildPage() {
                         computeItemKey={(_index, message) => message.id}
                         increaseViewportBy={{ top: 220, bottom: 320 }}
                         followOutput={(isAtBottom) => {
-                          if (!aiBusy) return false;
                           return isAtBottom ? 'auto' : false;
                         }}
                         atBottomStateChange={(isAtBottom) => {
@@ -18626,6 +16829,10 @@ export default function BuildPage() {
                 ) : null}
               </div>
             ) : null}
+            <AnswerActionsProvider taskId={subagentDetailTask?.id || ''} messages={subagentDetailTask?.messages || []}
+              canDraft={Boolean(subagentDetailTask) && !subagentDetailSending && !subagentDetailMutating && !subagentDetailLoading}
+              incognito={subagentDetailTask?.privacyMode === 'incognito' || subagentDetailRun?.inheritedContext?.privacyMode === 'incognito'} mode="build"
+              onDraft={prompt => setSubagentDetailPrompt(current => current.trim() ? `${current}\n\n${prompt}` : prompt)}>
             <div className="max-h-[420px] overflow-y-auto rounded-md border border-border/60 bg-background/70 p-3">
               {subagentDetailLoading ? (
                 <div className="text-xs text-muted-foreground">Loading transcript…</div>
@@ -18643,11 +16850,13 @@ export default function BuildPage() {
                           {normalizeMarkdownTables(message.content || '')}
                         </ReactMarkdown>
                       </div>
+                      {message.type === 'assistant' && <AnswerActions messageId={message.id} content={splitAssistantReasoningContent(message.content || '').answer} />}
                     </div>
                   ))}
                 </div>
               )}
             </div>
+            </AnswerActionsProvider>
             <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_220px] sm:items-end">
               <div className="grid gap-2">
                 <label className="text-xs text-muted-foreground">Send follow-up to child session</label>
@@ -19495,5 +17704,8 @@ export default function BuildPage() {
       ) : null}
     </div>
     </TooltipProvider>
+    </GuidanceContext.Provider>
+    </AnswerActionsProvider>
+    </AgentCharacterProvider>
   );
 }

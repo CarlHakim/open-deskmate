@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef, useMemo, memo, type CSSProper
 import { useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import TaskInputBar, { type TaskInputBarHandle } from '../components/landing/TaskInputBar';
-import SettingsDialog from '../components/layout/SettingsDialog';
+import { DeferredSettingsDialog as SettingsDialog } from '../components/layout/DeferredDialogs';
 import ModeSwitch from '../components/layout/ModeSwitch';
 import BuildRuntimeIndicator from '../components/layout/BuildRuntimeIndicator';
 import { useTaskStore } from '../stores/taskStore';
@@ -525,6 +525,7 @@ export default function HomePage() {
                 large={true}
                 autoFocus={true}
                 defaultWorkingFolder={defaultWorkspace}
+                initialWorkingFolder={typeof location.state?.buildWorkspace === 'string' ? location.state.buildWorkspace : undefined}
                 onPlanNextJobs={handlePlanNextJobs}
                 planningJobs={planningJobs}
                 agentId={activeAgentId}

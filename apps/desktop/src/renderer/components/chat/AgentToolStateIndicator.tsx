@@ -1,3 +1,4 @@
+import { AgentCharacterButton } from '../agents/AgentCharacterCard';
 import type { TaskActivityEvent, TaskMessage, TaskStatus } from '@accomplish/shared';
 import type { CSSProperties } from 'react';
 import type { LucideIcon } from 'lucide-react';
@@ -287,7 +288,7 @@ export default function AgentToolStateIndicator({
       style={style}
       data-testid={testId}
     >
-      <div
+      <AgentCharacterButton aria-label={`Open agent card for ${agentName || 'Agent'}`}
         className={cn(
           'flex shrink-0 items-center justify-center overflow-hidden rounded-xl border border-border/60 bg-muted/70',
           compact ? 'h-8 w-8' : 'h-9 w-9'
@@ -300,7 +301,7 @@ export default function AgentToolStateIndicator({
           imageDataUrl={agentAvatarImageDataUrl}
           className={isPictureAvatar(agentAvatar, agentAvatarImageDataUrl) ? 'h-full w-full' : compact ? 'h-4 w-4' : 'h-5 w-5'}
         />
-      </div>
+      </AgentCharacterButton>
       <div className="agent-tool-state-orb relative flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border/60 bg-muted/50">
         <PresenceIcon className="agent-tool-state-icon h-4 w-4 opacity-90" />
       </div>

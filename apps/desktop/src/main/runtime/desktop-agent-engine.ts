@@ -1,3 +1,5 @@
+import { findSubagentRunByChildTaskId } from '../store/subagentRegistry';
+import { findReusableWarmSession } from './warm-session';
 import { app, type BrowserWindow, type WebContents } from 'electron';
 import fs from 'fs';
 import os from 'os';
@@ -68,7 +70,6 @@ import {
   isMiniMaxHistoricalImageSessionResetReason,
 } from '../services/context/image-history-policy';
 
-const WARM_SESSION_WINDOW_MS = Number(process.env.OPENDESKMATE_WARM_SESSION_WINDOW_MS || 5 * 60 * 1000);
 const INCOGNITO_SESSION_LOG_TTL_MS = Number(process.env.OPENDESKMATE_INCOGNITO_SESSION_LOG_TTL_MS || 30 * 60 * 1000);
 const MESSAGE_BATCH_DELAY_MS = 50;
 const IGNORED_TASK_TTL_MS = 30_000;
@@ -234,32 +235,14 @@ export function maybeReuseDesktopWarmSession(
   if (sessionId || !previousTask || previousTask.id === taskId || !previousTask.sessionId) {
     return sessionId;
   }
-  const terminalStatuses = new Set<TaskStatus>(['completed', 'interrupted', 'failed', 'cancelled']);
-  if (!terminalStatuses.has(previousTask.status)) {
-    return sessionId;
-  }
-  const completedAtMs = Date.parse(previousTask.completedAt || previousTask.createdAt || '');
-  if (!Number.isFinite(completedAtMs) || (Date.now() - completedAtMs) > WARM_SESSION_WINDOW_MS) {
-    return sessionId;
-  }
-  const agentId = params?.agentId || previousTask.agentId;
-  const resetReason = getMiniMaxHistoricalImageSessionResetReason({
-    selectedModel: resolveSelectedModelForAgent(agentId),
+  return findReusableWarmSession({
+    taskId,
+    previousTask,
+    agentId: params?.agentId,
     prompt: params?.prompt || previousTask.prompt,
-    currentAttachedFiles: params?.currentAttachedFiles,
-    sessionId: previousTask.sessionId,
-    sessionFilePath: (previousTask as Task & { sessionFilePath?: string }).sessionFilePath,
-    task: previousTask as Task & { sessionFilePath?: string },
-  });
-  if (resetReason) {
-    console.log('[DesktopAgentEngine] Skipping warm MiniMax session reuse:', {
-      fromTaskId: previousTask.id,
-      sessionId: previousTask.sessionId,
-      reason: resetReason,
-    });
-    return sessionId;
-  }
-  return previousTask.sessionId;
+    attachedFiles: params?.currentAttachedFiles,
+    logPrefix: '[DesktopAgentEngine]',
+  })?.sessionId ?? sessionId;
 }
 
 export async function maybeSaveDesktopPreviousSessionMemory(params: {
@@ -326,6 +309,8 @@ export function resolveDesktopTaskWorkspaceRoot(
   getAgentWorkspaceRoot: (agentId?: string) => string
 ): string | null {
   const taskConfig = getAgentEngineTaskConfig(taskId);
+  const isolatedWorkspace = findSubagentRunByChildTaskId(taskId)?.worktree?.path;
+  if (isolatedWorkspace) return isolatedWorkspace;
   const agentWorkspace = getAgentWorkspaceRoot(taskConfig?.agentId).trim();
   if (agentWorkspace) {
     return agentWorkspace;
@@ -1396,6 +1381,12 @@ export async function resumeDesktopSessionRequest(params: {
     applyAgentContext,
   } = params;
   const taskManager = getTaskManager();
+
+  // Reject a competing follow-up before appending it to history or replacing the
+  // active turn's usage/callback tracking. Supervision may have resumed this task.
+  if (validatedExistingTaskId && (taskManager.hasActiveTask(validatedExistingTaskId) || taskManager.isTaskQueued(validatedExistingTaskId))) {
+    throw new Error('The agent is still working on this task. Wait for it to finish or stop it before sending another prompt.');
+  }
 
   const {
     attachmentMeta,

@@ -36,6 +36,9 @@ export default function PermissionRequestModal({
           exit={{ opacity: 0 }}
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
           data-testid={testId}
+          role="dialog"
+          aria-modal="true"
+          aria-label={request.type === 'file' ? 'File Permission Required' : 'Permission Required'}
         >
           <motion.div
             initial={{ opacity: 0, scale: 0.95, y: 10 }}

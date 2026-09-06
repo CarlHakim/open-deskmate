@@ -24,6 +24,8 @@ import { useFolderStore } from '@/stores/folderStore';
 import { useTaskStore } from '@/stores/taskStore';
 import { useUsageProjectStore } from '@/stores/usageProjectStore';
 import ProjectWorkboardTab, { type WorkboardSourceOption } from './ProjectWorkboardTab';
+import ProjectScrapbookTab from './ProjectScrapbookTab';
+import { useNavigate } from 'react-router-dom';
 
 type BuildPresetBudgetGroup = {
   key: string;
@@ -41,7 +43,7 @@ type AssignmentStatusFilter = 'all' | 'unassigned' | 'this-budget' | 'elsewhere'
 type AssignmentColumnId = 'name' | 'type' | 'context' | 'count' | 'assignees' | 'budget';
 type AssignmentColumnWidths = Record<AssignmentColumnId, number>;
 type AssignmentHiddenColumns = Partial<Record<AssignmentColumnId, boolean>>;
-type ProjectManagementTab = 'overview' | 'analytics' | 'workboard' | 'work' | 'assignees' | 'budgets' | 'usage' | 'details' | 'notes';
+type ProjectManagementTab = 'overview' | 'analytics' | 'workboard' | 'scrapbook' | 'work' | 'assignees' | 'budgets' | 'usage' | 'details' | 'notes';
 type AnalyticsRangeMode = 'last-30' | 'last-3-months' | 'last-6-months' | 'custom' | `window:${string}`;
 
 type WorkAssignmentRow = {
@@ -99,6 +101,7 @@ const PROJECT_MANAGEMENT_TABS: Array<{ id: ProjectManagementTab; label: string }
   { id: 'overview', label: 'Overview' },
   { id: 'analytics', label: 'Analytics' },
   { id: 'workboard', label: 'Workboard' },
+  { id: 'scrapbook', label: 'Scrapbook' },
   { id: 'work', label: 'Work' },
   { id: 'assignees', label: 'Assignees' },
   { id: 'budgets', label: 'Budgets' },
@@ -500,6 +503,9 @@ export default function ProjectManagementDialog({
   } = useUsageProjectStore();
 
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const navigate = useNavigate();
+  const [scrapbookEditItemId, setScrapbookEditItemId] = useState<string | null>(null);
+  useEffect(() => { setScrapbookEditItemId(null); }, [selectedProjectId]);
   const [projectName, setProjectName] = useState('');
   const [projectColor, setProjectColor] = useState('#2dd4bf');
   const [trackingEnabled, setTrackingEnabled] = useState(true);
@@ -747,7 +753,7 @@ export default function ProjectManagementDialog({
     setAnalyticsCustomStartsAt(dateInputDaysAgo(29));
     setAnalyticsCustomEndsAt(toDateInput(new Date().toISOString()));
     setAnalytics(null);
-    setActiveProjectTab('overview');
+    setActiveProjectTab(current => current === 'scrapbook' ? 'scrapbook' : 'overview');
   }, [selectedProject?.id]);
 
   const selectedWindow = selectedProjectWindows.find((window) => window.id === selectedWindowId) || null;
@@ -2085,7 +2091,7 @@ export default function ProjectManagementDialog({
               {error && <div className="rounded-md border border-destructive/40 bg-destructive/10 p-2 text-xs text-destructive">{error}</div>}
               {loading && <div className="text-xs text-muted-foreground">Loading projects...</div>}
 
-              <div className="sticky top-0 z-20 rounded-lg border border-border bg-card/95 p-3 shadow-sm backdrop-blur">
+              <div className={cn('sticky top-0 z-20 rounded-lg border border-border bg-card/95 p-3 shadow-sm backdrop-blur', activeProjectTab === 'scrapbook' && 'hidden')}>
                 <div className="flex flex-wrap items-center gap-2">
                   <input
                     value={projectName}
@@ -2234,7 +2240,7 @@ export default function ProjectManagementDialog({
 
               {selectedProject && (
                 <div className="space-y-4">
-                  <div className="grid grid-cols-9 gap-1 rounded-lg border border-border bg-card p-1">
+                  <div className="grid grid-cols-3 gap-1 rounded-lg border border-border bg-card p-1 sm:grid-cols-5">
                     {PROJECT_MANAGEMENT_TABS.map((tab) => (
                       <button
                         key={tab.id}
@@ -2566,11 +2572,20 @@ export default function ProjectManagementDialog({
 
                   {activeProjectTab === 'workboard' ? (
                     <ProjectWorkboardTab
+                      key={selectedProject.id}
                       project={selectedProject}
+                      initialItemId={scrapbookEditItemId}
+                      onInitialItemOpened={() => setScrapbookEditItemId(null)}
                       assignees={allAssignees}
                       budgetWindows={selectedProjectWindows}
                       sourceOptions={workboardSourceOptions}
                     />
+                  ) : null}
+
+                  {activeProjectTab === 'scrapbook' ? (
+                    <ProjectScrapbookTab key={selectedProject.id} projectId={selectedProject.id}
+                      onNavigate={route => { onOpenChange(false); navigate(route); }}
+                      onEditItem={itemId => { setScrapbookEditItemId(itemId); setActiveProjectTab('workboard'); }} />
                   ) : null}
 
                   {activeProjectTab === 'work' ? (

@@ -1,4 +1,5 @@
 import Store from 'electron-store';
+import { EventEmitter } from 'node:events';
 import type { SubagentRunRecord } from '@accomplish/shared';
 
 interface SubagentRegistrySchema {
@@ -6,6 +7,11 @@ interface SubagentRegistrySchema {
 }
 
 const MAX_SUBAGENT_RUNS = 2000;
+const changes = new EventEmitter();
+export function onSubagentRegistryChange(listener: (run: SubagentRunRecord) => void): () => void {
+  changes.on('change', listener);
+  return () => { changes.off('change', listener); };
+}
 
 const subagentRegistryStore = new Store<SubagentRegistrySchema>({
   name: 'subagent-registry',
@@ -36,6 +42,7 @@ export function registerSubagentRun(run: SubagentRunRecord): SubagentRunRecord {
   const all = readAll();
   all[run.runId] = run;
   writeAll(all);
+  changes.emit('change', run);
   return run;
 }
 
@@ -56,6 +63,7 @@ export function patchSubagentRun(
   };
   all[key] = next;
   writeAll(all);
+  changes.emit('change', next);
   return next;
 }
 
@@ -80,4 +88,20 @@ export function listSubagentRuns(parentTaskId?: string, options?: { includeArchi
 
 export function countActiveSubagentRuns(parentTaskId: string): number {
   return listSubagentRuns(parentTaskId).filter((entry) => entry.status === 'accepted' || entry.status === 'running').length;
+}
+
+export function markSubagentTaskStarted(childTaskId: string): void {
+  const run = findSubagentRunByChildTaskId(childTaskId);
+  if (run && (run.status === 'accepted' || run.status === 'running') && run.lifecycle !== 'working') {
+    patchSubagentRun(run.runId, { status: 'running', lifecycle: 'working', startedAt: run.startedAt || new Date().toISOString() });
+  }
+}
+
+export function acknowledgeSubagentResults(parentTaskId: string, runIds: string[]): void {
+  for (const id of runIds) {
+    const run = getSubagentRun(id);
+    if (run?.parentTaskId === parentTaskId && run.resultDelivery?.state === 'ready') {
+      patchSubagentRun(id, { resultDelivery: { state: 'received', updatedAt: new Date().toISOString() } });
+    }
+  }
 }
