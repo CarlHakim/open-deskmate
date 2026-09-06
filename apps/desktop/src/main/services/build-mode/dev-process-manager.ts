@@ -15,6 +15,7 @@ import type {
 } from '@accomplish/shared';
 import { detectProjectRuntime, parseRuntimeDiagnosticLine, type RuntimeStructuredDiagnostic } from './runtime-adapters';
 import { resolvePathInWorkspace } from './file-service';
+import { buildRuntimeRepairPrompt } from './repair-prompt';
 
 const MAX_LOG_LINES = 2_500;
 const MAX_STRUCTURED_DIAGNOSTICS = 120;
@@ -719,46 +720,7 @@ class DevProcessManager {
   }
 
   private buildRepairPrompt(session: BuildSession): string {
-    const recentErrors = session.logs
-      .slice(-120)
-      .map((entry) => `[${entry.stream}] ${entry.line}`)
-      .join('\n')
-      .slice(0, 12_000);
-    const structuredDiagnostics = session.structuredDiagnostics
-      .slice(-30)
-      .map((entry) => ({
-        type: entry.type,
-        source: entry.source,
-        severity: entry.severity,
-        file: entry.file,
-        line: entry.line,
-        column: entry.column,
-        code: entry.code,
-        message: entry.message,
-      }));
-    const diagnosticsJson = structuredDiagnostics.length > 0
-      ? JSON.stringify(structuredDiagnostics, null, 2).slice(0, 9_000)
-      : '[]';
-
-    return [
-      'Build Mode automatic error feedback:',
-      `- Agent workspace: ${session.workspaceRoot}`,
-      `- Project type: ${session.detection.projectType}`,
-      `- Runtime adapter: ${session.detection.runtimeAdapterId}`,
-      `- Command: ${session.runtime.activeCommand || 'unknown'}`,
-      '',
-      'Task:',
-      '- Diagnose why the development runtime failed.',
-      '- Prioritize the structured diagnostics JSON (file/line/code) before raw logs.',
-      '- Apply file/code fixes directly in this workspace.',
-      '- Re-run relevant checks (build/test/start) and confirm expected behavior.',
-      '',
-      'Structured diagnostics (JSON):',
-      diagnosticsJson,
-      '',
-      'Recent runtime logs:',
-      recentErrors || '(no logs captured)',
-    ].join('\n');
+    return buildRuntimeRepairPrompt(session);
   }
 
   private toSnapshot(session: BuildSession): BuildSessionSnapshot {

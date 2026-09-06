@@ -3187,7 +3187,7 @@ function BuildPresetInputWithHelp({
   );
 }
 
-function resolveLocalhostPreviewUrl(snapshot: BuildSessionSnapshot | null): string | null {
+function resolveBrowserPreviewUrl(snapshot: BuildSessionSnapshot | null): string | null {
   if (!snapshot) return null;
 
   const port = Number(snapshot.runtime.port);
@@ -3196,17 +3196,16 @@ function resolveLocalhostPreviewUrl(snapshot: BuildSessionSnapshot | null): stri
     try {
       const parsed = new URL(rawPreviewUrl);
       if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
-        // Force local open behavior from desktop regardless of advertised host.
-        parsed.hostname = 'localhost';
-        return parsed.toString();
+        // Open the same endpoint as the embedded preview, preserving its protocol and host.
+        return rawPreviewUrl;
       }
     } catch {
       // Fall back to port-only URL generation below.
     }
   }
 
-  if (Number.isFinite(port) && port > 0) {
-    return `http://localhost:${port}`;
+  if (Number.isInteger(port) && port > 0 && port <= 65535) {
+    return `http://127.0.0.1:${port}`;
   }
   return null;
 }
@@ -7460,7 +7459,7 @@ export default function BuildPage() {
         setAiMessages((current) => mergeIncomingWithLocalBuildGoalMessages(current, task.messages || []));
         setAiBusy(true);
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(`Automatic AI repair could not start. Your typed prompt was not rejected. ${err instanceof Error ? err.message : String(err)}`);
       } finally {
         setAutoRepairBusy(false);
       }
@@ -10685,7 +10684,7 @@ export default function BuildPage() {
     'prose-hr:border-border',
   ), []);
 
-  const localhostPreviewUrl = useMemo(() => resolveLocalhostPreviewUrl(snapshot), [snapshot]);
+  const browserPreviewUrl = useMemo(() => resolveBrowserPreviewUrl(snapshot), [snapshot]);
 
   const isIframePreviewReady = Boolean(
     snapshot
@@ -10998,16 +10997,16 @@ export default function BuildPage() {
   }, []);
 
   const openPreviewInBrowser = useCallback(async () => {
-    if (!localhostPreviewUrl) {
+    if (!browserPreviewUrl) {
       setError('No local runtime preview URL is available yet.');
       return;
     }
     try {
-      await accomplish.openExternal(localhostPreviewUrl);
+      await accomplish.openExternal(browserPreviewUrl);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [accomplish, localhostPreviewUrl]);
+  }, [accomplish, browserPreviewUrl]);
 
   const drawRuntimeScreenshotCanvas = useCallback((
     canvas: HTMLCanvasElement | null,
@@ -15038,15 +15037,15 @@ export default function BuildPage() {
                     </Popover>
                     <span
                       className="inline-flex"
-                      title={localhostPreviewUrl
-                        ? `Open runtime in external browser (${localhostPreviewUrl}).`
+                      title={browserPreviewUrl
+                        ? `Open runtime in external browser (${browserPreviewUrl}).`
                         : 'Button is disabled until a preview URL/port is available.'}
                     >
                       <Button
                         size="sm"
                         variant="outline"
                         className="h-7 px-2 text-[11px]"
-                        disabled={!localhostPreviewUrl}
+                        disabled={!browserPreviewUrl}
                         onClick={() => void openPreviewInBrowser()}
                       >
                         <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
