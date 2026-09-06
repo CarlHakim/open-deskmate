@@ -136,7 +136,7 @@ async function proxyWebFetch(data: Record<string, unknown>) {
 
   const response = await fetch(parsed.toString(), {
     headers: {
-      'User-Agent': 'OpenDeskmate/0.4.5 deferred-tool-discovery',
+      'User-Agent': 'OpenDeskmate/0.5.0 deferred-tool-discovery',
       Accept: 'text/html,application/xhtml+xml,application/xml,text/plain,application/json;q=0.9,*/*;q=0.8',
     },
   });
